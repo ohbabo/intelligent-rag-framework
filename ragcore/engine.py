@@ -259,6 +259,18 @@ class Engine:
             )
         return self._rule_stats[key]
 
+    def compute_effective_confidence(self, claim_id: int) -> ScoreValue:
+        """Current effective confidence for a claim.
+
+        **MVP stub**: returns `base_confidence` unchanged. Phase 2+에서
+        evidence_strength 와 RuleStats(observed_precision / false_positive_rate)
+        를 조합한다. 이 자리는 의도된 stub이므로 무심코 "고치지" 말 것 —
+        scoring 로직은 별도 PR에서 명시적으로 들어온다.
+        """
+        if claim_id not in self._claims:
+            raise KeyError(f"unknown claim_id: {claim_id}")
+        return self._claims[claim_id].base_confidence
+
     def update_rule_stats(
         self,
         rule_id: int,

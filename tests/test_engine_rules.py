@@ -206,6 +206,58 @@ class TestUpdateRuleStats:
             engine.update_rule_stats(999, 1, firing_delta=1)
 
 
+class TestComputeEffectiveConfidence:
+    """MVP stub 행동을 명시적으로 잠근다. Phase 2에서 logic이 들어올 때 이 테스트가 가이드."""
+
+    def test_mvp_stub_returns_base_confidence(self) -> None:
+        engine = Engine()
+        e = _entity(engine)
+        c = engine.add_claim(
+            subject_id=e, claim_type=1,
+            rule_id=1, rule_version=1, reason_code=0,
+            base_confidence=0.73,
+        )
+        assert engine.compute_effective_confidence(c) == ScoreValue(0.73)
+
+    def test_unknown_claim_raises(self) -> None:
+        engine = Engine()
+        with pytest.raises(KeyError):
+            engine.compute_effective_confidence(999)
+
+    def test_stub_ignores_evidence_in_mvp(self) -> None:
+        """MVP stub은 evidence가 추가돼도 base_confidence만 반환.
+        Phase 2에서 evidence_strength와 RuleStats를 조합."""
+        engine = Engine()
+        e = _entity(engine)
+        c = engine.add_claim(
+            subject_id=e, claim_type=1,
+            rule_id=1, rule_version=1, reason_code=0,
+            base_confidence=0.50,
+        )
+        engine.add_evidence(
+            claim_id=c, raw_ref_id=1, evidence_type=1, strength=0.95
+        )
+        # 강한 evidence가 들어왔지만 stub은 여전히 base_confidence
+        assert engine.compute_effective_confidence(c) == ScoreValue(0.50)
+
+    def test_stub_ignores_rule_stats_in_mvp(self) -> None:
+        """RuleStats가 어떻게 갱신돼도 stub은 base_confidence만."""
+        engine = Engine()
+        _register(engine, rule_id=1, rule_version=1, prior_confidence=0.5)
+        e = _entity(engine)
+        c = engine.add_claim(
+            subject_id=e, claim_type=1,
+            rule_id=1, rule_version=1, reason_code=0,
+            base_confidence=0.60,
+        )
+        engine.update_rule_stats(
+            1, 1,
+            firing_delta=100, true_delta=90,
+            observed_precision=ScoreValue(0.9),
+        )
+        assert engine.compute_effective_confidence(c) == ScoreValue(0.60)
+
+
 class TestNamingTriangleSeparation:
     """Claim.base_confidence ≠ RuleDefinition.prior_confidence 임을 검증."""
 

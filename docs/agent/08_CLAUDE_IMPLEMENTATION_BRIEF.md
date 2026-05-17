@@ -76,25 +76,57 @@ Python Reference Engine은 다음 클래스 인터페이스를 제공한다.
 
 ```python
 class Engine:
-    def add_entity(self, entity_type: int) -> int: ...
+    # ---- Entity / Observation / Claim / Evidence -------------------------
+    def add_entity(self, entity_type: int, flags: int = 0) -> int: ...
     def add_observation(self, entity_id: int, raw_ref_id: int,
-                        observation_type: int) -> int: ...
-    def add_claim(self, entity_id: int, claim_type: int,
-                  rule_id: int, reason_code: int,
-                  status: int = CLAIM_STATUS_CANDIDATE) -> int: ...
+                        observation_type: int, source_type: int = 0) -> int: ...
+    def add_claim(self, subject_id: int, claim_type: int,
+                  rule_id: int, rule_version: int, reason_code: int,
+                  *,
+                  base_confidence: float = 0.5,
+                  status: int = CLAIM_STATUS_CANDIDATE,
+                  flags: int = 0) -> int: ...
+    # base_confidence는 firing 시점 스냅샷 (frozen). 이후 evidence/stats가
+    # 들어와도 이 값은 변하지 않는다. 현재 종합 값이 필요하면
+    # compute_effective_confidence(claim_id) 를 호출.
     def add_evidence(self, claim_id: int, raw_ref_id: int,
                      evidence_type: int, strength: float) -> int: ...
     # strength는 0.0~1.0 의미 계층. 저장 시 ScoreValue.to_uint16_scale()로 변환.
+    def evidences_for_claim(self, claim_id: int) -> list[Evidence]: ...
+
+    # ---- Relation / Gap ---------------------------------------------------
     def add_relation(self, from_kind: int, from_id: int,
                      to_kind: int, to_id: int,
                      relation_type: int,
                      rule_id: int, reason_code: int) -> int: ...
     # from_kind / to_kind는 KIND_* 상수. ID가 kind 독립이므로 두 객체를
     # 가로지르는 링크는 (kind, id) 쌍으로만 명확하다.
+    def add_gap(self, claim_id: int, gap_type: int,
+                required_evidence_type: int, severity: float,
+                rule_id: int) -> int: ...
+    def gaps_for_claim(self, claim_id: int) -> list[Gap]: ...
 
+    # ---- Rule registry (MVP advisory) ------------------------------------
+    def register_rule(self, definition: RuleDefinition) -> None: ...
+    # (rule_id, rule_version) 키, 중복 등록은 ValueError, 자동으로 빈 RuleStats 생성.
+    def get_rule(self, rule_id: int, rule_version: int) -> RuleDefinition: ...
+    def get_rule_stats(self, rule_id: int, rule_version: int) -> RuleStats: ...
+    def update_rule_stats(self, rule_id: int, rule_version: int, *,
+                          firing_delta: int = 0,
+                          true_delta: int = 0,
+                          false_delta: int = 0,
+                          observed_precision: ScoreValue | None = None,
+                          false_positive_rate: ScoreValue | None = None) -> None: ...
+    # 기존 RuleStats를 mutate 하지 않고 새 인스턴스로 교체. None 인자는 "유지".
+
+    # ---- Computed (future hot loop targets) ------------------------------
+    def compute_effective_confidence(self, claim_id: int) -> ScoreValue: ...
+    # MVP stub: base_confidence 그대로 반환. Phase 2+에서 evidence_strength
+    # 와 RuleStats(observed_precision / FPR)를 조합한다.
+
+    # ---- Phase 2+ stubs (자리만 예약) ------------------------------------
     def run_rules(self) -> int: ...
     def get_priority(self, target_id: int) -> int: ...
-    def get_confidence(self, target_id: int) -> int: ...
     def is_memory_candidate(self, target_id: int) -> bool: ...
 ```
 
@@ -108,11 +140,16 @@ typedef struct Engine Engine;
 Engine* engine_create(void);
 void engine_free(Engine* e);
 
-uint32_t engine_add_entity(Engine* e, uint16_t entity_type);
+uint32_t engine_add_entity(Engine* e, uint16_t entity_type, uint16_t flags);
 uint32_t engine_add_observation(Engine* e, uint32_t entity_id,
-                                uint32_t raw_ref_id, uint16_t observation_type);
-uint32_t engine_add_claim(Engine* e, uint32_t entity_id, uint16_t claim_type,
-                          uint16_t rule_id, uint16_t reason_code, uint16_t status);
+                                uint32_t raw_ref_id, uint16_t observation_type,
+                                uint16_t source_type);
+uint32_t engine_add_claim(Engine* e,
+                          uint32_t subject_id, uint16_t claim_type,
+                          uint16_t rule_id, uint16_t rule_version,
+                          uint16_t reason_code,
+                          uint16_t base_confidence,   // packed Score 0~10000
+                          uint16_t status, uint16_t flags);
 uint32_t engine_add_evidence(Engine* e, uint32_t claim_id, uint32_t raw_ref_id,
                              uint16_t evidence_type, uint16_t strength);
 uint32_t engine_add_relation(Engine* e,
@@ -120,10 +157,29 @@ uint32_t engine_add_relation(Engine* e,
                              uint8_t to_kind, uint32_t to_id,
                              uint16_t relation_type,
                              uint16_t rule_id, uint16_t reason_code);
+uint32_t engine_add_gap(Engine* e, uint32_t claim_id, uint16_t gap_type,
+                        uint16_t required_evidence_type, uint16_t severity,
+                        uint16_t rule_id);
 
+// Rule registry
+void engine_register_rule(Engine* e, RuleDefinition def);
+RuleDefinition engine_get_rule(Engine* e, uint16_t rule_id, uint16_t rule_version);
+RuleStats engine_get_rule_stats(Engine* e, uint16_t rule_id, uint16_t rule_version);
+void engine_update_rule_stats(Engine* e,
+                              uint16_t rule_id, uint16_t rule_version,
+                              int32_t firing_delta,
+                              int32_t true_delta, int32_t false_delta,
+                              uint16_t observed_precision,  // packed; flag bit으로 present 표기
+                              uint16_t false_positive_rate,
+                              uint16_t presence_flags);
+
+// Computed
+uint16_t engine_compute_effective_confidence(Engine* e, uint32_t claim_id);
+// MVP: base_confidence 그대로. Phase 2+ logic 추가 예정.
+
+// Phase 2+ stubs
 uint32_t engine_run_rules(Engine* e);
 uint16_t engine_get_priority(Engine* e, uint32_t target_id);
-uint16_t engine_get_confidence(Engine* e, uint32_t target_id);
 int engine_is_memory_candidate(Engine* e, uint32_t target_id);
 ```
 
