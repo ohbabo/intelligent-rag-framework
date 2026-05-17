@@ -2,15 +2,18 @@
 
 Mirrors the contract in docs/contracts/05_DATA_CONTRACT_MVP.md.
 ID-based linking, no nested objects.
+
+Naming triangle (절대 한 슬롯에 섞지 말 것):
+- RuleDefinition.prior_confidence  = 룰 자체의 사전 신뢰도
+- Claim.base_confidence            = 이 Claim 생성 시점의 초기 확신도
+- effective_confidence             = base + evidence + rule_stats 조합 (다음 PR의 함수)
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # Kind discriminators for cross-kind references.
-# IDs are independent per kind (entity_id=1 and claim_id=1 coexist),
-# so any reference that crosses kinds must carry both kind and id.
 KIND_ENTITY = 1
 KIND_OBSERVATION = 2
 KIND_CLAIM = 3
@@ -21,6 +24,10 @@ KIND_GAP = 6
 CLAIM_STATUS_CANDIDATE = 0
 CLAIM_STATUS_CONFIRMED = 1
 CLAIM_STATUS_REFUTED = 2
+
+RULE_MATURITY_EXPERIMENTAL = 0
+RULE_MATURITY_STABLE = 1
+RULE_MATURITY_DEPRECATED = 2
 
 
 @dataclass(frozen=True)
@@ -64,6 +71,13 @@ class Observation:
 
 @dataclass(frozen=True)
 class Claim:
+    """A judgment a rule asserted about a subject at firing time.
+
+    `base_confidence`는 룰이 firing 한 순간의 초기 확신도다. Evidence나
+    RuleStats가 채워져도 이 값은 **변하지 않는다**. 현재 종합 확신도가
+    필요하면 별도 `compute_effective_confidence(claim_id)` 함수를 쓴다.
+    """
+
     id: int
     subject_id: int
     type: int
@@ -71,6 +85,7 @@ class Claim:
     created_by_rule: int
     created_by_rule_version: int
     reason_code: int
+    base_confidence: ScoreValue
     flags: int = 0
 
 
@@ -110,3 +125,34 @@ class Gap:
     required_evidence_type: int
     severity: ScoreValue
     created_by_rule: int
+
+
+@dataclass(frozen=True)
+class RuleDefinition:
+    """룰의 고정 정의. 운영 통계와 분리.
+
+    `prior_confidence`는 이 룰 자체를 처음부터 얼마나 믿을지에 대한 사전
+    신뢰도. 특정 Claim의 확신도와 다르다 — Claim.base_confidence와 절대
+    혼동하지 말 것.
+    """
+
+    id: int
+    version: int
+    maturity: int
+    prior_confidence: ScoreValue
+
+
+@dataclass(frozen=True)
+class RuleStats:
+    """룰의 운영 통계. 정의와 분리해 시간에 따라 누적.
+
+    Frozen이지만 누적은 새 인스턴스로 교체 (Engine.update_rule_stats가 담당).
+    """
+
+    rule_id: int
+    rule_version: int
+    firing_count: int = 0
+    confirmed_true_count: int = 0
+    confirmed_false_count: int = 0
+    observed_precision: ScoreValue | None = None
+    false_positive_rate: ScoreValue | None = None

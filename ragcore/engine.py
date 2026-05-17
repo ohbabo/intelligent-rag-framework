@@ -20,6 +20,8 @@ from ragcore.types import (
     Gap,
     Observation,
     Relation,
+    RuleDefinition,
+    RuleStats,
     ScoreValue,
 )
 
@@ -33,6 +35,8 @@ class Engine:
         self._evidences: dict[int, Evidence] = {}
         self._relations: dict[int, Relation] = {}
         self._gaps: dict[int, Gap] = {}
+        self._rule_definitions: dict[tuple[int, int], RuleDefinition] = {}
+        self._rule_stats: dict[tuple[int, int], RuleStats] = {}
 
     def _allocate_id(self, kind: str) -> int:
         next_id = self._next_id.get(kind, 0) + 1
@@ -54,6 +58,8 @@ class Engine:
 
     def _id_exists(self, kind: int, target_id: int) -> bool:
         return target_id in self._storage_for_kind(kind)
+
+    # ---- Entity / Observation / Claim / Evidence ---------------------------
 
     def add_entity(self, entity_type: int, flags: int = 0) -> int:
         entity_id = self._allocate_id("entity")
@@ -93,9 +99,19 @@ class Engine:
         rule_version: int,
         reason_code: int,
         *,
+        base_confidence: float = 0.5,
         status: int = CLAIM_STATUS_CANDIDATE,
         flags: int = 0,
     ) -> int:
+        """Add a Claim.
+
+        `base_confidence`는 룰 firing 시점의 초기 확신도 (0.0~1.0). 시점
+        스냅샷이며 이후 evidence가 들어와도 이 값은 변하지 않는다. 종합
+        확신도는 향후 compute_effective_confidence(claim_id) 가 담당.
+
+        `rule_id`/`rule_version`이 등록된 룰을 가리켜야 하는지는 MVP에서
+        강제하지 않는다 (advisory). Rule Engine 단계에서 strict 옵션 도입.
+        """
         if subject_id not in self._entities:
             raise KeyError(f"unknown subject_id (entity): {subject_id}")
         claim_id = self._allocate_id("claim")
@@ -107,6 +123,7 @@ class Engine:
             created_by_rule=rule_id,
             created_by_rule_version=rule_version,
             reason_code=reason_code,
+            base_confidence=ScoreValue(base_confidence),
             flags=flags,
         )
         return claim_id
@@ -140,6 +157,8 @@ class Engine:
         if claim_id not in self._claims:
             raise KeyError(f"unknown claim_id: {claim_id}")
         return [ev for ev in self._evidences.values() if ev.claim_id == claim_id]
+
+    # ---- Relation / Gap ----------------------------------------------------
 
     def add_relation(
         self,
@@ -204,3 +223,79 @@ class Engine:
         if claim_id not in self._claims:
             raise KeyError(f"unknown claim_id: {claim_id}")
         return [g for g in self._gaps.values() if g.claim_id == claim_id]
+
+    # ---- Rule registry -----------------------------------------------------
+
+    def register_rule(self, definition: RuleDefinition) -> None:
+        """Register a rule and initialize its stats slot.
+
+        같은 (rule_id, rule_version) 이 두 번 등록되면 ValueError.
+        같은 rule_id 라도 version 이 다르면 별개 룰로 취급한다.
+        """
+        key = (definition.id, definition.version)
+        if key in self._rule_definitions:
+            raise ValueError(
+                f"rule already registered: rule_id={definition.id}, "
+                f"version={definition.version}"
+            )
+        self._rule_definitions[key] = definition
+        self._rule_stats[key] = RuleStats(
+            rule_id=definition.id, rule_version=definition.version
+        )
+
+    def get_rule(self, rule_id: int, rule_version: int) -> RuleDefinition:
+        key = (rule_id, rule_version)
+        if key not in self._rule_definitions:
+            raise KeyError(
+                f"unknown rule: rule_id={rule_id}, version={rule_version}"
+            )
+        return self._rule_definitions[key]
+
+    def get_rule_stats(self, rule_id: int, rule_version: int) -> RuleStats:
+        key = (rule_id, rule_version)
+        if key not in self._rule_stats:
+            raise KeyError(
+                f"unknown rule: rule_id={rule_id}, version={rule_version}"
+            )
+        return self._rule_stats[key]
+
+    def update_rule_stats(
+        self,
+        rule_id: int,
+        rule_version: int,
+        *,
+        firing_delta: int = 0,
+        true_delta: int = 0,
+        false_delta: int = 0,
+        observed_precision: ScoreValue | None = None,
+        false_positive_rate: ScoreValue | None = None,
+    ) -> None:
+        """Replace the stored RuleStats with a new instance reflecting deltas.
+
+        기존 객체는 mutate 하지 않는다. 새 RuleStats를 만들어 dict에 교체한다.
+        precision/fpr 인자가 None이면 "변경 안 함" (기존 값 유지). 명시적으로
+        nullify 하려면 별도 API가 필요 (MVP 미포함).
+        """
+        key = (rule_id, rule_version)
+        if key not in self._rule_stats:
+            raise KeyError(
+                f"unknown rule: rule_id={rule_id}, version={rule_version}"
+            )
+        current = self._rule_stats[key]
+        self._rule_stats[key] = RuleStats(
+            rule_id=current.rule_id,
+            rule_version=current.rule_version,
+            firing_count=current.firing_count + firing_delta,
+            confirmed_true_count=current.confirmed_true_count + true_delta,
+            confirmed_false_count=current.confirmed_false_count + false_delta,
+            observed_precision=(
+                observed_precision
+                if observed_precision is not None
+                else current.observed_precision
+            ),
+            false_positive_rate=(
+                false_positive_rate
+                if false_positive_rate is not None
+                else current.false_positive_rate
+            ),
+        )

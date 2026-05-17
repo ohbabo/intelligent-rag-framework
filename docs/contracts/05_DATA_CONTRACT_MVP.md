@@ -71,6 +71,8 @@ Claim은 **확정/후보** 상태를 분리한다. 도메인 룰이 한 번 firi
 
 Claim은 반드시 자신을 만든 룰 ID와 버전을 보존한다 (`created_by_rule` + `created_by_rule_version`).
 
+Claim은 firing 시점의 **초기 확신도(`base_confidence`)** 를 함께 보존한다. 이 값은 이후 증거나 룰 통계가 채워져도 **변하지 않는다** — Claim은 "이 룰이 이 시점에 이만큼 주장했다"는 스냅샷이다. 현재 종합 확신도는 별도 `compute_effective_confidence(claim_id)` 함수로 계산한다 (다음 단계).
+
 ```c
 #define CLAIM_STATUS_CANDIDATE  0
 #define CLAIM_STATUS_CONFIRMED  1
@@ -84,6 +86,7 @@ typedef struct {
     RuleId created_by_rule;
     RuleVersion created_by_rule_version;
     ReasonCode reason_code;
+    Score base_confidence;        // firing 시점 스냅샷, 변하지 않음
     uint16_t flags;
 } Claim;
 ```
@@ -186,56 +189,78 @@ class ScoreValue:
 
 ---
 
-## 8.2 Rule Reliability Hook
+## 8.2 Rule Registry — Definition / Stats 분리
 
 모든 Rule은 판단 결과를 생성할 때 `rule_id`와 `rule_version`을 함께 남긴다.
 
-MVP 단계에서 Rule Reliability를 완전한 통계 모델로 구현하지 않는다. 다만 이후 운영 데이터 기반 평가를 위해 다음 필드를 **계약 시점에 예약**한다.
+룰의 **정의(definition)** 와 **운영 통계(stats)** 는 같은 구조체에 섞지 않는다. 정의는 룰이 등록될 때 고정되며 시간에 따라 변하지 않고, 통계는 firing이 누적되면서 갱신된다. 두 슬롯을 분리해야 정의 변경(version bump)과 통계 갱신이 충돌하지 않는다.
 
-```text
-rule_maturity
-prior_confidence
-firing_count
-confirmed_true_count
-confirmed_false_count
-observed_precision
-false_positive_rate
-```
+### RuleDefinition
 
 ```c
 typedef struct {
     RuleId id;
     RuleVersion version;
-    RuleMaturity maturity;
-    Score prior_confidence;
-    Score observed_precision;        // null=Score=0 + flag bit
-    Score false_positive_rate;       // null=Score=0 + flag bit
+    RuleMaturity maturity;      // 0=experimental, 1=stable, 2=deprecated
+    Score prior_confidence;     // 룰 자체의 사전 신뢰도 (firing 결과와 별개)
+} RuleDefinition;
+```
+
+### RuleStats
+
+```c
+typedef struct {
+    RuleId rule_id;
+    RuleVersion rule_version;
     uint32_t firing_count;
     uint32_t confirmed_true_count;
     uint32_t confirmed_false_count;
+    Score observed_precision;        // null=Score=0 + flag bit
+    Score false_positive_rate;       // null=Score=0 + flag bit
     uint16_t reliability_flags;      // bit0=precision_present, bit1=fpr_present
-} RuleMeta;
+} RuleStats;
 ```
 
-핵심 분리:
+운영 데이터가 쌓이기 전까지 `observed_precision` / `false_positive_rate`는 null 가능 (flag bit로 표시).
+
+### Naming triangle — 세 슬롯을 절대 섞지 말 것
 
 ```text
-reason_code       = 이번 판단의 이유
-claim_confidence  = 이번 Claim의 확신도 (현재 입력 증거 기준)
-rule_reliability  = 이 룰 자체의 검증 정도 (운영 이력 기반)
+RuleDefinition.prior_confidence
+  = 이 룰 자체를 처음부터 얼마나 믿을지에 대한 사전 신뢰도
+  = 룰 등록 시점에 고정, 운영 통계와 무관
+
+Claim.base_confidence
+  = 이 룰이 특정 입력을 보고 Claim을 만들었을 때의 초기 확신도
+  = Claim 생성 시점에 박힘, 이후 evidence가 와도 변하지 않음
+
+compute_effective_confidence(claim_id)  (다음 단계)
+  = base_confidence + evidence_strength + RuleStats 를 조합한 현재 종합 확신도
+  = 함수로만 노출, 저장 슬롯 없음
+```
+
+예시:
+
+```text
+RuleDefinition.prior_confidence = 0.50   (룰 experimental, 룰 자체 신뢰도 보통)
+Claim.base_confidence           = 0.55   (이번 입력에서 OpenSSH_7.x 잡혔으니 +)
+RuleStats.observed_precision    = 0.80   (운영 결과 실제 적중률)
+→ effective_confidence는 이 셋을 조합해 계산
 ```
 
 세 값은 서로 다른 계층이며 같은 슬롯에 섞으면 안 된다.
 
 ```text
-Claim.confidence = 0.80, Rule.reliability = 0.50
-→ 증거만 보면 그럴듯한 판단인데, 룰 자체는 아직 검증이 부족하다.
-
-Claim.confidence = 0.40, Rule.reliability = 0.90
+prior_confidence = 0.90, base_confidence = 0.40
 → 룰은 검증됐지만 이번 케이스의 증거가 부족하다.
+
+prior_confidence = 0.50, base_confidence = 0.80
+→ 증거만 보면 그럴듯한데, 룰 자체는 아직 검증이 부족하다.
 ```
 
-운영 데이터가 쌓이기 전까지 `observed_precision` / `false_positive_rate`는 null 가능하다.
+### Rule registry (MVP advisory)
+
+Phase 1 Engine은 등록되지 않은 `(rule_id, rule_version)`을 `add_claim`에서 허용한다 (advisory). 테스트와 초기 실험 부담을 줄이기 위함이다. Rule Engine 단계에서 strict mode가 옵션으로 들어간다.
 
 ---
 
@@ -306,7 +331,7 @@ output:
     type: outdated_ssh_candidate
     subject: service:ssh
     status: candidate            # 확정 아님
-    confidence: 0.55             # 의미 계층, 저장 시 5500으로 패킹
+    base_confidence: 0.55        # 의미 계층, 저장 시 5500으로 패킹
     evidence_strength: 0.40
     required_evidence:
       - exact_openssh_version
@@ -327,7 +352,7 @@ claim:
   id: CLAIM_001
   type: outdated_ssh_candidate
   status: candidate
-  confidence: 0.55
+  base_confidence: 0.55
   generated_by:
     rule_id: RULE_DOMAIN_SSH_001
     rule_version: 0.1.0
