@@ -1,0 +1,24 @@
+# build outputs
+build/
+dist/
+*.o
+*.so
+*.dll
+*.dylib
+*.a
+*.exe
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# editor
+.vscode/
+.idea/
+
+# local data
+*.db
+*.sqlite
+*.log
