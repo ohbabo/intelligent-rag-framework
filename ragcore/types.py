@@ -8,6 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+CLAIM_STATUS_CANDIDATE = 0
+CLAIM_STATUS_CONFIRMED = 1
+CLAIM_STATUS_REFUTED = 2
+
 
 @dataclass(frozen=True)
 class ScoreValue:
@@ -37,3 +41,53 @@ class Entity:
     id: int
     type: int
     flags: int = 0
+
+
+@dataclass(frozen=True)
+class Observation:
+    id: int
+    entity_id: int
+    raw_ref_id: int
+    type: int
+    source_type: int = 0
+
+
+@dataclass(frozen=True)
+class Claim:
+    id: int
+    subject_id: int
+    type: int
+    status: int
+    created_by_rule: int
+    created_by_rule_version: int
+    reason_code: int
+    flags: int = 0
+
+
+@dataclass(frozen=True)
+class Evidence:
+    id: int
+    claim_id: int
+    raw_ref_id: int
+    type: int
+    strength: ScoreValue
+
+
+@dataclass(frozen=True)
+class Relation:
+    id: int
+    from_id: int
+    to_id: int
+    type: int
+    rule_id: int
+    reason_code: int
+
+
+@dataclass(frozen=True)
+class Gap:
+    id: int
+    claim_id: int
+    type: int
+    required_evidence_type: int
+    severity: ScoreValue
+    created_by_rule: int
