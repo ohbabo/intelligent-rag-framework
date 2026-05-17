@@ -1,7 +1,7 @@
 """Engine — owns ID allocation and per-kind storage.
 
 Reference implementation. ID 발급은 kind 별 단조 증가 카운터.
-참조 무결성: add_* 메서드는 참조 대상 ID가 존재해야 통과.
+참조 무결성: add_* 메서드는 참조 대상 ID가 해당 storage에 존재해야 통과.
 """
 
 from __future__ import annotations
@@ -11,7 +11,9 @@ from ragcore.types import (
     Claim,
     Entity,
     Evidence,
+    Gap,
     Observation,
+    Relation,
     ScoreValue,
 )
 
@@ -23,11 +25,28 @@ class Engine:
         self._observations: dict[int, Observation] = {}
         self._claims: dict[int, Claim] = {}
         self._evidences: dict[int, Evidence] = {}
+        self._relations: dict[int, Relation] = {}
+        self._gaps: dict[int, Gap] = {}
 
     def _allocate_id(self, kind: str) -> int:
         next_id = self._next_id.get(kind, 0) + 1
         self._next_id[kind] = next_id
         return next_id
+
+    def _id_exists_anywhere(self, target_id: int) -> bool:
+        """add_relation 같은 polymorphic ID 참조의 sanity check.
+
+        Relation은 어떤 kind든 가리킬 수 있으므로 (entity ↔ claim, claim ↔ evidence 등),
+        해당 ID가 어느 storage에 들어있는지만 확인한다. kind 식별까지는 안 한다.
+        """
+        return (
+            target_id in self._entities
+            or target_id in self._observations
+            or target_id in self._claims
+            or target_id in self._evidences
+            or target_id in self._gaps
+            or target_id in self._relations
+        )
 
     def add_entity(self, entity_type: int, flags: int = 0) -> int:
         entity_id = self._allocate_id("entity")
@@ -114,3 +133,58 @@ class Engine:
         if claim_id not in self._claims:
             raise KeyError(f"unknown claim_id: {claim_id}")
         return [ev for ev in self._evidences.values() if ev.claim_id == claim_id]
+
+    def add_relation(
+        self,
+        from_id: int,
+        to_id: int,
+        relation_type: int,
+        rule_id: int,
+        reason_code: int,
+    ) -> int:
+        if not self._id_exists_anywhere(from_id):
+            raise KeyError(f"unknown from_id: {from_id}")
+        if not self._id_exists_anywhere(to_id):
+            raise KeyError(f"unknown to_id: {to_id}")
+        relation_id = self._allocate_id("relation")
+        self._relations[relation_id] = Relation(
+            id=relation_id,
+            from_id=from_id,
+            to_id=to_id,
+            type=relation_type,
+            rule_id=rule_id,
+            reason_code=reason_code,
+        )
+        return relation_id
+
+    def get_relation(self, relation_id: int) -> Relation:
+        return self._relations[relation_id]
+
+    def add_gap(
+        self,
+        claim_id: int,
+        gap_type: int,
+        required_evidence_type: int,
+        severity: float,
+        rule_id: int,
+    ) -> int:
+        if claim_id not in self._claims:
+            raise KeyError(f"unknown claim_id: {claim_id}")
+        gap_id = self._allocate_id("gap")
+        self._gaps[gap_id] = Gap(
+            id=gap_id,
+            claim_id=claim_id,
+            type=gap_type,
+            required_evidence_type=required_evidence_type,
+            severity=ScoreValue(severity),
+            created_by_rule=rule_id,
+        )
+        return gap_id
+
+    def get_gap(self, gap_id: int) -> Gap:
+        return self._gaps[gap_id]
+
+    def gaps_for_claim(self, claim_id: int) -> list[Gap]:
+        if claim_id not in self._claims:
+            raise KeyError(f"unknown claim_id: {claim_id}")
+        return [g for g in self._gaps.values() if g.claim_id == claim_id]
