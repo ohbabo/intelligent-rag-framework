@@ -29,7 +29,7 @@ Framework = 켈베로스에서 추출된 범용 판단 엔진
 ## Project Boundary
 
 ```text
-C Core
+Core Contract
 - Entity / Observation / Claim / Evidence / Relation
 - Rule Expansion
 - Gap Calculation
@@ -37,12 +37,15 @@ C Core
 - Action Candidate Ranking
 - Memory Eligibility Gate
 
-Python Layer
-- 원본 데이터 파싱
-- 도메인 Adapter
-- RAG / Vector DB / Graph DB 연결
-- LLM 호출
-- 실험 및 시각화
+Python Reference Core
+- MVP 판단 루프 구현
+- 룰 계약 검증
+- 테스트 기준선 제공
+- 도메인 Adapter 실험
+
+Future Native Core
+- 검증된 hot loop만 C/Rust로 이식
+- score packing / bulk matching / rule firing 최적화
 ```
 
 ## Minimal MVP
