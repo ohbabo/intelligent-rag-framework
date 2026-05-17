@@ -1,5 +1,56 @@
 # 00. Project Identity
 
+## 0. Origin
+
+본 프로젝트는 그린필드 프레임워크가 아니다.
+
+켈베로스(Cerberus) 보안 진단 프로젝트에서 진행한 evidence-centric 수집, 도구 결과 정규화, Claim / Gap / Action 사고, RAG 운영 철학, 수치 기반 판단 구조를 보안 도메인 밖으로 추상화하기 위해 분리되었다.
+
+```text
+Cerberus
+ └─ 보안 도메인에서 발생한 실제 문제
+    ├─ 도구 결과가 많아짐
+    ├─ 같은 사실을 가리키는 증거 연결 필요
+    ├─ 판단에 필요한 근거 부족 계산 필요
+    ├─ 다음 점검 행동 선택 필요
+    └─ 로컬 RAG/LLM 기반 설명 필요
+
+Intelligent RAG Framework
+ └─ 위 구조를 범용화
+    ├─ Observation / Evidence / Claim / Gap
+    └─ Rule / Score / Action / Feedback
+```
+
+켈베로스와의 관계는 다음과 같이 고정한다.
+
+```text
+켈베로스 내부 모듈              ❌
+켈베로스에서 추출한 범용 판단 엔진   ✅
+켈베로스는 첫 번째 도메인 어댑터    ✅
+프레임워크는 켈베로스에 종속되지 않음 ✅
+```
+
+### 용어 충돌 방지 규칙
+
+```text
+Framework Core 용어는 도메인 독립 개념으로 정의한다.
+Cerberus 용어는 보안 도메인 어댑터에서 확장한다.
+같은 이름을 사용할 경우 Framework Core 정의를 우선하고,
+Cerberus는 domain-specific field 또는 adapter layer에서 보강한다.
+```
+
+예시:
+
+```text
+Framework Evidence
+= 어떤 판단을 뒷받침하는 정규화된 근거 단위
+
+Cerberus Evidence
+= 보안 도구, 로그, 배너, API, 취약점 DB에서 나온 보안 근거 단위
+```
+
+---
+
 ## 1. 정체성
 
 본 프로젝트는 특정 보안 도구가 아니라, 여러 도메인에 적용 가능한 관계-판단-수치 기반 AI Agentic RAG 프레임워크다.

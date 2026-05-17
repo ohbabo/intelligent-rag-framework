@@ -1,5 +1,25 @@
 # 04. C Core Boundary Contract
 
+## 0. Status
+
+이 문서는 **목표 C 경계 계약**을 정의한다.
+
+초기 MVP는 Python Reference Core로 구현하며, 이 문서의 모든 구조와 API는 Python 구현이 따라야 할 **이식 목표 계약**으로 작동한다.
+
+C 구현은 다음 조건이 모두 충족된 뒤에만 시작한다.
+
+```text
+1. Evidence / Claim / Gap 구조가 안정화됨
+2. 룰 firing 계약이 안정화됨
+3. 최소 도메인 시나리오 1개가 끝까지 동작
+4. profiler로 병목 구간 확인됨
+5. Python 구현이 테스트 기준선 역할 수행
+```
+
+이 문서에서 "C Core"라고 표기된 부분은 **현 시점에서는 Python Reference Core가 같은 책임을 진다**고 읽어야 한다.
+
+---
+
 ## 1. C Core가 담당하는 것
 
 ```text
@@ -63,7 +83,7 @@ Python은 Engine*를 핸들로만 사용한다.
 ```text
 문자열 직접 저장 금지
 관계는 포인터가 아니라 ID로 연결
-수치는 uint16_t 0~10000으로 압축
+수치 의미값은 float 0.0~1.0, 저장 / hot loop에서만 uint16 0~10000으로 패킹
 원본 데이터는 raw_ref_id로만 참조
 batch API를 추후 도입
 ```

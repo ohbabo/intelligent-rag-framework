@@ -35,9 +35,10 @@ Python에서 C 내부 구조체를 직접 만지지 말 것
 
 ```text
 ID 기반 연결
-rule_id / reason_code 기록
-score는 uint16_t 0~10000
+rule_id / reason_code 기록 (Claim은 generated_by.rule_id + rule_version 포함)
+score 의미값은 float 0.0~1.0, 저장은 uint16 0~10000 (두 계층 분리)
 raw data는 raw_ref_id로 참조
+rule_reliability 필드 자리 예약 (MVP에서는 null 가능)
 테스트 우선 작성
 작은 단위 커밋
 ```
@@ -45,7 +46,9 @@ raw data는 raw_ref_id로 참조
 ## First Implementation Target
 
 ```text
-C Core Skeleton + Minimal Rule Engine + Tests
+Python Reference Core + Minimal Rule Engine + Tests
 ```
+
+초기 MVP는 Python으로 구현한다. 단, 모든 데이터 구조와 함수 경계는 향후 C/Rust hot loop 이식을 전제로 고정한다. C 구현은 판단 루프와 룰 계약이 검증된 뒤, 성능 병목 구간에 한정하여 적용한다.
 
 자세한 구현 지시는 `docs/agent/08_CLAUDE_IMPLEMENTATION_BRIEF.md`를 따른다.
