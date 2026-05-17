@@ -27,6 +27,20 @@ typedef uint16_t ReasonCode;
 typedef uint16_t GapType;
 typedef uint16_t ActionType;
 typedef uint16_t Score;             // storage form, 0~10000 maps to 0.0~1.0
+typedef uint8_t  Kind;              // discriminator for cross-kind references
+```
+
+### Kind discriminators
+
+ID는 kind 안에서만 단조 증가한다 — entity:1 과 claim:1 은 서로 다른 객체다. 따라서 두 kind를 가로지르는 참조(Relation 등)는 **반드시 kind와 id를 함께** 전달해야 한다.
+
+```c
+#define KIND_ENTITY       1
+#define KIND_OBSERVATION  2
+#define KIND_CLAIM        3
+#define KIND_EVIDENCE     4
+#define KIND_RELATION     5
+#define KIND_GAP          6
 ```
 
 ## 2. Entity
@@ -88,16 +102,22 @@ typedef struct {
 
 ## 6. Relation
 
+Relation은 두 객체를 잇는 cross-kind 링크다. ID는 kind 독립이므로 (entity:1 ≠ claim:1), Relation은 **반드시 양쪽 kind를 함께 저장한다**. kind 없이 id만 두면 나중에 "entity → claim 이었는지 claim → evidence 였는지" 구분되지 않는다.
+
 ```c
 typedef struct {
     RelationId id;
+    Kind from_kind;
     uint32_t from_id;
+    Kind to_kind;
     uint32_t to_id;
     RelationType type;
     RuleId rule_id;
     ReasonCode reason_code;
 } Relation;
 ```
+
+`add_relation(from_kind, from_id, to_kind, to_id, ...)` 호출 시 Engine은 `(kind, id)` 쌍이 해당 storage에 실제 존재하는지 확인한다 — 잘못된 kind는 `ValueError`, 해당 kind에 id가 없으면 `KeyError`.
 
 ## 7. Gap
 

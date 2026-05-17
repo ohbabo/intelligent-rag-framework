@@ -7,6 +7,7 @@ import pytest
 from ragcore import (
     CLAIM_STATUS_CANDIDATE,
     CLAIM_STATUS_CONFIRMED,
+    KIND_ENTITY,
     Engine,
     Gap,
     Relation,
@@ -198,7 +199,17 @@ class TestIdsAreKindIndependent:
 
 class TestRelationAndGapTypes:
     def test_relation_is_frozen_dataclass(self) -> None:
-        relation = Relation(id=1, from_id=2, to_id=3, type=4, rule_id=5, reason_code=6)
+        relation = Relation(
+            id=1,
+            from_kind=KIND_ENTITY,
+            from_id=2,
+            to_kind=KIND_ENTITY,
+            to_id=3,
+            type=4,
+            rule_id=5,
+            reason_code=6,
+        )
+        assert relation.from_kind == KIND_ENTITY
         assert relation.from_id == 2
         assert relation.to_id == 3
         with pytest.raises(AttributeError):

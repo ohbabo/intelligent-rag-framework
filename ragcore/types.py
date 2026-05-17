@@ -8,6 +8,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+# Kind discriminators for cross-kind references.
+# IDs are independent per kind (entity_id=1 and claim_id=1 coexist),
+# so any reference that crosses kinds must carry both kind and id.
+KIND_ENTITY = 1
+KIND_OBSERVATION = 2
+KIND_CLAIM = 3
+KIND_EVIDENCE = 4
+KIND_RELATION = 5
+KIND_GAP = 6
+
 CLAIM_STATUS_CANDIDATE = 0
 CLAIM_STATUS_CONFIRMED = 1
 CLAIM_STATUS_REFUTED = 2
@@ -75,8 +85,17 @@ class Evidence:
 
 @dataclass(frozen=True)
 class Relation:
+    """Cross-kind link.
+
+    IDs in this framework are kind-independent (entity:1 and claim:1 are
+    distinct), so a Relation must carry both kind discriminators to be
+    unambiguous about what it connects.
+    """
+
     id: int
+    from_kind: int
     from_id: int
+    to_kind: int
     to_id: int
     type: int
     rule_id: int

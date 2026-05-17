@@ -85,9 +85,12 @@ class Engine:
     def add_evidence(self, claim_id: int, raw_ref_id: int,
                      evidence_type: int, strength: float) -> int: ...
     # strength는 0.0~1.0 의미 계층. 저장 시 ScoreValue.to_uint16_scale()로 변환.
-    def add_relation(self, from_id: int, to_id: int,
+    def add_relation(self, from_kind: int, from_id: int,
+                     to_kind: int, to_id: int,
                      relation_type: int,
                      rule_id: int, reason_code: int) -> int: ...
+    # from_kind / to_kind는 KIND_* 상수. ID가 kind 독립이므로 두 객체를
+    # 가로지르는 링크는 (kind, id) 쌍으로만 명확하다.
 
     def run_rules(self) -> int: ...
     def get_priority(self, target_id: int) -> int: ...
@@ -112,7 +115,9 @@ uint32_t engine_add_claim(Engine* e, uint32_t entity_id, uint16_t claim_type,
                           uint16_t rule_id, uint16_t reason_code, uint16_t status);
 uint32_t engine_add_evidence(Engine* e, uint32_t claim_id, uint32_t raw_ref_id,
                              uint16_t evidence_type, uint16_t strength);
-uint32_t engine_add_relation(Engine* e, uint32_t from_id, uint32_t to_id,
+uint32_t engine_add_relation(Engine* e,
+                             uint8_t from_kind, uint32_t from_id,
+                             uint8_t to_kind, uint32_t to_id,
                              uint16_t relation_type,
                              uint16_t rule_id, uint16_t reason_code);
 

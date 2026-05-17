@@ -1,13 +1,19 @@
 """Engine — owns ID allocation and per-kind storage.
 
 Reference implementation. ID 발급은 kind 별 단조 증가 카운터.
-참조 무결성: add_* 메서드는 참조 대상 ID가 해당 storage에 존재해야 통과.
+참조 무결성: add_* 메서드는 참조 대상이 (kind, id) 쌍으로 정확히 존재해야 통과.
 """
 
 from __future__ import annotations
 
 from ragcore.types import (
     CLAIM_STATUS_CANDIDATE,
+    KIND_CLAIM,
+    KIND_ENTITY,
+    KIND_EVIDENCE,
+    KIND_GAP,
+    KIND_OBSERVATION,
+    KIND_RELATION,
     Claim,
     Entity,
     Evidence,
@@ -33,20 +39,21 @@ class Engine:
         self._next_id[kind] = next_id
         return next_id
 
-    def _id_exists_anywhere(self, target_id: int) -> bool:
-        """add_relation 같은 polymorphic ID 참조의 sanity check.
+    def _storage_for_kind(self, kind: int) -> dict[int, object]:
+        mapping: dict[int, dict[int, object]] = {
+            KIND_ENTITY: self._entities,  # type: ignore[dict-item]
+            KIND_OBSERVATION: self._observations,  # type: ignore[dict-item]
+            KIND_CLAIM: self._claims,  # type: ignore[dict-item]
+            KIND_EVIDENCE: self._evidences,  # type: ignore[dict-item]
+            KIND_RELATION: self._relations,  # type: ignore[dict-item]
+            KIND_GAP: self._gaps,  # type: ignore[dict-item]
+        }
+        if kind not in mapping:
+            raise ValueError(f"unknown kind: {kind}")
+        return mapping[kind]
 
-        Relation은 어떤 kind든 가리킬 수 있으므로 (entity ↔ claim, claim ↔ evidence 등),
-        해당 ID가 어느 storage에 들어있는지만 확인한다. kind 식별까지는 안 한다.
-        """
-        return (
-            target_id in self._entities
-            or target_id in self._observations
-            or target_id in self._claims
-            or target_id in self._evidences
-            or target_id in self._gaps
-            or target_id in self._relations
-        )
+    def _id_exists(self, kind: int, target_id: int) -> bool:
+        return target_id in self._storage_for_kind(kind)
 
     def add_entity(self, entity_type: int, flags: int = 0) -> int:
         entity_id = self._allocate_id("entity")
@@ -136,20 +143,29 @@ class Engine:
 
     def add_relation(
         self,
+        from_kind: int,
         from_id: int,
+        to_kind: int,
         to_id: int,
         relation_type: int,
         rule_id: int,
         reason_code: int,
     ) -> int:
-        if not self._id_exists_anywhere(from_id):
-            raise KeyError(f"unknown from_id: {from_id}")
-        if not self._id_exists_anywhere(to_id):
-            raise KeyError(f"unknown to_id: {to_id}")
+        # _storage_for_kind raises ValueError on unknown kind.
+        if not self._id_exists(from_kind, from_id):
+            raise KeyError(
+                f"unknown from reference: kind={from_kind}, id={from_id}"
+            )
+        if not self._id_exists(to_kind, to_id):
+            raise KeyError(
+                f"unknown to reference: kind={to_kind}, id={to_id}"
+            )
         relation_id = self._allocate_id("relation")
         self._relations[relation_id] = Relation(
             id=relation_id,
+            from_kind=from_kind,
             from_id=from_id,
+            to_kind=to_kind,
             to_id=to_id,
             type=relation_type,
             rule_id=rule_id,
