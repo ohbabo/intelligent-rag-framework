@@ -506,3 +506,109 @@ MVP 가 안정화된 뒤 단계적으로 도입.
 ### Loader 동작 (현재 단계)
 
 `load_rule_spec` 은 현재 condition 블록을 **검증하지 않고** `raw["condition"]` 에 그대로 보존한다. 별도 `load_condition_tree(raw["condition"]) → ConditionTree` 함수가 다음 단계에서 들어온다. 그 시점에 condition 의 구조 검증과 operator allowlist 확인이 발생한다.
+
+---
+
+## 11. Condition trace (MVP)
+
+`evaluate_condition` 은 lenient — missing field / type mismatch / value mismatch 가 전부 `false` 로 흘러간다. 그래서 룰이 firing 못 했을 때 **"왜"** 가 사라진다.
+
+```text
+banner 가 없어서 false?
+banner 값이 달라서 false?
+port 가 다른 타입이라 false?
+```
+
+이를 구별하기 위해 evaluation 의 **debug / explain layer** 로 trace 를 둔다. trace 는 judgment 가 아니다 — RuleStats / Claim.base_confidence / scoring 같은 판단 슬롯에 들어가지 않는다.
+
+### Function 비대칭
+
+| | `evaluate_condition` | `evaluate_condition_with_trace` |
+|---|---|---|
+| 반환값 | `bool` | `Trace` (tree) |
+| Short-circuit | yes (`all` 첫 false, `any` 첫 true 에서 멈춤) | **no** — 모든 child 평가 |
+| 사용 위치 | 룰 firing 판정 (fast path) | 디버깅 / "왜 안 됐어" 설명 |
+
+이 비대칭은 의도적이다.
+- 룰 firing 판정은 빨라야 함 → short-circuit 유지
+- "왜 false 인지" 알려면 모든 자식 결과가 필요 → full evaluation
+
+### Types
+
+```python
+@dataclass(frozen=True)
+class PredicateTrace:
+    field: str
+    op: str
+    expected: Any
+    actual: Any | None         # field 가 없으면 None (의미: 표시용 placeholder)
+    actual_present: bool       # context 에 field 가 있었는지 (None 값과 구분)
+    result: bool
+    reason: str                # TRACE_REASON_* 중 하나
+
+
+@dataclass(frozen=True)
+class CombinatorTrace:
+    kind: str                  # "all" | "any"
+    children: tuple[Trace, ...]
+    result: bool
+
+
+Trace = PredicateTrace | CombinatorTrace
+```
+
+`actual` 과 `actual_present` 가 분리되어 있는 이유: context 에 `{"x": None}` 같은 명시적 `None` 값이 들어왔을 때 "field 없음" 과 구별 가능해야 함.
+
+### Reason discriminator
+
+| 상수 | 의미 | 발생 조건 |
+|---|---|---|
+| `TRACE_REASON_MATCH` | predicate true | 정상 매칭 |
+| `TRACE_REASON_MISMATCH` | predicate false (값 다름) | eq/ne/numeric/contains 모두 |
+| `TRACE_REASON_MISSING_FIELD` | field 가 context 에 없음 | `pred.field not in context` |
+| `TRACE_REASON_TYPE_MISMATCH` | 타입 불일치로 false | numeric op 가 non-number, contains 가 부적절 타입 |
+
+Combinator 노드에는 `reason` 이 없다 — 자식들의 reason 집합이 곧 설명이다.
+
+### Example
+
+```python
+from ragcore import (
+    evaluate_condition_with_trace,
+    load_condition_tree,
+    TRACE_REASON_MATCH,
+    TRACE_REASON_MISMATCH,
+)
+
+tree = load_condition_tree({
+    "all": [
+        {"field": "port", "op": "eq", "value": 22},
+        {"field": "banner", "op": "contains", "value": "OpenSSH_7."},
+    ]
+})
+
+trace = evaluate_condition_with_trace(
+    tree,
+    {"port": 22, "banner": "OpenSSH_9.0"},
+)
+
+assert trace.result is False
+assert trace.kind == "all"
+assert trace.children[0].result is True
+assert trace.children[0].reason == TRACE_REASON_MATCH
+assert trace.children[1].result is False
+assert trace.children[1].reason == TRACE_REASON_MISMATCH
+```
+
+### Out of scope (MVP)
+
+- Trace 직렬화 (JSON/YAML 등) — debug 단계는 repr 로 충분
+- Trace 시간 측정 (latency profile)
+- 여러 룰 firing 의 trace aggregation
+- RuleStats 갱신과 trace 자동 연동
+- Diff/comparison between traces
+- Trace pretty-printer
+
+### Loader 동작 변경 없음
+
+`load_condition_tree` 는 동일하게 동작한다. trace 는 evaluator 단계의 새 함수일 뿐, ConditionTree 구조나 loader 책임에는 영향이 없다.
