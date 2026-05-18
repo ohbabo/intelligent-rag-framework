@@ -12,6 +12,7 @@ from ragcore.condition import (
     load_condition_tree,
 )
 from ragcore.engine import Engine
+from ragcore.rule_compile import compile_rule_definition
 from ragcore.rule_loader import (
     RuleSpec,
     compile_rule_condition,
@@ -75,6 +76,7 @@ __all__ = [
     "TRACE_REASON_MISSING_FIELD",
     "TRACE_REASON_TYPE_MISMATCH",
     "compile_rule_condition",
+    "compile_rule_definition",
     "evaluate_condition",
     "evaluate_condition_with_trace",
     "load_condition_tree",
