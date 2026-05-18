@@ -7,6 +7,9 @@ name = "ragcore"
 version = "0.1.0"
 description = "Intelligent RAG Framework — Python Reference Core"
 requires-python = ">=3.10"
+dependencies = [
+    "PyYAML>=6.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

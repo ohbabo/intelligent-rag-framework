@@ -1,4 +1,5 @@
 from ragcore.engine import Engine
+from ragcore.rule_loader import RuleSpec, load_rule_spec, load_rule_spec_from_yaml
 from ragcore.types import (
     CLAIM_STATUS_CANDIDATE,
     CLAIM_STATUS_CONFIRMED,
@@ -44,6 +45,9 @@ __all__ = [
     "RULE_MATURITY_STABLE",
     "Relation",
     "RuleDefinition",
+    "RuleSpec",
     "RuleStats",
     "ScoreValue",
+    "load_rule_spec",
+    "load_rule_spec_from_yaml",
 ]
