@@ -1648,3 +1648,155 @@ PR5:
 구현 단계 (31/32차):
 - 31차: `Engine._gap_resolutions` 추가, `resolve_gaps_for_evidence` / `gap_resolution` 구현
 - 32차: tests (위 11개 invariant + 추가 케이스) + 회귀 보장
+
+## 18. Claim lifecycle (MVP)
+
+> 상태: 30/31/32차 (PR6). `candidate → confirmed` 단일 전이 + 명시 호출 API.
+> **`refuted` 전이 / scoring 변경 / history / confidence 재계산 / 자동 전이는 본 PR 범위 밖** — PR7+.
+
+### 18.1 목적
+
+PR5 까지의 흐름:
+
+```text
+Rule fires       → Claim (candidate) + Gap(s) (dedup)
+Evidence 추가    → (의미 변화 없음)
+resolve 호출     → matching Gap 들 닫음
+gap_resolution   → 누가 닫았는지 조회
+```
+
+PR6 추가:
+
+```text
+필요시 confirm_claim_if_ready(claim_id) 호출
+  → 이 Claim 이 참조하는 모든 Gap 이 resolved 인지 검사
+  → 조건 만족 시 candidate → confirmed
+```
+
+즉 PR6 는 **Claim 의 상태 전이** 최소 기능. 새 판단을 만드는 게 아니라
+"이미 존재하는 Claim 이 요구했던 Gap 들이 다 채워졌는가?" 만 확인한다.
+
+### 18.2 API
+
+```python
+def confirm_claim_if_ready(self, claim_id: int) -> bool:
+    """모든 referenced Gap 이 resolved 면 candidate → confirmed.
+
+    Returns:
+        True  — 이번 호출로 전이가 발생함
+        False — 전이가 발생하지 않음 (조건 불충족 / 이미 confirmed / refuted / Gap 0개)
+
+    Raises:
+        KeyError — unknown claim_id (PR1~PR5 의 fail-fast 패턴과 일관)
+
+    Note:
+        ``False`` 는 실패가 아니다. 예: 이미 confirmed 인 Claim 의 재호출은
+        no-op 이므로 자연스럽게 False.
+    """
+```
+
+API 이름 선택 (대안 vs 채택):
+
+| 후보 | 채택 | 이유 |
+|---|---|---|
+| `promote_claim_if_resolved` | ✗ | "promote" 는 가치판단 함의 |
+| `evaluate_claim_readiness` | ✗ | 동작 (전이) 보다 검사처럼 들림 |
+| `confirm_claim_if_ready` | ✓ | 동작 + 조건 + 결과를 한 이름에 |
+
+### 18.3 Resolved 의 정의 — PR5 truth-source 와 정합
+
+```python
+gap is resolved  ⇔  self.gap_resolution(gap.id) is not None
+                 ⇔  gap.id in self._gap_resolutions
+```
+
+`Gap` dataclass 에는 `status` / `resolved_by_evidence_id` 같은 필드를 **추가하지 않는다**
+(PR5 §17.2 결정 유지). PR5 의 `_gap_resolutions: dict[gap_id, evidence_id]` 가
+유일한 resolved truth-source.
+
+### 18.4 결정표 (전이 규칙)
+
+| Claim 상태 | gap 개수 | 모든 gap resolved? | 결과 상태 | 반환 |
+|---|---|---|---|---|
+| `candidate` | 0 | — | `candidate` | `False` |
+| `candidate` | 1+ | yes | **`confirmed`** | **`True`** |
+| `candidate` | 1+ | no | `candidate` | `False` |
+| `confirmed` | any | any | `confirmed` | `False` (no-op) |
+| `refuted` | any | any | `refuted` | `False` (no-op) |
+
+**Gap 0 개 candidate Claim 은 자동 confirm 금지**:
+"검증 끝남" 이 아니라 "확인 근거 없음" 이 PR6 의 해석. confirm 의 의미를
+"resolved gap 들이 Claim 을 올렸다" 로 좁게 잠그기 위함.
+
+### 18.5 Idempotency
+
+```python
+# 첫 호출
+engine.confirm_claim_if_ready(c)  # → True  (전이 발생)
+
+# 두 번째 호출
+engine.confirm_claim_if_ready(c)  # → False (이미 confirmed, no-op)
+engine.get_claim(c).status         # → CLAIM_STATUS_CONFIRMED (유지)
+
+# refuted 는 PR6 에서 안 다룸 — 외부에서 refuted 로 만들 방법이 현재 없지만,
+# 만약 미래에 그런 상태가 들어와도 confirm_claim_if_ready 는 no-op 으로 보존
+```
+
+### 18.6 보존 (impact 없음)
+
+| | PR6 영향 |
+|---|---|
+| `Gap` / `Evidence` / `Relation` dataclass | 없음 |
+| `Claim` dataclass | 없음 (`status: int` 필드 그대로 사용, `replace()` 로 갱신) |
+| `add_claim` / `add_evidence` / `add_gap` 의미 | 없음 |
+| `_gap_resolutions` / `_gap_dedup_index` / `_claim_gap_refs` | 없음 |
+| `gaps_for_claim` / `gap_resolution` 의미 | 없음 |
+| `fire_rule*` / `RuleStats.firing_count` | 없음 |
+| `compute_effective_confidence` (scoring) | 없음 |
+| `base_confidence` | 없음 (confidence 재계산 본 PR 범위 밖) |
+
+### 18.7 Invariants (테스트로 잠금)
+
+1. candidate + gap 0 개 → `False`, 상태 보존
+2. candidate + 모든 gap resolved → `True`, 상태 `confirmed`
+3. candidate + 일부 gap unresolved → `False`, 상태 보존 (`candidate`)
+4. 이미 confirmed → `False`, 상태 보존 (no-op)
+5. refuted → `False`, 상태 보존 (refuted 복구 금지)
+6. 두 번째 호출 idempotent — 첫 호출 `True`, 두 번째 `False`, 상태 `confirmed` 유지
+7. unknown `claim_id` → `KeyError` (PR1~PR5 fail-fast 패턴)
+8. confirm 발생해도 `gaps_for_claim` / `gap_resolution` 결과 무변화
+9. confirm 발생해도 `base_confidence` 무변화
+10. **기존 425 tests 그대로 통과** (회귀 방지)
+
+### 18.8 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| `refuted` 전이 / contradiction evidence 정의 | PR7 |
+| Auto-transition (resolve / add_evidence side effect) | 명시성 원칙 (§17.7 과 동일 정신) |
+| `confidence` (`base_confidence` / `effective`) 재계산 | scoring 변경 별도 PR |
+| `confirmed_at` timestamp / history / lifecycle trace | 직렬화 PR |
+| Partial confirmation (일부 gap 만으로 confirm) | confirm 의 의미 약화 — 금지 |
+| Evidence strength-weighted promotion | PR9+ |
+| Gap 0 개 Claim 자동 confirm | 18.4 참조 |
+| `refuted → candidate` 복구 / `confirmed → candidate` 강등 | 별도 결정점 |
+
+### 18.9 Position in flow
+
+```text
+PR5 까지:
+  Rule fires → Claim (candidate) + Gap (dedup) + firing_count +1
+  resolve_gaps_for_evidence(ev) → matching gap 닫힘
+
+PR6:
+  Rule fires → Claim (candidate) + Gap
+  resolve_gaps_for_evidence(ev) → matching gap 닫힘
+  confirm_claim_if_ready(c)
+    → all(gap_resolution(g.id) is not None for g in gaps_for_claim(c))
+    → 만족 시 status = confirmed, True 반환
+    → 아니면 no-op, False 반환
+```
+
+구현 단계 (31/32차) — **테스트 먼저 잠금 → 구현** 순서:
+- 31차: tests (위 10개 invariant) — 현재 `AttributeError` 로 fail 하는 상태로 잠금
+- 32차: `Engine.confirm_claim_if_ready` 구현 — 31차 테스트 통과로 입증
