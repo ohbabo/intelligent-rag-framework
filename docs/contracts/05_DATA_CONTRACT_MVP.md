@@ -439,8 +439,11 @@ condition:
         - ...
 ```
 
-- 최상위는 combinator 노드 (`all` 또는 `any`)
-- 자식은 predicate 노드 (`{field, op, value}`) 또는 nested combinator
+- 노드는 **정확히** predicate 또는 combinator 중 하나의 모양
+- 최상위는 predicate 또는 combinator 둘 다 가능 (단일 조건 룰을 위해 top-level predicate 허용)
+- 자식은 predicate 또는 nested combinator
+- predicate 노드의 키는 정확히 `{field, op, value}` — 추가 키 거부
+- combinator 노드의 키는 정확히 `{all}` 또는 `{any}` — 추가 키 거부 (오타로 인한 silent ignore 차단)
 - 중첩 가능 (`all` 안에 `any` 등)
 
 ### Supported combinators
@@ -463,7 +466,7 @@ condition:
 | `le` | `<=` | int, float |
 | `gt` | `>` | int, float |
 | `ge` | `>=` | int, float |
-| `contains` | 부분 포함 | str (substring), list (membership) |
+| `contains` | 부분 포함 | str (substring), list/tuple (membership) |
 
 ### Input context
 

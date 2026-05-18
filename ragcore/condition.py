@@ -85,6 +85,12 @@ def load_condition_tree(raw: Mapping[str, Any]) -> ConditionTree:
                 f"got {sorted(combinator_keys)}"
             )
         kind = next(iter(combinator_keys))
+        extras = keys - {kind}
+        if extras:
+            raise ValueError(
+                f"combinator '{kind}' node has unexpected extra keys: "
+                f"{sorted(extras)}"
+            )
         return _load_combinator(raw, kind)
 
     if not (PREDICATE_KEYS <= keys):
@@ -92,6 +98,12 @@ def load_condition_tree(raw: Mapping[str, Any]) -> ConditionTree:
         raise ValueError(
             f"node is neither predicate (missing fields: {sorted(missing)}) "
             f"nor known combinator (got keys: {sorted(keys)})"
+        )
+
+    extras = keys - PREDICATE_KEYS
+    if extras:
+        raise ValueError(
+            f"predicate node has unexpected extra keys: {sorted(extras)}"
         )
 
     return _load_predicate(raw)

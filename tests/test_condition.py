@@ -167,6 +167,26 @@ class TestLoadInvalidShape:
         with pytest.raises(ValueError):
             load_condition_tree({"xor": [_pred("port", "eq", 22)]})
 
+    def test_predicate_extra_key_rejected(self) -> None:
+        """predicate 노드는 정확히 {field, op, value} 만 허용 — 오타 차단."""
+        with pytest.raises(ValueError):
+            load_condition_tree({
+                "field": "port", "op": "eq", "value": 22, "typo": "x"
+            })
+
+    def test_combinator_extra_key_rejected(self) -> None:
+        """combinator 노드는 정확히 {all} 또는 {any} 만 — 추가 키 거부."""
+        with pytest.raises(ValueError):
+            load_condition_tree({
+                "all": [_pred("port", "eq", 22)],
+                "unexpected": True,
+            })
+
+    def test_top_level_predicate_allowed_per_contract(self) -> None:
+        """단일 조건 룰을 위해 top-level predicate 허용 (per §10)."""
+        tree = load_condition_tree(_pred("port", "eq", 22))
+        assert isinstance(tree, Predicate)
+
 
 # =====================================================================
 # Evaluate — basic ops
