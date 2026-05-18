@@ -715,3 +715,147 @@ spec.prior_confidence (ScoreValue) → 그대로
 ### Loader 동작 변경 없음
 
 `load_rule_spec` / `load_rule_spec_from_yaml` / `compile_rule_condition` 모두 동작 변경 없음. 이 결정은 다음 단계 (12차 `compile_rule_definition` 구현) 의 전제만 고정.
+
+---
+
+## 13. Rule output claim (MVP)
+
+룰이 firing 됐을 때 어떤 `Claim` 을 만들지 YAML 에서 표현한다. 이 섹션은 **15차 parser/compile 구현의 전제** — 어떤 필드를 받고, 어떤 매핑을 적용하고, 무엇은 호출자 책임인지 고정한다.
+
+### MVP shape
+
+```yaml
+output:
+  claim:
+    type: outdated_ssh_candidate          # str → ClaimType uint16 (CLAIM_TYPE_MAP)
+    status: candidate                     # str → ClaimStatus uint16 (CLAIM_STATUS_MAP)
+    base_confidence: 0.55                 # float 0.0~1.0
+    reason_code: OPENSSH_7_SERIES_BANNER  # str → ReasonCode uint16 (REASON_CODE_MAP)
+```
+
+### 핵심 결정: `subject_id` 는 YAML 이 해석하지 않는다
+
+룰 output 은 "어떤 종류의 claim 을 어떤 상태로 만들지" 만 기술한다. **누구에 대한 claim 인가** (subject_id) 는 `fire_rule` 호출자가 외부에서 제공한다.
+
+```python
+fire_rule(engine, compiled_rule, subject_id, context)
+```
+
+이유: YAML 에 `subject: service:ssh` 같은 표기를 넣는 순간 entity resolver 가 열린다. resolver 는 자체 결정점 (어떤 entity 가 무엇인지, namespace, lookup 정책 등) — MVP 부담 vs 가치 비례 안 맞음.
+
+§9 SSH_001 yaml 예시의 `subject:` 줄은 **broader intent** 의 표기일 뿐, MVP parser 가 해석하지 않음.
+
+### 매핑 (static, §12 RULE_ID_MAP 와 동일 패턴)
+
+```python
+# 위치 추천: ragcore/rule_output.py (15차에서 신규 생성)
+
+CLAIM_TYPE_MAP: Mapping[str, int] = {
+    "outdated_ssh_candidate": 1,
+    # 새 claim type 추가는 PR review 로 충돌 검토
+}
+
+CLAIM_STATUS_MAP: Mapping[str, int] = {
+    "candidate": CLAIM_STATUS_CANDIDATE,    # 0
+    "confirmed": CLAIM_STATUS_CONFIRMED,    # 1
+    "refuted":   CLAIM_STATUS_REFUTED,      # 2
+}
+
+REASON_CODE_MAP: Mapping[str, int] = {
+    "OPENSSH_7_SERIES_BANNER": 1,
+    "SSH_PORT_OPEN":           2,
+    # 새 reason code 도 PR review 로 충돌 검토
+}
+```
+
+각 매핑의 무결성 (범위 1..65535 / 중복 / 빈 키 / bool 차단) 은 §12 RULE_ID_MAP 과 동일하게 모듈 로딩 시 정적 검증한다.
+
+### Compile 흐름 (15차)
+
+```python
+@dataclass(frozen=True)
+class RuleOutputTemplate:
+    claim_type: int               # CLAIM_TYPE_MAP lookup
+    status: int                   # CLAIM_STATUS_MAP lookup
+    base_confidence: ScoreValue
+    reason_code: int              # REASON_CODE_MAP lookup
+
+
+def compile_rule_output(spec: RuleSpec) -> RuleOutputTemplate: ...
+```
+
+동작:
+- `spec.raw["output"]["claim"]` 에서 4개 필드 꺼냄
+- 각 문자열을 매핑으로 변환
+- `base_confidence` 는 `ScoreValue` 로 wrap (range 검증)
+- frozen 으로 반환
+
+호출자가 firing 시점에 (16차 fire_rule):
+
+```python
+template = compile_rule_output(spec)
+engine.add_claim(
+    subject_id=external_subject_id,           # 외부 제공
+    claim_type=template.claim_type,
+    rule_id=compiled_rule_def.id,
+    rule_version=compiled_rule_def.version,
+    reason_code=template.reason_code,
+    base_confidence=template.base_confidence.value,
+    status=template.status,
+)
+```
+
+### Error 분기
+
+| 상황 | 결과 |
+|---|---|
+| `output` 또는 `output.claim` 누락 | `ValueError("missing required field: ...")` |
+| `type` 누락 또는 unknown | `ValueError("unknown claim type: ...")` |
+| `status` 누락 또는 unknown | `ValueError("unknown claim status: ...")` |
+| `reason_code` 누락 또는 unknown | `ValueError("unknown reason code: ...")` |
+| `base_confidence` 범위 위반 | `ValueError` (ScoreValue 가 던짐) |
+| `base_confidence` 누락 / 비-숫자 | `ValueError` / `TypeError` |
+| 매핑 정합성 위반 (값 범위 / 중복) | 모듈 로딩 시 `AssertionError` (§12 패턴) |
+
+### Out of scope (MVP)
+
+- **`subject` 필드** — YAML 에서 entity resolver 안 함, fire_rule 호출자 책임
+- **`required_evidence`** — 별도 결정점 (17차, Gap 생성과 연동)
+- **`evidence_strength`** — Claim 자체에 evidence_strength 필드 없음. 증거 강도는 별도 evidence 흐름에서 다룸
+- **여러 claim 동시 생성** — MVP 는 룰 하나 firing → claim 하나
+- **`reason_code` list** — MVP 는 단일 reason_code. 다중 이유는 별도 결정점
+- **출력 dynamic interpolation** (`{{ banner }}` 같은 placeholder) — scope 밖
+- **claim 의 `flags` 필드 표현** — 표현 안 함, 기본값 0
+
+### YAML loader 동작 변경 없음
+
+`load_rule_spec` / `load_rule_spec_from_yaml` 는 변경 없음. `output` 블록은 여전히 `spec.raw["output"]` 에 보존만 됨. 15차에서 `compile_rule_output(spec)` 이 들어올 때 처음 검증된다.
+
+### Position in flow
+
+```text
+YAML
+  ↓ load_rule_spec_from_yaml                                            (3차)
+RuleSpec
+  ↓ compile_rule_definition   id/maturity str → int                     (12차 ✅)
+RuleDefinition
+  ↓ engine.register_rule (via register_rule_spec)                       (13차 ✅)
+Engine (rule registered, stats initialized)
+
+별도 경로:
+RuleSpec
+  ↓ compile_rule_condition    raw["condition"] → ConditionTree          (8차 ✅)
+ConditionTree
+  ↓ evaluate_condition / _with_trace                                    (6, 10차 ✅)
+bool / Trace
+
+신규 (15차):
+RuleSpec
+  ↓ compile_rule_output       raw["output"] → RuleOutputTemplate        (15차 신규)
+RuleOutputTemplate
+
+16차 (fire_rule) 에서 위 세 가지 결과를 묶는다:
+- ConditionTree 평가 (evaluate_condition)
+- true 면 RuleOutputTemplate + caller 제공 subject_id 로 engine.add_claim
+- RuleStats firing_count 증분
+```
