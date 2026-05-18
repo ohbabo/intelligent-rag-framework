@@ -280,10 +280,20 @@ A rule version SHOULD NOT be bumped for comment-only, description-only, or docum
 ### YAML example
 
 ```yaml
-rule_id: RULE_DOMAIN_SSH_001
+id: RULE_DOMAIN_SSH_001
 version: 1
 # human_label: 0.1.0
 ```
+
+YAML 필드명 컨벤션 (yaml loader 구현 전 고정):
+
+```text
+룰 정의 파일:        id           (RuleDefinition.id 와 1:1)
+claim generated_by:  rule_id      (Claim의 출처 표기)
+엔진 내부 키:        (id, version) 튜플
+```
+
+같은 식별자라도 컨텍스트에 따라 필드명이 다르다. 룰 자체를 정의하는 위치에서는 `id`, 다른 객체가 그 룰을 가리키는 위치에서는 `rule_id`.
 
 핵심 문장: **RuleVersion은 문서 릴리즈 버전이 아니라, rule firing behavior의 버전이다.**
 
