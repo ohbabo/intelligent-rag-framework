@@ -1,3 +1,9 @@
+from ragcore.condition import (
+    Combinator,
+    Predicate,
+    evaluate_condition,
+    load_condition_tree,
+)
 from ragcore.engine import Engine
 from ragcore.rule_loader import RuleSpec, load_rule_spec, load_rule_spec_from_yaml
 from ragcore.types import (
@@ -29,6 +35,7 @@ __all__ = [
     "CLAIM_STATUS_CONFIRMED",
     "CLAIM_STATUS_REFUTED",
     "Claim",
+    "Combinator",
     "Engine",
     "Entity",
     "Evidence",
@@ -40,6 +47,7 @@ __all__ = [
     "KIND_OBSERVATION",
     "KIND_RELATION",
     "Observation",
+    "Predicate",
     "RULE_MATURITY_DEPRECATED",
     "RULE_MATURITY_EXPERIMENTAL",
     "RULE_MATURITY_STABLE",
@@ -48,6 +56,8 @@ __all__ = [
     "RuleSpec",
     "RuleStats",
     "ScoreValue",
+    "evaluate_condition",
+    "load_condition_tree",
     "load_rule_spec",
     "load_rule_spec_from_yaml",
 ]
