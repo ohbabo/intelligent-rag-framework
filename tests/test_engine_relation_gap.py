@@ -662,3 +662,74 @@ class TestMinimalLoopClosesEnd2End:
         assert engine.get_claim(claim_id).created_by_rule == 42
         assert engine.evidences_for_claim(claim_id)[0].id == evidence_id
         assert engine.gaps_for_claim(claim_id)[0].id == gap_id
+
+
+class TestGapResolutionSmoke:
+    """PR5 §17 — 최소 스모크. 11개 invariant 전체 잠금은 32차."""
+
+    def test_matching_evidence_resolves_matching_gap(self) -> None:
+        engine = Engine()
+        _entity_id, claim_id = _entity_and_claim(engine)
+        gap_id = engine.add_gap(
+            claim_id=claim_id,
+            gap_type=1,
+            required_evidence_type=7,
+            severity=0.5,
+            rule_id=1,
+        )
+        evidence_id = engine.add_evidence(
+            claim_id=claim_id,
+            raw_ref_id=0,
+            evidence_type=7,
+            strength=0.8,
+        )
+
+        resolved = engine.resolve_gaps_for_evidence(evidence_id)
+
+        assert resolved == (gap_id,)
+        assert engine.gap_resolution(gap_id) == evidence_id
+
+    def test_non_matching_evidence_resolves_nothing(self) -> None:
+        engine = Engine()
+        _entity_id, claim_id = _entity_and_claim(engine)
+        gap_id = engine.add_gap(
+            claim_id=claim_id,
+            gap_type=1,
+            required_evidence_type=7,
+            severity=0.5,
+            rule_id=1,
+        )
+        evidence_id = engine.add_evidence(
+            claim_id=claim_id,
+            raw_ref_id=0,
+            evidence_type=99,  # type mismatch
+            strength=0.8,
+        )
+
+        resolved = engine.resolve_gaps_for_evidence(evidence_id)
+
+        assert resolved == ()
+        assert engine.gap_resolution(gap_id) is None
+
+    def test_gap_resolution_returns_none_when_unresolved(self) -> None:
+        engine = Engine()
+        _entity_id, claim_id = _entity_and_claim(engine)
+        gap_id = engine.add_gap(
+            claim_id=claim_id,
+            gap_type=1,
+            required_evidence_type=7,
+            severity=0.5,
+            rule_id=1,
+        )
+
+        assert engine.gap_resolution(gap_id) is None
+
+    def test_unknown_evidence_id_raises(self) -> None:
+        engine = Engine()
+        with pytest.raises(KeyError):
+            engine.resolve_gaps_for_evidence(999)
+
+    def test_unknown_gap_id_in_gap_resolution_raises(self) -> None:
+        engine = Engine()
+        with pytest.raises(KeyError):
+            engine.gap_resolution(999)

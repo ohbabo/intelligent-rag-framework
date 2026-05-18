@@ -1513,7 +1513,7 @@ claim_a = fire_rule(...)  # → Claim A, Gap g1
 claim_b = fire_rule(...)  # → Claim B, Gap g1 (reuse)
 
 # Claim A 에 evidence 추가 + resolve
-ev = engine.add_evidence(claim_a, type=..., source=..., observed_at=...)
+ev = engine.add_evidence(claim_a, raw_ref_id=..., evidence_type=..., strength=...)
 resolved = engine.resolve_gaps_for_evidence(ev)  # → (g1,)
 
 # 결과: g1 은 resolved
@@ -1530,7 +1530,7 @@ engine.gap_resolution(g1)  # → ev (Claim B 에서 봐도 동일)
 ### 17.7 `add_evidence` 의미 — 변화 없음
 
 ```python
-def add_evidence(self, claim_id, *, type, source, observed_at) -> int:
+def add_evidence(self, claim_id, raw_ref_id, evidence_type, strength) -> int:
     # PR1 부터 의미 그대로. 자동 resolve 없음.
 ```
 
