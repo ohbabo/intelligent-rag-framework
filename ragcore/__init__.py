@@ -21,7 +21,7 @@ from ragcore.rule_loader import (
 )
 from ragcore.rule_gap import RequiredEvidenceTemplate, compile_required_evidence
 from ragcore.rule_output import RuleOutputTemplate, compile_rule_output
-from ragcore.rule_runtime import fire_rule
+from ragcore.rule_runtime import FiringTrace, fire_rule, fire_rule_with_trace
 from ragcore.types import (
     CLAIM_STATUS_CANDIDATE,
     CLAIM_STATUS_CONFIRMED,
@@ -56,6 +56,7 @@ __all__ = [
     "Engine",
     "Entity",
     "Evidence",
+    "FiringTrace",
     "Gap",
     "KIND_CLAIM",
     "KIND_ENTITY",
@@ -87,6 +88,7 @@ __all__ = [
     "evaluate_condition",
     "evaluate_condition_with_trace",
     "fire_rule",
+    "fire_rule_with_trace",
     "load_condition_tree",
     "load_rule_spec",
     "load_rule_spec_from_yaml",

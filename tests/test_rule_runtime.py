@@ -21,15 +21,24 @@ import pytest
 from ragcore import (
     CLAIM_STATUS_CANDIDATE,
     Engine,
+    FiringTrace,
     RequiredEvidenceTemplate,
     ScoreValue,
     compile_required_evidence,
     compile_rule_condition,
     compile_rule_definition,
     compile_rule_output,
+    fire_rule_with_trace,
     load_rule_spec,
     load_rule_spec_from_yaml,
     register_rule_spec,
+)
+from ragcore.condition import (
+    TRACE_REASON_MATCH,
+    TRACE_REASON_MISMATCH,
+    TRACE_REASON_MISSING_FIELD,
+    CombinatorTrace,
+    PredicateTrace,
 )
 from ragcore.rule_gap import (
     DEFAULT_GAP_SEVERITY,
@@ -588,3 +597,382 @@ output:
         with pytest.raises(KeyError):
             engine.gaps_for_claim(1)
         assert engine.get_rule_stats(1, 1).firing_count == 0
+
+
+# =====================================================================
+# 22차 — fire_rule_with_trace (§15)
+# =====================================================================
+
+class TestFireRuleWithTraceTrue:
+    """condition true → FiringTrace.fired=True + claim/gap 생성."""
+
+    CTX_MATCH = {"port": 22, "banner": "OpenSSH_7.4p1"}
+
+    def test_returns_firing_trace(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        trace = fire_rule_with_trace(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+        )
+        assert isinstance(trace, FiringTrace)
+
+    def test_rule_id_version_subject_preserved(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        trace = fire_rule_with_trace(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+        )
+        assert trace.rule_id == definition.id
+        assert trace.rule_version == definition.version
+        assert trace.subject_id == subject
+
+    def test_fired_true_when_condition_matches(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        trace = fire_rule_with_trace(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+        )
+        assert trace.fired is True
+        assert trace.claim_id is not None
+        assert trace.condition_trace.result is True
+
+    def test_claim_actually_created(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        trace = fire_rule_with_trace(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+        )
+        # trace.claim_id 로 실제 engine 에서 조회 가능
+        claim = engine.get_claim(trace.claim_id)  # type: ignore[arg-type]
+        assert claim.subject_id == subject
+
+    def test_firing_count_incremented_via_trace_path(self) -> None:
+        """trace 함수도 실제 firing 함수 — RuleStats 갱신해야 함."""
+        engine, definition, cond, out, subject = _setup()
+        assert engine.get_rule_stats(definition.id, definition.version).firing_count == 0
+        fire_rule_with_trace(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+        )
+        assert engine.get_rule_stats(definition.id, definition.version).firing_count == 1
+
+    def test_condition_trace_children_all_match_for_full_match(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        trace = fire_rule_with_trace(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+        )
+        # SSH_SPEC_DICT 의 condition 은 all + 2 predicates
+        assert isinstance(trace.condition_trace, CombinatorTrace)
+        for child in trace.condition_trace.children:
+            assert child.result is True
+            assert child.reason == TRACE_REASON_MATCH
+
+
+class TestFireRuleWithTraceFalse:
+    """condition false → fired=False, claim/gap 0, condition_trace 에 이유."""
+
+    def test_mismatch_returns_fired_false(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        ctx = {"port": 80, "banner": "OpenSSH_7.4p1"}
+        trace = fire_rule_with_trace(
+            engine, definition, cond, out,
+            subject_id=subject, context=ctx,
+        )
+        assert trace.fired is False
+        assert trace.claim_id is None
+        assert trace.gap_ids == ()
+        assert trace.condition_trace.result is False
+
+    def test_condition_trace_shows_mismatch_reason(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        ctx = {"port": 80, "banner": "OpenSSH_7.4p1"}
+        trace = fire_rule_with_trace(
+            engine, definition, cond, out,
+            subject_id=subject, context=ctx,
+        )
+        # SSH_SPEC_DICT all 의 첫 predicate (port eq 22) 가 mismatch
+        assert isinstance(trace.condition_trace, CombinatorTrace)
+        first_child = trace.condition_trace.children[0]
+        assert isinstance(first_child, PredicateTrace)
+        assert first_child.result is False
+        assert first_child.reason == TRACE_REASON_MISMATCH
+
+    def test_missing_field_reason_in_trace(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        ctx = {"port": 22}  # banner 누락
+        trace = fire_rule_with_trace(
+            engine, definition, cond, out,
+            subject_id=subject, context=ctx,
+        )
+        assert trace.fired is False
+        # banner predicate 에서 MISSING_FIELD 가 보여야 함
+        children = trace.condition_trace.children  # type: ignore[union-attr]
+        banner_predicate = next(
+            c for c in children
+            if isinstance(c, PredicateTrace) and c.field == "banner"
+        )
+        assert banner_predicate.reason == TRACE_REASON_MISSING_FIELD
+        assert banner_predicate.actual_present is False
+
+    def test_no_claim_or_gap_on_false(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        ctx = {"port": 80}
+        trace = fire_rule_with_trace(
+            engine, definition, cond, out,
+            subject_id=subject, context=ctx,
+        )
+        assert trace.fired is False
+        # claim_id 가 할당되지 않았으므로 engine 에 claim 도 gap 도 없음
+        with pytest.raises(KeyError):
+            engine.get_claim(1)
+        assert engine.get_rule_stats(definition.id, definition.version).firing_count == 0
+
+
+class TestFireRuleWithTraceGapIds:
+    """gap_ids 필드 동작 — required_evidence 가 None / empty / 다수."""
+
+    CTX_MATCH = {"port": 22, "banner": "OpenSSH_7.4p1"}
+
+    def test_no_required_evidence_yields_empty_gap_ids(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        trace = fire_rule_with_trace(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=None,
+        )
+        assert trace.fired is True
+        assert trace.gap_ids == ()
+
+    def test_empty_template_yields_empty_gap_ids(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        template = RequiredEvidenceTemplate(evidence_types=())
+        trace = fire_rule_with_trace(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=template,
+        )
+        assert trace.fired is True
+        assert trace.gap_ids == ()
+
+    def test_three_evidence_yields_three_gap_ids(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        template = RequiredEvidenceTemplate(evidence_types=(1, 2, 3))
+        trace = fire_rule_with_trace(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=template,
+        )
+        assert trace.fired is True
+        assert len(trace.gap_ids) == 3
+        # 각 gap_id 로 engine 에서 조회 가능
+        for gap_id, expected_ev_type in zip(trace.gap_ids, (1, 2, 3)):
+            gap = engine.get_gap(gap_id)
+            assert gap.claim_id == trace.claim_id
+            assert gap.type == GAP_TYPE_MISSING_EVIDENCE
+            assert gap.required_evidence_type == expected_ev_type
+            assert gap.severity == DEFAULT_GAP_SEVERITY
+
+
+class TestFireRuleWithTraceInvariants:
+    """§15 의 5개 불변식 잠금."""
+
+    CTX_MATCH = {"port": 22, "banner": "OpenSSH_7.4p1"}
+    CTX_NO_MATCH = {"port": 80}
+
+    def test_fired_iff_claim_id_not_none_when_true(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        trace = fire_rule_with_trace(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+        )
+        assert trace.fired == (trace.claim_id is not None)
+
+    def test_fired_iff_claim_id_not_none_when_false(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        trace = fire_rule_with_trace(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_NO_MATCH,
+        )
+        assert trace.fired == (trace.claim_id is not None)
+
+    def test_false_implies_empty_gap_ids_regardless_of_template(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        template = RequiredEvidenceTemplate(evidence_types=(1, 2, 3))
+        trace = fire_rule_with_trace(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_NO_MATCH,
+            required_evidence=template,
+        )
+        assert trace.fired is False
+        assert trace.claim_id is None
+        assert trace.gap_ids == ()
+
+    def test_condition_trace_result_equals_fired(self) -> None:
+        for ctx in (self.CTX_MATCH, self.CTX_NO_MATCH):
+            engine, definition, cond, out, subject = _setup()
+            trace = fire_rule_with_trace(
+                engine, definition, cond, out,
+                subject_id=subject, context=ctx,
+            )
+            assert trace.condition_trace.result == trace.fired
+
+    def test_gap_count_matches_evidence_types_when_fired(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        template = RequiredEvidenceTemplate(evidence_types=(1, 2, 3))
+        trace = fire_rule_with_trace(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=template,
+        )
+        assert trace.fired is True
+        assert len(trace.gap_ids) == len(template.evidence_types)
+
+    def test_firing_trace_is_frozen(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        trace = fire_rule_with_trace(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+        )
+        with pytest.raises(AttributeError):
+            trace.fired = False  # type: ignore[misc]
+
+
+class TestFireRuleWithTraceErrors:
+    """미등록 rule 은 KeyError, FiringTrace 미생성 (swallow 금지)."""
+
+    def test_unregistered_rule_raises_keyerror(self) -> None:
+        engine = Engine()
+        spec = load_rule_spec(SSH_SPEC_DICT)
+        definition = compile_rule_definition(spec)  # registered X
+        cond = compile_rule_condition(spec)
+        out = compile_rule_output(spec)
+        subject_id = engine.add_entity(entity_type=1)
+
+        with pytest.raises(KeyError):
+            fire_rule_with_trace(
+                engine, definition, cond, out,
+                subject_id=subject_id,
+                context={"port": 22, "banner": "OpenSSH_7.4p1"},
+            )
+
+        # fail-fast 보장 — claim 도 안 만들어짐
+        with pytest.raises(KeyError):
+            engine.get_claim(1)
+
+
+class TestFireRuleEquivalence:
+    """fire_rule 과 fire_rule_with_trace 의 engine 상태 변화 동등성 (§15)."""
+
+    CTX_MATCH = {"port": 22, "banner": "OpenSSH_7.4p1"}
+    CTX_NO_MATCH = {"port": 80}
+
+    def _setup_pair(self) -> tuple[tuple[Engine, Any, Any, Any, int], tuple[Engine, Any, Any, Any, int]]:
+        """동일한 spec 으로 2개 engine 을 독립적으로 setup."""
+        return _setup(), _setup()
+
+    def test_same_state_change_on_fire_true(self) -> None:
+        (e_a, def_a, cond_a, out_a, subj_a), (e_b, def_b, cond_b, out_b, subj_b) = (
+            self._setup_pair()
+        )
+        template = RequiredEvidenceTemplate(evidence_types=(1, 2, 3))
+
+        # A: fire_rule, B: fire_rule_with_trace
+        claim_id_a = fire_rule(
+            e_a, def_a, cond_a, out_a,
+            subject_id=subj_a, context=self.CTX_MATCH,
+            required_evidence=template,
+        )
+        trace_b = fire_rule_with_trace(
+            e_b, def_b, cond_b, out_b,
+            subject_id=subj_b, context=self.CTX_MATCH,
+            required_evidence=template,
+        )
+
+        # 동일한 claim_id 가 만들어졌어야 함 (각 engine 의 첫 claim 이므로 같은 id=1)
+        assert claim_id_a == trace_b.claim_id
+
+        # 동일한 firing_count
+        assert e_a.get_rule_stats(1, 1).firing_count == e_b.get_rule_stats(1, 1).firing_count == 1
+
+        # 동일한 gap 개수
+        assert len(e_a.gaps_for_claim(claim_id_a)) == len(e_b.gaps_for_claim(trace_b.claim_id))  # type: ignore[arg-type]
+
+    def test_same_state_change_on_fire_false(self) -> None:
+        (e_a, def_a, cond_a, out_a, subj_a), (e_b, def_b, cond_b, out_b, subj_b) = (
+            self._setup_pair()
+        )
+
+        result_a = fire_rule(
+            e_a, def_a, cond_a, out_a,
+            subject_id=subj_a, context=self.CTX_NO_MATCH,
+        )
+        trace_b = fire_rule_with_trace(
+            e_b, def_b, cond_b, out_b,
+            subject_id=subj_b, context=self.CTX_NO_MATCH,
+        )
+
+        # 둘 다 발화 안 함
+        assert result_a is None
+        assert trace_b.fired is False
+        assert trace_b.claim_id is None
+
+        # 둘 다 firing_count 0
+        assert e_a.get_rule_stats(1, 1).firing_count == 0
+        assert e_b.get_rule_stats(1, 1).firing_count == 0
+
+
+class TestFireRuleWithTraceYamlEndToEnd:
+    YAML_TEXT = """
+id: RULE_DOMAIN_SSH_001
+version: 1
+maturity: experimental
+reliability:
+  prior_confidence: 0.55
+condition:
+  all:
+    - field: port
+      op: eq
+      value: 22
+    - field: banner
+      op: contains
+      value: "OpenSSH_7."
+output:
+  claim:
+    type: outdated_ssh_candidate
+    status: candidate
+    base_confidence: 0.55
+    reason_code: OPENSSH_7_SERIES_BANNER
+    required_evidence:
+      - exact_openssh_version
+      - os_family
+      - package_backport_status
+"""
+
+    def test_full_chain_with_trace(self) -> None:
+        engine = Engine()
+        spec = load_rule_spec_from_yaml(self.YAML_TEXT)
+        definition = register_rule_spec(engine, spec)
+        condition = compile_rule_condition(spec)
+        output = compile_rule_output(spec)
+        required = compile_required_evidence(spec)
+        subject_id = engine.add_entity(entity_type=1)
+
+        ctx = {"port": 22, "banner": "OpenSSH_7.4p1"}
+        trace = fire_rule_with_trace(
+            engine, definition, condition, output,
+            subject_id=subject_id, context=ctx,
+            required_evidence=required,
+        )
+
+        assert trace.fired is True
+        assert trace.rule_id == 1
+        assert trace.rule_version == 1
+        assert trace.subject_id == subject_id
+        assert trace.claim_id is not None
+        assert len(trace.gap_ids) == 3
+        # condition_trace 가 평가된 결과까지 보존
+        assert trace.condition_trace.result is True
+        # 실제 engine 상태도 일치
+        assert engine.get_rule_stats(1, 1).firing_count == 1
+        assert len(engine.gaps_for_claim(trace.claim_id)) == 3
