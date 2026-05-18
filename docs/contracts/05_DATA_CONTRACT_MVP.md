@@ -859,3 +859,163 @@ RuleOutputTemplate
 - true 면 RuleOutputTemplate + caller 제공 subject_id 로 engine.add_claim
 - RuleStats firing_count 증분
 ```
+
+---
+
+## 14. Required evidence → Gap (MVP)
+
+룰이 firing 됐을 때 (`condition` true), `output.claim.required_evidence` 에 명시된 evidence type 들을 각각 `Gap` 으로 생성한다. 이 섹션은 17~19차 작업의 전제.
+
+§13 의 `compile_rule_output` 은 4개 핵심 필드만 보고 `required_evidence` 는 무시한다. 이번 결정은 `required_evidence` 를 **별도 compile 함수** (`compile_required_evidence`) 로 처리하는 흐름을 고정한다 — output template 의 책임이 비대해지지 않도록.
+
+### MVP shape
+
+```yaml
+output:
+  claim:
+    type: outdated_ssh_candidate
+    status: candidate
+    base_confidence: 0.55
+    reason_code: OPENSSH_7_SERIES_BANNER
+    required_evidence:           # ← 14차 scope
+      - exact_openssh_version
+      - os_family
+      - package_backport_status
+```
+
+- 리스트의 각 원소는 **EvidenceType 매핑 가능한 문자열**
+- 빈 리스트 또는 누락 = required_evidence 없음 → Gap 0개
+
+### 결정사항
+
+1. **각 string → 별개 Gap** — list 원소 N개면 Gap N개 생성
+2. **Gap.claim_id = 방금 생성된 Claim 의 id** — 명시적 link (Gap struct 의 기존 claim_id 슬롯 사용)
+3. **Gap.type = `GAP_TYPE_MISSING_EVIDENCE`** (단일 상수, MVP 는 한 종류)
+4. **Gap.required_evidence_type = `REQUIRED_EVIDENCE_MAP` lookup**
+5. **Gap.severity = `ScoreValue(0.5)`** (MVP 고정 default — 차별화는 별도 결정점)
+6. **Gap.created_by_rule = rule_id** (해당 룰 ID)
+7. **condition false 시 Gap 생성 0** — Claim 도 없으니 Gap 도 없음
+8. **중복 방지 안 함** — 같은 룰이 여러 번 fire 되면 Gap 도 여러 번 생성됨 (dedup 은 별도 결정점)
+9. **fire_rule 반환값 unchanged** — `claim_id | None`. Gap ID 들은 `engine.gaps_for_claim(claim_id)` 로 조회
+
+### 매핑 (static, §12 / §13 패턴)
+
+```python
+# 위치 추천: ragcore/rule_gap.py (18차 신규)
+
+REQUIRED_EVIDENCE_MAP: Mapping[str, int] = {
+    "exact_openssh_version":   1,
+    "os_family":               2,
+    "package_backport_status": 3,
+    # 새 evidence type: PR review 로 충돌 검토 후 한 줄 추가
+}
+
+GAP_TYPE_MISSING_EVIDENCE = 1
+DEFAULT_GAP_SEVERITY = 0.5
+```
+
+각 매핑의 무결성 (값 범위 1..65535 / 중복 / 빈 키 / bool 차단) 은 §12 RULE_ID_MAP 패턴 그대로 모듈 로딩 시 정적 검증.
+
+`GAP_TYPE_MISSING_EVIDENCE` 는 MVP 단일 상수 — 다른 GapType 은 별도 결정점.
+
+### Compile (18차)
+
+```python
+# ragcore/rule_gap.py
+
+@dataclass(frozen=True)
+class RequiredEvidenceTemplate:
+    evidence_types: tuple[int, ...]   # REQUIRED_EVIDENCE_MAP lookup 결과들
+
+
+def compile_required_evidence(spec: RuleSpec) -> RequiredEvidenceTemplate: ...
+```
+
+동작:
+- `spec.raw["output"]["claim"]["required_evidence"]` 가 없거나 빈 리스트 → `evidence_types = ()`
+- 각 원소 string → `REQUIRED_EVIDENCE_MAP` lookup → uint16
+- 결과는 frozen tuple (순서 보존)
+
+`RuleSpec.id` 가 등록된 룰인지 등은 검증 안 함 — 다른 단계 책임.
+
+### Runtime 확장 (19차)
+
+```python
+# rule_runtime.py — fire_rule 시그니처 확장
+
+def fire_rule(
+    engine: Engine,
+    definition: RuleDefinition,
+    condition: ConditionTree,
+    output: RuleOutputTemplate,
+    *,
+    subject_id: int,
+    context: Mapping[str, Any],
+    required_evidence: RequiredEvidenceTemplate | None = None,  # 신규
+) -> int | None: ...
+```
+
+동작 변경:
+- `required_evidence` 인자 추가, 기본값 `None`
+- condition true 시 claim 생성 직후 각 evidence_type 마다 `engine.add_gap` 호출
+- `required_evidence=None` 또는 `evidence_types=()` 면 Gap 생성 안 함 (16차 동작과 동일)
+
+```python
+# pseudo-code
+if evaluate_condition(...):
+    claim_id = engine.add_claim(...)
+    if required_evidence is not None:
+        for ev_type in required_evidence.evidence_types:
+            engine.add_gap(
+                claim_id=claim_id,
+                gap_type=GAP_TYPE_MISSING_EVIDENCE,
+                required_evidence_type=ev_type,
+                severity=DEFAULT_GAP_SEVERITY,
+                rule_id=definition.id,
+            )
+    engine.update_rule_stats(..., firing_delta=1)
+    return claim_id
+return None
+```
+
+기본값 `None` 덕분에 기존 16차 호출자는 변경 없이 동작 — 하위 호환.
+
+### Error 분기
+
+| 상황 | 결과 |
+|---|---|
+| `required_evidence` 누락 또는 `[]` | Gap 0개 (정상) |
+| `required_evidence` 가 list 아님 | `TypeError` |
+| 원소가 string 아님 | `TypeError` |
+| 원소가 `REQUIRED_EVIDENCE_MAP` 에 없음 | `ValueError("unknown evidence type: ...")` |
+| 매핑 정합성 위반 | 모듈 로딩 `AssertionError` |
+
+### Out of scope (MVP)
+
+- **Gap severity 차별화** — yaml 에서 per-evidence severity 표기. MVP 는 `0.5` 고정.
+- **다양한 GapType** — `MISSING_EVIDENCE` 외 (예: `STALE_EVIDENCE`, `AMBIGUOUS_EVIDENCE`). 별도 결정점.
+- **Gap 중복 방지** — 같은 `(claim_subject, required_evidence_type)` dedup. 별도 merge 단계.
+- **Cross-claim Gap** — 여러 claim 의 공통 gap 합치기.
+- **Gap 자체에 confidence / reason_code** — gap 메타 확장.
+- **Gap → Action 연결** — gap 이 어떤 도구/도메인 action 으로 메워질 수 있는지.
+- **`compile_rule_output` 통합** — required_evidence 처리는 의도적으로 별도 함수로 분리.
+
+### YAML loader 동작 변경 없음
+
+`load_rule_spec` / `load_rule_spec_from_yaml` / `compile_rule_output` 모두 변경 없음. `required_evidence` 는 여전히 `spec.raw["output"]["claim"]["required_evidence"]` 에 보존만 됨. 18차에서 `compile_required_evidence(spec)` 가 처음 검증.
+
+### Position in flow
+
+```text
+YAML
+  ↓ load_rule_spec_from_yaml
+RuleSpec
+  ↓ register_rule_spec
+  ↓ compile_rule_condition       → ConditionTree
+  ↓ compile_rule_output          → RuleOutputTemplate
+  ↓ compile_required_evidence    → RequiredEvidenceTemplate    ⟵ 18차 신규
+  ↓ fire_rule(..., required_evidence=evidence_template)        ⟵ 19차 확장
+Claim + 0 or N Gaps
+```
+
+19차 끝나면 룰 firing 의 출력이 완성된다 — claim + 필요한 gaps + firing_count.
