@@ -12,7 +12,7 @@ from ragcore.condition import (
     load_condition_tree,
 )
 from ragcore.engine import Engine
-from ragcore.rule_compile import compile_rule_definition
+from ragcore.rule_compile import compile_rule_definition, register_rule_spec
 from ragcore.rule_loader import (
     RuleSpec,
     compile_rule_condition,
@@ -82,4 +82,5 @@ __all__ = [
     "load_condition_tree",
     "load_rule_spec",
     "load_rule_spec_from_yaml",
+    "register_rule_spec",
 ]

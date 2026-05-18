@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from ragcore.engine import Engine
 from ragcore.rule_loader import RuleSpec
 from ragcore.types import (
     RULE_MATURITY_DEPRECATED,
@@ -89,6 +90,25 @@ def compile_rule_definition(spec: RuleSpec) -> RuleDefinition:
         maturity=RULE_MATURITY_MAP[spec.maturity],
         prior_confidence=spec.prior_confidence,
     )
+
+
+def register_rule_spec(engine: Engine, spec: RuleSpec) -> RuleDefinition:
+    """Compile a ``RuleSpec`` and register the resulting ``RuleDefinition`` in ``engine``.
+
+    Helper for the common path: header-validated spec → core-typed definition
+    → Engine registry. ``RuleStats`` 가 ``Engine.register_rule`` 안에서
+    자동으로 초기화된다.
+
+    아직 rule firing 은 아님 — 단순 compile + register 만. condition tree
+    결합, output claim 파싱, fire_rule 은 모두 별도 결정점이다.
+
+    Raises:
+        ValueError: ``spec`` 이 unknown id/maturity 를 가짐 (compile 단계),
+            또는 같은 ``(rule_id, rule_version)`` 이 이미 등록됨 (register 단계).
+    """
+    definition = compile_rule_definition(spec)
+    engine.register_rule(definition)
+    return definition
 
 
 # 모듈 로딩 시 즉시 검증 — RULE_ID_MAP 손상은 import 시점에 발견.
