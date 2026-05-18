@@ -612,3 +612,106 @@ assert trace.children[1].reason == TRACE_REASON_MISMATCH
 ### Loader 동작 변경 없음
 
 `load_condition_tree` 는 동일하게 동작한다. trace 는 evaluator 단계의 새 함수일 뿐, ConditionTree 구조나 loader 책임에는 영향이 없다.
+
+---
+
+## 12. RuleId mapping (MVP)
+
+`RuleSpec.id` 는 문자열이다 (예: `"RULE_DOMAIN_SSH_001"`). `RuleDefinition.id` 는 `uint16` 이다. 두 표현 사이의 매핑 규칙을 여기서 고정한다.
+
+`RuleSpec.maturity` 도 같은 문제 — 문자열 (`"experimental"`) ↔ 정수 (`RULE_MATURITY_*`).
+
+### 결정사항
+
+1. **Static mapping table** — 코드 안에 dict 로 둔다 (외부 파일 / hash / 동적 등록 미사용 MVP)
+2. **Compile 시점 1회 lookup** — `compile_rule_definition(spec)` 이 매핑 적용
+3. **Unknown id → `ValueError`** — 매핑에 없는 문자열은 거부 (strict)
+4. **Unknown maturity → `ValueError`** — 알려진 3개 값 외 거부
+5. **0 reserved / 1..65535 range** — `RULE_ID_MAP` 의 값 범위 (RuleVersion 과 동일 규칙)
+6. **모듈 로딩 시 정적 검증** — id 값 범위 위반 / 중복은 import 시점에 거부
+
+### 매핑 구조
+
+```python
+# 위치 추천: ragcore/rule_loader.py (혹은 ragcore/rule_compile.py)
+
+from collections.abc import Mapping
+from ragcore.types import (
+    RULE_MATURITY_DEPRECATED,
+    RULE_MATURITY_EXPERIMENTAL,
+    RULE_MATURITY_STABLE,
+)
+
+RULE_ID_MAP: Mapping[str, int] = {
+    "RULE_DOMAIN_SSH_001": 1,
+    # 새 룰은 여기에 한 줄 추가, PR review 에서 충돌 검토
+}
+
+RULE_MATURITY_MAP: Mapping[str, int] = {
+    "experimental": RULE_MATURITY_EXPERIMENTAL,  # 0
+    "stable":       RULE_MATURITY_STABLE,        # 1
+    "deprecated":   RULE_MATURITY_DEPRECATED,    # 2
+}
+```
+
+### Compile 흐름
+
+```python
+def compile_rule_definition(spec: RuleSpec) -> RuleDefinition: ...
+```
+
+동작:
+
+```text
+spec.id (str)                      → RULE_ID_MAP lookup → uint16 RuleId
+spec.version (int)                 → 그대로 (이미 1..65535 검증됨)
+spec.maturity (str)                → RULE_MATURITY_MAP lookup → uint8 RuleMaturity
+spec.prior_confidence (ScoreValue) → 그대로
+```
+
+### Error 분기
+
+| 상황 | 결과 |
+|---|---|
+| `spec.id` 가 `RULE_ID_MAP` 에 없음 | `ValueError("unknown rule id: {id}")` |
+| `spec.maturity` 가 `RULE_MATURITY_MAP` 에 없음 | `ValueError("unknown maturity: {maturity}")` |
+| `RULE_ID_MAP` 값이 `<1` 또는 `>65535` | 모듈 로딩 시 assertion 실패 |
+| `RULE_ID_MAP` 값에 중복 (다른 키가 같은 int) | 모듈 로딩 시 assertion 실패 |
+
+### 새 룰 추가 절차
+
+1. yaml 룰 정의에 `id: NEW_RULE_NAME` 사용
+2. `RULE_ID_MAP` 에 한 줄 추가: `"NEW_RULE_NAME": <next_unused_int>`
+3. PR review 에서 id 값 충돌 / 의미 검토 (사람이 검토하는 게 핵심)
+4. `compile_rule_definition` 호출 시 자동으로 새 매핑 적용
+
+### Why static map (MVP)
+
+| 후보 | 트레이드오프 |
+|---|---|
+| **Static map (선택)** | 단순. 코드에서 grep 가능. PR review 로 충돌 검토. 부담 최소. |
+| 외부 YAML registry | 룰 추가 시 두 파일 동기화. 로딩 복잡도 ↑. MVP 부담. |
+| Hash 기반 자동 매핑 | id 안정성 X (룰 이름 바뀌면 키 충돌 가능). 추적 어려움. |
+| 동적 등록 (`Engine.register_rule_id`) | strict mode 결정 필요. Engine 책임 비대. 다음 결정점. |
+
+### Out of scope (MVP)
+
+- 동적 룰 등록 / hot reload
+- 외부 매핑 파일 로딩 (yaml/json registry)
+- Hash / UUID 기반 자동 id 생성
+- 룰 이름 변경 시 alias 처리
+- Multi-tenant 룰 namespace
+- `Engine.register_rule` 자동 호출 (12차 compile 만 함, Engine 연동은 별도 결정점)
+
+### Compile 모듈 위치 (선택지)
+
+12차 구현 시점에 둘 중 선택:
+
+- **옵션 L** — `ragcore/rule_loader.py` 에 `compile_rule_definition` + 매핑 테이블 추가. 단순.
+- **옵션 C** — `ragcore/rule_compile.py` 신규 파일로 분리. loader (header validation) 와 compile (string → int 매핑) 책임 명시적 분리.
+
+추천은 **옵션 C** (책임 분리). 12차 구현 직전 다시 확인.
+
+### Loader 동작 변경 없음
+
+`load_rule_spec` / `load_rule_spec_from_yaml` / `compile_rule_condition` 모두 동작 변경 없음. 이 결정은 다음 단계 (12차 `compile_rule_definition` 구현) 의 전제만 고정.
