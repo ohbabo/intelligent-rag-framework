@@ -29,6 +29,12 @@ VALID_COMBINATORS = frozenset({"all", "any"})
 REJECTED_COMBINATORS = frozenset({"not"})  # 명시적 deferral
 PREDICATE_KEYS = frozenset({"field", "op", "value"})
 
+# Trace reason discriminators (per docs/contracts/05 §11)
+TRACE_REASON_MATCH = "match"
+TRACE_REASON_MISMATCH = "mismatch"
+TRACE_REASON_MISSING_FIELD = "missing_field"
+TRACE_REASON_TYPE_MISMATCH = "type_mismatch"
+
 
 @dataclass(frozen=True)
 class Predicate:
@@ -44,6 +50,33 @@ class Combinator:
 
 
 ConditionTree = Predicate | Combinator
+
+
+@dataclass(frozen=True)
+class PredicateTrace:
+    """Debug-layer record of one predicate evaluation.
+
+    `actual` 과 `actual_present` 분리: context 의 명시적 `None` 값과
+    "field 누락" 을 구별하기 위함.
+    """
+
+    field: str
+    op: str
+    expected: Any
+    actual: Any
+    actual_present: bool
+    result: bool
+    reason: str  # TRACE_REASON_*
+
+
+@dataclass(frozen=True)
+class CombinatorTrace:
+    kind: str  # "all" or "any"
+    children: tuple[Any, ...]  # tuple[Trace, ...] — recursive
+    result: bool
+
+
+Trace = PredicateTrace | CombinatorTrace
 
 
 # =====================================================================
@@ -225,3 +258,116 @@ def _evaluate_combinator(comb: Combinator, context: Mapping[str, Any]) -> bool:
     if comb.kind == "any":
         return any(evaluate_condition(child, context) for child in comb.children)
     raise ValueError(f"unknown combinator kind at eval time: {comb.kind!r}")
+
+
+# =====================================================================
+# Trace — debug/explain layer (no short-circuit, full evaluation)
+# =====================================================================
+
+def evaluate_condition_with_trace(
+    tree: ConditionTree, context: Mapping[str, Any]
+) -> Trace:
+    """Evaluate condition and return a Trace tree explaining the result.
+
+    `evaluate_condition` 과 의도적으로 비대칭:
+    - **short-circuit 안 함**. 모든 자식을 평가해 완전한 설명을 제공.
+    - 판단 (judgment) 이 아니라 debug/explain layer.
+    - 같은 결과를 보장하되 (`trace.result == evaluate_condition(tree, ctx)`)
+      더 많은 정보 (field 누락 / type mismatch / mismatch 구분) 제공.
+    """
+    if isinstance(tree, Predicate):
+        return _trace_predicate(tree, context)
+    if isinstance(tree, Combinator):
+        return _trace_combinator(tree, context)
+    raise TypeError(f"unexpected tree node type: {type(tree).__name__}")
+
+
+def _trace_predicate(
+    pred: Predicate, context: Mapping[str, Any]
+) -> PredicateTrace:
+    if pred.field not in context:
+        return PredicateTrace(
+            field=pred.field,
+            op=pred.op,
+            expected=pred.value,
+            actual=None,
+            actual_present=False,
+            result=False,
+            reason=TRACE_REASON_MISSING_FIELD,
+        )
+
+    actual = context[pred.field]
+    expected = pred.value
+    result, reason = _eval_op_with_reason(pred.op, actual, expected)
+    return PredicateTrace(
+        field=pred.field,
+        op=pred.op,
+        expected=expected,
+        actual=actual,
+        actual_present=True,
+        result=result,
+        reason=reason,
+    )
+
+
+def _eval_op_with_reason(op: str, actual: Any, expected: Any) -> tuple[bool, str]:
+    """Return (result, reason) for one predicate evaluation step.
+
+    `_evaluate_predicate` 의 fast path 와 같은 분류 규칙을 따르되,
+    실패 원인을 reason 으로 분기해 표시한다.
+    """
+    if op == "eq":
+        result = actual == expected
+        return result, TRACE_REASON_MATCH if result else TRACE_REASON_MISMATCH
+    if op == "ne":
+        result = actual != expected
+        return result, TRACE_REASON_MATCH if result else TRACE_REASON_MISMATCH
+    if op in NUMERIC_OPS:
+        if not _is_numeric(actual) or not _is_numeric(expected):
+            return False, TRACE_REASON_TYPE_MISMATCH
+        if op == "lt":
+            result = actual < expected
+        elif op == "le":
+            result = actual <= expected
+        elif op == "gt":
+            result = actual > expected
+        else:  # "ge"
+            result = actual >= expected
+        return result, TRACE_REASON_MATCH if result else TRACE_REASON_MISMATCH
+    if op == "contains":
+        return _contains_with_reason(actual, expected)
+    raise ValueError(f"unknown op at eval time: {op!r}")
+
+
+def _contains_with_reason(actual: Any, expected: Any) -> tuple[bool, str]:
+    if isinstance(actual, str):
+        if not isinstance(expected, str):
+            return False, TRACE_REASON_TYPE_MISMATCH
+        result = expected in actual
+        return result, TRACE_REASON_MATCH if result else TRACE_REASON_MISMATCH
+    if isinstance(actual, (list, tuple)):
+        result = expected in actual
+        return result, TRACE_REASON_MATCH if result else TRACE_REASON_MISMATCH
+    return False, TRACE_REASON_TYPE_MISMATCH
+
+
+def _trace_combinator(
+    comb: Combinator, context: Mapping[str, Any]
+) -> CombinatorTrace:
+    # Full evaluation, NO short-circuit — all children must be traced.
+    children_traces: tuple[Trace, ...] = tuple(
+        evaluate_condition_with_trace(child, context) for child in comb.children
+    )
+    if comb.kind == "all":
+        result = all(t.result for t in children_traces)
+    elif comb.kind == "any":
+        result = any(t.result for t in children_traces)
+    else:
+        raise ValueError(
+            f"unknown combinator kind at eval time: {comb.kind!r}"
+        )
+    return CombinatorTrace(
+        kind=comb.kind,
+        children=children_traces,
+        result=result,
+    )
