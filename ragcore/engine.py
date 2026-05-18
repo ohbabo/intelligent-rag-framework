@@ -11,6 +11,7 @@ from dataclasses import replace
 from ragcore.types import (
     CLAIM_STATUS_CANDIDATE,
     CLAIM_STATUS_CONFIRMED,
+    CLAIM_STATUS_REFUTED,
     KIND_CLAIM,
     KIND_ENTITY,
     KIND_EVIDENCE,
@@ -46,6 +47,8 @@ class Engine:
         self._claim_gap_refs: dict[int, set[int]] = {}
         # PR5 §17: gap_id -> evidence_id (first registering, no overwrite).
         self._gap_resolutions: dict[int, int] = {}
+        # PR7 §19: claim_id -> set of contradicting evidence_ids.
+        self._contradictions: dict[int, set[int]] = {}
 
     def _allocate_id(self, kind: str) -> int:
         next_id = self._next_id.get(kind, 0) + 1
@@ -350,6 +353,75 @@ class Engine:
         if not all(self.gap_resolution(g.id) is not None for g in gaps):
             return False
         self._claims[claim_id] = replace(claim, status=CLAIM_STATUS_CONFIRMED)
+        return True
+
+    # ---- Claim refutation (PR7 §19) ---------------------------------------
+
+    def register_contradiction(self, claim_id: int, evidence_id: int) -> bool:
+        """Register an explicit contradiction relation: evidence contradicts claim.
+
+        Returns:
+            True  — 이번 호출로 새로 등록됨.
+            False — (claim_id, evidence_id) 가 이미 등록돼 있음 (idempotent no-op).
+
+        Raises:
+            KeyError: unknown claim_id or unknown evidence_id.
+
+        Notes (§19.4):
+            - Cross-claim 허용: ``evidence.claim_id == claim_id`` 강제 안 함.
+            - Target status 무관: confirmed / refuted claim 에도 등록 가능
+              (데이터 등록과 lifecycle 결정은 분리).
+            - No semantic inference — 호출자 책임.
+        """
+        if claim_id not in self._claims:
+            raise KeyError(f"unknown claim_id: {claim_id}")
+        if evidence_id not in self._evidences:
+            raise KeyError(f"unknown evidence_id: {evidence_id}")
+        bucket = self._contradictions.setdefault(claim_id, set())
+        if evidence_id in bucket:
+            return False
+        bucket.add(evidence_id)
+        return True
+
+    def contradictions_for_claim(self, claim_id: int) -> tuple[int, ...]:
+        """Return contradicting evidence_ids for the claim.
+
+        Returns:
+            evidence_id 오름차순 tuple. 없으면 빈 tuple.
+
+        Raises:
+            KeyError: unknown claim_id.
+        """
+        if claim_id not in self._claims:
+            raise KeyError(f"unknown claim_id: {claim_id}")
+        return tuple(sorted(self._contradictions.get(claim_id, set())))
+
+    def refute_claim_if_ready(self, claim_id: int) -> bool:
+        """Transition candidate → refuted if at least one contradiction is registered.
+
+        전이 조건 (§19.5):
+            - ``claim.status == CLAIM_STATUS_CANDIDATE``
+            - ``len(contradictions_for_claim(claim_id)) >= 1``
+
+        Returns:
+            True  — 이번 호출로 candidate → refuted 전이.
+            False — 전이 없음 (조건 불충족 / 이미 confirmed / 이미 refuted).
+
+        Raises:
+            KeyError: unknown claim_id.
+
+        Note:
+            Gap 상태 (unresolved / resolved) 는 이 결정에 영향 없음 — §19.2 핵심
+            명제: "증거 부족 ≠ 반박, 반박은 명시적 contradiction 만이 trigger".
+        """
+        if claim_id not in self._claims:
+            raise KeyError(f"unknown claim_id: {claim_id}")
+        claim = self._claims[claim_id]
+        if claim.status != CLAIM_STATUS_CANDIDATE:
+            return False
+        if not self._contradictions.get(claim_id):
+            return False
+        self._claims[claim_id] = replace(claim, status=CLAIM_STATUS_REFUTED)
         return True
 
     # ---- Rule registry -----------------------------------------------------
