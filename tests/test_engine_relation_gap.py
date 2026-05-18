@@ -14,6 +14,7 @@ from ragcore import (
     KIND_GAP,
     KIND_OBSERVATION,
     Engine,
+    ScoreValue,
 )
 
 
@@ -356,6 +357,184 @@ class TestAddGapDedup:
         # 두 번째 add_gap 호출이 dedup hit — Gap.claim_id 갱신되지 않음
         gap = engine.get_gap(gap_id)
         assert gap.claim_id == claim_a
+
+
+class TestAddGapDedupKeyFields:
+    """§16 dedup key 의 각 필드가 의도대로 작동하는지 invariant 잠금.
+
+    dedup key = (subject_id, created_by_rule, gap_type, required_evidence_type)
+    명시적 제외: rule_version, severity
+    """
+
+    def _claim_for(
+        self, engine: Engine, entity_id: int, *,
+        claim_type: int = 1, rule_id: int = 7, rule_version: int = 1,
+    ) -> int:
+        return engine.add_claim(
+            subject_id=entity_id, claim_type=claim_type,
+            rule_id=rule_id, rule_version=rule_version, reason_code=0,
+        )
+
+    def test_different_subject_creates_new_gap(self) -> None:
+        """subject_id 가 dedup key 의 첫 필드 — 다른 entity 는 별개 gap."""
+        engine = Engine()
+        ent_a = engine.add_entity(entity_type=1)
+        ent_b = engine.add_entity(entity_type=1)
+        claim_a = self._claim_for(engine, ent_a)
+        claim_b = self._claim_for(engine, ent_b)
+
+        gap_a = engine.add_gap(
+            claim_id=claim_a, gap_type=1,
+            required_evidence_type=42, severity=0.5, rule_id=7,
+        )
+        gap_b = engine.add_gap(
+            claim_id=claim_b, gap_type=1,
+            required_evidence_type=42, severity=0.5, rule_id=7,
+        )
+        assert gap_a != gap_b
+
+    def test_different_rule_creates_new_gap(self) -> None:
+        """created_by_rule (rule_id) 이 dedup key — 다른 룰은 별개."""
+        engine = Engine()
+        entity_id = engine.add_entity(entity_type=1)
+        claim_x = self._claim_for(engine, entity_id, rule_id=7)
+        claim_y = self._claim_for(engine, entity_id, claim_type=2, rule_id=8)
+
+        gap_x = engine.add_gap(
+            claim_id=claim_x, gap_type=1,
+            required_evidence_type=42, severity=0.5, rule_id=7,
+        )
+        gap_y = engine.add_gap(
+            claim_id=claim_y, gap_type=1,
+            required_evidence_type=42, severity=0.5, rule_id=8,
+        )
+        assert gap_x != gap_y
+
+    def test_different_gap_type_creates_new_gap(self) -> None:
+        """gap_type 이 dedup key — 같은 evidence_type 이라도 다른 gap_type 은 별개."""
+        engine = Engine()
+        entity_id = engine.add_entity(entity_type=1)
+        claim_id = self._claim_for(engine, entity_id)
+
+        gap1 = engine.add_gap(
+            claim_id=claim_id, gap_type=1,
+            required_evidence_type=42, severity=0.5, rule_id=7,
+        )
+        gap2 = engine.add_gap(
+            claim_id=claim_id, gap_type=2,
+            required_evidence_type=42, severity=0.5, rule_id=7,
+        )
+        assert gap1 != gap2
+
+    def test_different_required_evidence_type_creates_new_gap(self) -> None:
+        """required_evidence_type 이 dedup key."""
+        engine = Engine()
+        entity_id = engine.add_entity(entity_type=1)
+        claim_id = self._claim_for(engine, entity_id)
+
+        gap1 = engine.add_gap(
+            claim_id=claim_id, gap_type=1,
+            required_evidence_type=42, severity=0.5, rule_id=7,
+        )
+        gap2 = engine.add_gap(
+            claim_id=claim_id, gap_type=1,
+            required_evidence_type=43, severity=0.5, rule_id=7,
+        )
+        assert gap1 != gap2
+
+    def test_severity_excluded_from_dedup_key(self) -> None:
+        """severity 는 정체성 아닌 우선순위 속성 — 다른 severity 라도 같은 key 면 reuse."""
+        engine = Engine()
+        entity_id = engine.add_entity(entity_type=1)
+        claim_a = self._claim_for(engine, entity_id)
+        claim_b = self._claim_for(engine, entity_id, claim_type=2)
+
+        gap_a = engine.add_gap(
+            claim_id=claim_a, gap_type=1,
+            required_evidence_type=42, severity=0.3, rule_id=7,
+        )
+        gap_b = engine.add_gap(
+            claim_id=claim_b, gap_type=1,
+            required_evidence_type=42, severity=0.9, rule_id=7,
+        )
+        assert gap_a == gap_b
+
+    def test_severity_of_first_registering_call_preserved_on_dedup(self) -> None:
+        """severity merge 금지 — 기존 Gap 의 severity 유지 (§16 명시)."""
+        engine = Engine()
+        entity_id = engine.add_entity(entity_type=1)
+        claim_a = self._claim_for(engine, entity_id)
+        claim_b = self._claim_for(engine, entity_id, claim_type=2)
+
+        gap_id = engine.add_gap(
+            claim_id=claim_a, gap_type=1,
+            required_evidence_type=42, severity=0.3, rule_id=7,
+        )
+        # 두 번째 호출은 더 높은 severity 지만 무시되어야 함
+        engine.add_gap(
+            claim_id=claim_b, gap_type=1,
+            required_evidence_type=42, severity=0.9, rule_id=7,
+        )
+        assert engine.get_gap(gap_id).severity == ScoreValue(0.3)
+
+
+class TestAddGapDedupConsistency:
+    """§16 — public API ↔ private state 일관성, engine 격리."""
+
+    def test_gaps_for_claim_matches_internal_claim_gap_refs(self) -> None:
+        """gaps_for_claim 결과 ≡ _claim_gap_refs 의 gap 목록 (§16 invariant).
+
+        Private 필드 직접 검증 — 계약 잠금 목적으로 허용된 단일 예외.
+        """
+        engine = Engine()
+        entity_id = engine.add_entity(entity_type=1)
+        claim_id = engine.add_claim(
+            subject_id=entity_id, claim_type=1,
+            rule_id=7, rule_version=1, reason_code=0,
+        )
+        engine.add_gap(
+            claim_id=claim_id, gap_type=1,
+            required_evidence_type=1, severity=0.5, rule_id=7,
+        )
+        engine.add_gap(
+            claim_id=claim_id, gap_type=1,
+            required_evidence_type=2, severity=0.5, rule_id=7,
+        )
+
+        public_ids = {g.id for g in engine.gaps_for_claim(claim_id)}
+        private_ids = engine._claim_gap_refs[claim_id]
+        assert public_ids == private_ids
+
+    def test_dedup_index_isolated_per_engine_instance(self) -> None:
+        """두 Engine 인스턴스가 dedup index 를 공유하지 않음."""
+        engine_a = Engine()
+        engine_b = Engine()
+
+        ent_a = engine_a.add_entity(entity_type=1)
+        ent_b = engine_b.add_entity(entity_type=1)
+        claim_a = engine_a.add_claim(
+            subject_id=ent_a, claim_type=1, rule_id=7,
+            rule_version=1, reason_code=0,
+        )
+        claim_b = engine_b.add_claim(
+            subject_id=ent_b, claim_type=1, rule_id=7,
+            rule_version=1, reason_code=0,
+        )
+
+        gap_a = engine_a.add_gap(
+            claim_id=claim_a, gap_type=1,
+            required_evidence_type=42, severity=0.5, rule_id=7,
+        )
+        # engine_b 도 같은 key 로 등록 가능 (independent state)
+        gap_b = engine_b.add_gap(
+            claim_id=claim_b, gap_type=1,
+            required_evidence_type=42, severity=0.5, rule_id=7,
+        )
+        # 두 engine 모두 첫 gap 이므로 gap_id == 1, 하지만 다른 Engine
+        assert gap_a == 1
+        assert gap_b == 1
+        # 다른 engine 의 _gap_dedup_index 는 독립
+        assert engine_a._gap_dedup_index is not engine_b._gap_dedup_index
 
 
 class TestGapsForClaim:
