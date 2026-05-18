@@ -21,7 +21,7 @@ typedef uint16_t ClaimStatus;
 typedef uint16_t EvidenceType;
 typedef uint16_t RelationType;
 typedef uint16_t RuleId;
-typedef uint16_t RuleVersion;       // packed major*100 + minor
+typedef uint16_t RuleVersion;       // monotonic uint16 (1~65535); semver는 metadata only — see §8.3
 typedef uint16_t RuleMaturity;      // 0=experimental, 1=stable, 2=deprecated
 typedef uint16_t ReasonCode;
 typedef uint16_t GapType;
@@ -262,6 +262,31 @@ prior_confidence = 0.50, base_confidence = 0.80
 
 Phase 1 Engine은 등록되지 않은 `(rule_id, rule_version)`을 `add_claim`에서 허용한다 (advisory). 테스트와 초기 실험 부담을 줄이기 위함이다. Rule Engine 단계에서 strict mode가 옵션으로 들어간다.
 
+## 8.3 RuleVersion convention
+
+`RuleVersion` is a monotonic `uint16` integer used by the engine to distinguish rule behavior versions.
+
+- Valid range: `1..65535`
+- `0` is reserved for invalid/unset state.
+- The engine treats `(rule_id, rule_version)` as the stable rule identity.
+- RuleVersion is not a semantic version.
+- Semver-like labels such as `0.1.0` may be kept only as human-readable metadata or comments.
+- YAML rule definitions MUST use integer `version`.
+
+A rule version MUST be bumped when the rule's firing behavior changes, including condition logic, claim generation, scoring/confidence behavior, or output semantics.
+
+A rule version SHOULD NOT be bumped for comment-only, description-only, or documentation-only changes.
+
+### YAML example
+
+```yaml
+rule_id: RULE_DOMAIN_SSH_001
+version: 1
+# human_label: 0.1.0
+```
+
+핵심 문장: **RuleVersion은 문서 릴리즈 버전이 아니라, rule firing behavior의 버전이다.**
+
 ---
 
 ## 9. MVP Rules
@@ -301,7 +326,8 @@ RULE_ACTION_001 Gap-to-Check Action Selection
 
 ```yaml
 id: RULE_DOMAIN_SSH_001
-version: 0.1.0
+version: 1
+# human_label: 0.1.0
 domain: security.ssh
 maturity: experimental
 author: core
@@ -355,7 +381,7 @@ claim:
   base_confidence: 0.55
   generated_by:
     rule_id: RULE_DOMAIN_SSH_001
-    rule_version: 0.1.0
+    rule_version: 1
     rule_maturity: experimental
 ```
 
