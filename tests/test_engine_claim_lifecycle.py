@@ -255,4 +255,4 @@ class TestConfirmClaimIfReady:
 
         after_base = engine.get_claim(claim_id).base_confidence
         assert after_base == before_base
-        assert float(after_base) == pytest.approx(0.42)
+        assert after_base.value == pytest.approx(0.42)
