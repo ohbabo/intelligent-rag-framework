@@ -263,6 +263,101 @@ class TestAddGap:
         assert gap_id == 1
 
 
+class TestAddGapDedup:
+    """PR4 §16 — exact-match Gap dedup smoke tests.
+
+    27차 implementation 의 핵심 동작 잠금. 11개 invariant 의 완전한
+    잠금은 28차 (별도 test 추가) 책임.
+    """
+
+    def test_same_claim_same_key_returns_same_gap_id(self) -> None:
+        """같은 claim + 같은 key 로 두 번 호출 → 같은 gap_id."""
+        engine = Engine()
+        _, claim_id = _entity_and_claim(engine)
+        gap1 = engine.add_gap(
+            claim_id=claim_id, gap_type=1,
+            required_evidence_type=42, severity=0.5, rule_id=7,
+        )
+        gap2 = engine.add_gap(
+            claim_id=claim_id, gap_type=1,
+            required_evidence_type=42, severity=0.5, rule_id=7,
+        )
+        assert gap1 == gap2
+
+    def test_cross_claim_same_key_reuses_gap(self) -> None:
+        """다른 claim 이지만 (subject, rule, type, evidence) 동일 → 같은 gap_id."""
+        engine = Engine()
+        entity_id = engine.add_entity(entity_type=1)
+        claim_a = engine.add_claim(
+            subject_id=entity_id, claim_type=1,
+            rule_id=7, rule_version=1, reason_code=0,
+        )
+        claim_b = engine.add_claim(
+            subject_id=entity_id, claim_type=2,
+            rule_id=7, rule_version=1, reason_code=0,
+        )
+        gap_a = engine.add_gap(
+            claim_id=claim_a, gap_type=1,
+            required_evidence_type=42, severity=0.5, rule_id=7,
+        )
+        gap_b = engine.add_gap(
+            claim_id=claim_b, gap_type=1,
+            required_evidence_type=42, severity=0.5, rule_id=7,
+        )
+        assert gap_a == gap_b
+
+    def test_gaps_for_claim_returns_reused_gap_for_second_claim(self) -> None:
+        """dedup hit 시에도 _claim_gap_refs 가 갱신 — 두 claim 모두 같은 gap 참조."""
+        engine = Engine()
+        entity_id = engine.add_entity(entity_type=1)
+        claim_a = engine.add_claim(
+            subject_id=entity_id, claim_type=1,
+            rule_id=7, rule_version=1, reason_code=0,
+        )
+        claim_b = engine.add_claim(
+            subject_id=entity_id, claim_type=2,
+            rule_id=7, rule_version=1, reason_code=0,
+        )
+        gap_a = engine.add_gap(
+            claim_id=claim_a, gap_type=1,
+            required_evidence_type=42, severity=0.5, rule_id=7,
+        )
+        engine.add_gap(
+            claim_id=claim_b, gap_type=1,
+            required_evidence_type=42, severity=0.5, rule_id=7,
+        )
+        gaps_a = engine.gaps_for_claim(claim_a)
+        gaps_b = engine.gaps_for_claim(claim_b)
+        assert len(gaps_a) == 1
+        assert len(gaps_b) == 1
+        assert gaps_a[0].id == gap_a
+        assert gaps_b[0].id == gap_a  # 같은 gap, reused
+
+    def test_first_registering_claim_id_preserved_on_dedup(self) -> None:
+        """dedup hit 시 Gap.claim_id 는 first registering claim 유지 (§16 의미 약화)."""
+        engine = Engine()
+        entity_id = engine.add_entity(entity_type=1)
+        claim_a = engine.add_claim(
+            subject_id=entity_id, claim_type=1,
+            rule_id=7, rule_version=1, reason_code=0,
+        )
+        claim_b = engine.add_claim(
+            subject_id=entity_id, claim_type=2,
+            rule_id=7, rule_version=1, reason_code=0,
+        )
+        gap_id = engine.add_gap(
+            claim_id=claim_a, gap_type=1,
+            required_evidence_type=42, severity=0.5, rule_id=7,
+        )
+        engine.add_gap(
+            claim_id=claim_b, gap_type=1,
+            required_evidence_type=42, severity=0.5, rule_id=7,
+        )
+        # 두 번째 add_gap 호출이 dedup hit — Gap.claim_id 갱신되지 않음
+        gap = engine.get_gap(gap_id)
+        assert gap.claim_id == claim_a
+
+
 class TestGapsForClaim:
     def test_returns_only_attached_gaps(self) -> None:
         engine = Engine()

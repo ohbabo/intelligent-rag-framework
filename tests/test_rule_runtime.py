@@ -483,9 +483,18 @@ class TestFireRuleWithRequiredEvidence:
         gap = engine.gaps_for_claim(claim_id)[0]
         assert gap.created_by_rule == definition.id
 
-    def test_duplicate_evidence_types_create_duplicate_gaps(self) -> None:
-        """MVP — dedup 안 함. compile_required_evidence 가 중복 보존하면
-        runtime 도 그대로 중복 Gap 생성."""
+    def test_duplicate_evidence_types_dedup_to_single_gap(self) -> None:
+        """PR4 §16 — exact-match dedup. yaml 의 evidence_type 이 N번 같아도
+        (subject, rule, gap_type, evidence_type) 동일하면 단 1개 Gap 만 생성.
+
+        compile_required_evidence 는 여전히 중복을 tuple 에 보존하지만
+        (e.g., evidence_types=(2,2,2)), Engine.add_gap 의 dedup 이 두 번째
+        호출부터 기존 gap_id 를 반환한다. 따라서 engine 안의 실제 Gap 은 1개.
+
+        FiringTrace.gap_ids 는 reuse 된 gap_id 를 N번 포함할 수 있다 (§15
+        계약 — "신규 또는 재사용된 Gap id"). 다만 engine 의 set-based
+        _claim_gap_refs 가 dedup 하므로 gaps_for_claim 은 1개 반환.
+        """
         engine, definition, cond, out, subject = _setup()
         template = RequiredEvidenceTemplate(evidence_types=(2, 2, 2))
         claim_id = fire_rule(
@@ -494,8 +503,8 @@ class TestFireRuleWithRequiredEvidence:
             required_evidence=template,
         )
         gaps = engine.gaps_for_claim(claim_id)
-        assert len(gaps) == 3
-        assert [g.required_evidence_type for g in gaps] == [2, 2, 2]
+        assert len(gaps) == 1
+        assert gaps[0].required_evidence_type == 2
 
 
 class TestFireRuleFalseWithRequiredEvidence:

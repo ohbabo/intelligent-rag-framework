@@ -37,6 +37,10 @@ class Engine:
         self._gaps: dict[int, Gap] = {}
         self._rule_definitions: dict[tuple[int, int], RuleDefinition] = {}
         self._rule_stats: dict[tuple[int, int], RuleStats] = {}
+        # PR4 §16 — Gap dedup index + claim↔gap reference index.
+        # key = (subject_id, created_by_rule, gap_type, required_evidence_type)
+        self._gap_dedup_index: dict[tuple[int, int, int, int], int] = {}
+        self._claim_gap_refs: dict[int, set[int]] = {}
 
     def _allocate_id(self, kind: str) -> int:
         next_id = self._next_id.get(kind, 0) + 1
@@ -203,26 +207,64 @@ class Engine:
         severity: float,
         rule_id: int,
     ) -> int:
+        """Add a Gap or reuse existing one (PR4 §16 dedup).
+
+        dedup key = ``(subject_id, rule_id, gap_type, required_evidence_type)``.
+
+        Dedup hit:
+            기존 Gap 의 ``gap_id`` 반환, 새 Gap 생성 안 함.
+            ``Gap.claim_id`` / ``severity`` 도 변경 안 함 (최초 등록 시 값 유지).
+            현재 호출의 ``claim_id`` 가 그 gap 을 참조하도록 ``_claim_gap_refs`` 갱신.
+
+        Dedup miss:
+            기존처럼 새 Gap 생성, ``_gap_dedup_index`` 등록, ``_claim_gap_refs`` 등록.
+
+        Raises:
+            KeyError: ``claim_id`` 가 engine 에 없음.
+        """
         if claim_id not in self._claims:
             raise KeyError(f"unknown claim_id: {claim_id}")
+
+        subject_id = self._claims[claim_id].subject_id
+        key = (subject_id, rule_id, gap_type, required_evidence_type)
+
+        if key in self._gap_dedup_index:
+            existing_gap_id = self._gap_dedup_index[key]
+            self._claim_gap_refs.setdefault(claim_id, set()).add(existing_gap_id)
+            return existing_gap_id
+
         gap_id = self._allocate_id("gap")
         self._gaps[gap_id] = Gap(
             id=gap_id,
-            claim_id=claim_id,
+            claim_id=claim_id,  # first registering claim — §16 의미 약화
             type=gap_type,
             required_evidence_type=required_evidence_type,
             severity=ScoreValue(severity),
             created_by_rule=rule_id,
         )
+        self._gap_dedup_index[key] = gap_id
+        self._claim_gap_refs.setdefault(claim_id, set()).add(gap_id)
         return gap_id
 
     def get_gap(self, gap_id: int) -> Gap:
         return self._gaps[gap_id]
 
     def gaps_for_claim(self, claim_id: int) -> list[Gap]:
+        """Return Gaps this claim references (PR4 §16 의미 확장).
+
+        이전 (Phase 2): ``gap.claim_id == claim_id`` 필터.
+        이후 (PR4):    ``_claim_gap_refs[claim_id]`` 기반.
+
+        dedup 으로 reuse 된 gap 도 포함된다. 반환 순서는 gap_id 오름차순
+        (결정적).
+        """
         if claim_id not in self._claims:
             raise KeyError(f"unknown claim_id: {claim_id}")
-        return [g for g in self._gaps.values() if g.claim_id == claim_id]
+        gap_ids = self._claim_gap_refs.get(claim_id, set())
+        return sorted(
+            (self._gaps[gid] for gid in gap_ids),
+            key=lambda g: g.id,
+        )
 
     # ---- Rule registry -----------------------------------------------------
 
