@@ -94,6 +94,18 @@ class TestIdValidation:
         with pytest.raises(ValueError):
             load_rule_spec(_minimal_spec(id=""))
 
+    def test_id_whitespace_only_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            load_rule_spec(_minimal_spec(id="   "))
+
+    def test_id_tab_and_newline_only_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            load_rule_spec(_minimal_spec(id="\t\n  "))
+
+    def test_id_surrounding_whitespace_stripped_on_store(self) -> None:
+        result = load_rule_spec(_minimal_spec(id="  SSH_001  "))
+        assert result.id == "SSH_001"
+
     def test_id_preserved_as_string(self) -> None:
         result = load_rule_spec(_minimal_spec(id="RULE_DOMAIN_SSH_001"))
         assert result.id == "RULE_DOMAIN_SSH_001"
@@ -114,6 +126,14 @@ class TestMaturityValidation:
     def test_maturity_empty_string_rejected(self) -> None:
         with pytest.raises(ValueError):
             load_rule_spec(_minimal_spec(maturity=""))
+
+    def test_maturity_whitespace_only_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            load_rule_spec(_minimal_spec(maturity="   "))
+
+    def test_maturity_surrounding_whitespace_stripped_on_store(self) -> None:
+        result = load_rule_spec(_minimal_spec(maturity="  experimental  "))
+        assert result.maturity == "experimental"
 
     def test_maturity_preserved_as_string(self) -> None:
         result = load_rule_spec(_minimal_spec(maturity="experimental"))
@@ -187,6 +207,20 @@ class TestRawPreservation:
         result = load_rule_spec(spec)
         spec["version"] = 999
         assert result.raw["version"] == 1
+
+    def test_raw_nested_mapping_is_independent_copy(self) -> None:
+        """top-level 만이 아니라 nested mapping 도 입력 시점 snapshot 으로 고정."""
+        spec = _minimal_spec()
+        result = load_rule_spec(spec)
+        spec["reliability"]["prior_confidence"] = 0.9
+        assert result.raw["reliability"]["prior_confidence"] == 0.5
+
+    def test_raw_preserves_original_id_before_strip(self) -> None:
+        """raw 에는 원문 보존 (strip 적용된 canonical 형태는 RuleSpec.id 에만)."""
+        spec = _minimal_spec(id="  SSH_001  ")
+        result = load_rule_spec(spec)
+        assert result.id == "SSH_001"
+        assert result.raw["id"] == "  SSH_001  "
 
 
 class TestRuleSpecImmutability:

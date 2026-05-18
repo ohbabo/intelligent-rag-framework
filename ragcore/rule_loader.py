@@ -19,6 +19,7 @@ Validation rules (see docs/contracts/05 §8.3):
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
@@ -61,8 +62,9 @@ def load_rule_spec(data: Mapping[str, Any]) -> RuleSpec:
     id_val = data["id"]
     if not isinstance(id_val, str):
         raise TypeError(f"id must be string, got {type(id_val).__name__}")
-    if not id_val:
-        raise ValueError("id must be non-empty string")
+    id_stripped = id_val.strip()
+    if not id_stripped:
+        raise ValueError("id must be non-empty string (whitespace-only rejected)")
 
     version_val = data["version"]
     # bool is a subclass of int in Python — exclude explicitly.
@@ -82,8 +84,11 @@ def load_rule_spec(data: Mapping[str, Any]) -> RuleSpec:
         raise TypeError(
             f"maturity must be string, got {type(maturity_val).__name__}"
         )
-    if not maturity_val:
-        raise ValueError("maturity must be non-empty string")
+    maturity_stripped = maturity_val.strip()
+    if not maturity_stripped:
+        raise ValueError(
+            "maturity must be non-empty string (whitespace-only rejected)"
+        )
 
     reliability = data["reliability"]
     if not isinstance(reliability, Mapping):
@@ -102,12 +107,14 @@ def load_rule_spec(data: Mapping[str, Any]) -> RuleSpec:
         )
     # ScoreValue 가 [0.0, 1.0] 범위 검증
 
+    # id / maturity 는 strip 된 canonical 형태로 저장. raw 에는 원문 보존
+    # (deepcopy 로 nested mapping 도 입력 시점 snapshot 으로 고정).
     return RuleSpec(
-        id=id_val,
+        id=id_stripped,
         version=version_val,
-        maturity=maturity_val,
+        maturity=maturity_stripped,
         prior_confidence=ScoreValue(float(prior)),
-        raw=dict(data),
+        raw=deepcopy(dict(data)),
     )
 
 
