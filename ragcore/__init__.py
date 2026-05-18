@@ -5,7 +5,12 @@ from ragcore.condition import (
     load_condition_tree,
 )
 from ragcore.engine import Engine
-from ragcore.rule_loader import RuleSpec, load_rule_spec, load_rule_spec_from_yaml
+from ragcore.rule_loader import (
+    RuleSpec,
+    compile_rule_condition,
+    load_rule_spec,
+    load_rule_spec_from_yaml,
+)
 from ragcore.types import (
     CLAIM_STATUS_CANDIDATE,
     CLAIM_STATUS_CONFIRMED,
@@ -56,6 +61,7 @@ __all__ = [
     "RuleSpec",
     "RuleStats",
     "ScoreValue",
+    "compile_rule_condition",
     "evaluate_condition",
     "load_condition_tree",
     "load_rule_spec",

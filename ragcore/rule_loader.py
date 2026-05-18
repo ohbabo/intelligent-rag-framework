@@ -23,6 +23,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
+from ragcore.condition import ConditionTree, load_condition_tree
 from ragcore.types import ScoreValue
 
 VERSION_MIN = 1
@@ -133,3 +134,20 @@ def load_rule_spec_from_yaml(text: str) -> RuleSpec:
 def _require_field(data: Mapping[str, Any], name: str) -> None:
     if name not in data:
         raise ValueError(f"missing required field: {name}")
+
+
+def compile_rule_condition(spec: RuleSpec) -> ConditionTree:
+    """Extract and compile the condition block from a ``RuleSpec``.
+
+    Bridges header loader (``RuleSpec``) ↔ condition tree (``ConditionTree``).
+    ``spec.raw["condition"]`` 에서 dict 를 꺼내 ``load_condition_tree`` 로
+    변환한다. ``RuleSpec`` 구조 자체는 건드리지 않음 — header loader 의
+    책임 경계 유지.
+
+    Raises:
+        ValueError: condition 블록 누락 또는 구조 문제 (allowlist 위반 등).
+        TypeError: condition 노드의 타입 문제 (mapping 아님 등).
+    """
+    if "condition" not in spec.raw:
+        raise ValueError("missing required field: condition")
+    return load_condition_tree(spec.raw["condition"])

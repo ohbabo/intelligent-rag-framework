@@ -21,8 +21,10 @@ from typing import Any
 import pytest
 
 from ragcore import ScoreValue
+from ragcore.condition import Combinator, Predicate, evaluate_condition
 from ragcore.rule_loader import (
     RuleSpec,
+    compile_rule_condition,
     load_rule_spec,
     load_rule_spec_from_yaml,
 )
@@ -296,3 +298,127 @@ reliability:
 """
         result = load_rule_spec_from_yaml(text)
         assert isinstance(result, RuleSpec)
+
+
+# =====================================================================
+# compile_rule_condition — bridge from RuleSpec to ConditionTree
+# =====================================================================
+
+class TestCompileRuleCondition:
+    def test_returns_predicate_for_single_predicate_condition(self) -> None:
+        spec_dict = _minimal_spec()
+        spec_dict["condition"] = {"field": "port", "op": "eq", "value": 22}
+        spec = load_rule_spec(spec_dict)
+        tree = compile_rule_condition(spec)
+        assert isinstance(tree, Predicate)
+        assert tree.field == "port"
+
+    def test_returns_combinator_for_all_condition(self) -> None:
+        spec_dict = _minimal_spec()
+        spec_dict["condition"] = {
+            "all": [
+                {"field": "port", "op": "eq", "value": 22},
+                {"field": "protocol", "op": "eq", "value": "tcp"},
+            ]
+        }
+        spec = load_rule_spec(spec_dict)
+        tree = compile_rule_condition(spec)
+        assert isinstance(tree, Combinator)
+        assert tree.kind == "all"
+        assert len(tree.children) == 2
+
+    def test_missing_condition_rejected(self) -> None:
+        """RuleSpec 에 condition 없으면 compile_rule_condition 이 ValueError."""
+        spec = load_rule_spec(_minimal_spec())  # condition 미포함
+        with pytest.raises(ValueError):
+            compile_rule_condition(spec)
+
+    def test_malformed_combinator_propagates_type_error(self) -> None:
+        spec_dict = _minimal_spec()
+        spec_dict["condition"] = {"all": "not a list"}
+        spec = load_rule_spec(spec_dict)
+        with pytest.raises(TypeError):
+            compile_rule_condition(spec)
+
+    def test_unknown_op_in_condition_propagates_value_error(self) -> None:
+        spec_dict = _minimal_spec()
+        spec_dict["condition"] = {
+            "field": "port", "op": "unknown_op", "value": 22
+        }
+        spec = load_rule_spec(spec_dict)
+        with pytest.raises(ValueError):
+            compile_rule_condition(spec)
+
+    def test_predicate_extra_key_in_condition_propagates_value_error(self) -> None:
+        spec_dict = _minimal_spec()
+        spec_dict["condition"] = {
+            "field": "port", "op": "eq", "value": 22, "typo": "x"
+        }
+        spec = load_rule_spec(spec_dict)
+        with pytest.raises(ValueError):
+            compile_rule_condition(spec)
+
+
+class TestEndToEndSshScenario:
+    """YAML → RuleSpec → compile_rule_condition → evaluate_condition full chain."""
+
+    SSH_YAML = """
+id: RULE_DOMAIN_SSH_001
+version: 1
+maturity: experimental
+reliability:
+  prior_confidence: 0.55
+condition:
+  all:
+    - field: port
+      op: eq
+      value: 22
+    - field: protocol
+      op: eq
+      value: tcp
+    - field: service
+      op: eq
+      value: ssh
+    - field: banner
+      op: contains
+      value: "OpenSSH_7."
+"""
+
+    def _compile(self) -> object:
+        spec = load_rule_spec_from_yaml(self.SSH_YAML)
+        return compile_rule_condition(spec)
+
+    def test_match(self) -> None:
+        tree = self._compile()
+        ctx = {
+            "port": 22,
+            "protocol": "tcp",
+            "service": "ssh",
+            "banner": "OpenSSH_7.4p1",
+        }
+        assert evaluate_condition(tree, ctx) is True
+
+    def test_banner_mismatch(self) -> None:
+        tree = self._compile()
+        ctx = {
+            "port": 22,
+            "protocol": "tcp",
+            "service": "ssh",
+            "banner": "OpenSSH_9.0p1",
+        }
+        assert evaluate_condition(tree, ctx) is False
+
+    def test_banner_missing(self) -> None:
+        """Lenient: 누락 field → predicate false → all false."""
+        tree = self._compile()
+        ctx = {"port": 22, "protocol": "tcp", "service": "ssh"}
+        assert evaluate_condition(tree, ctx) is False
+
+    def test_spec_metadata_preserved_alongside_compiled_tree(self) -> None:
+        """compile_rule_condition 은 RuleSpec 을 mutate 하지 않음."""
+        spec = load_rule_spec_from_yaml(self.SSH_YAML)
+        _ = compile_rule_condition(spec)
+        assert spec.id == "RULE_DOMAIN_SSH_001"
+        assert spec.version == 1
+        assert spec.prior_confidence == ScoreValue(0.55)
+        assert "condition" in spec.raw  # raw 보존
