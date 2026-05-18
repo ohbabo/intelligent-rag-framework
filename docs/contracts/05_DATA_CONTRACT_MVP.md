@@ -1800,3 +1800,227 @@ PR6:
 구현 단계 (31/32차) — **테스트 먼저 잠금 → 구현** 순서:
 - 31차: tests (위 10개 invariant) — 현재 `AttributeError` 로 fail 하는 상태로 잠금
 - 32차: `Engine.confirm_claim_if_ready` 구현 — 31차 테스트 통과로 입증
+
+## 19. Claim refutation (MVP)
+
+> 상태: 34/35/36차 (PR7). `candidate → refuted` 단일 전이 + 명시 contradiction 등록.
+> **`confidence` 재계산 / history / 자동 추론 / `confirmed → refuted` 전이는 본 PR 범위 밖** — PR8+.
+
+### 19.1 목적 — "모름" 과 "반박" 의 분리
+
+PR6 까지의 흐름:
+
+```text
+Rule fires       → Claim (candidate) + Gap(s)
+resolve(ev)      → matching Gap 닫힘
+confirm_if_ready → 모든 Gap resolved 면 candidate → confirmed
+```
+
+PR7 추가:
+
+```text
+register_contradiction(claim, evidence)  → 명시 등록
+refute_if_ready(claim)                   → contradiction 있으면 candidate → refuted
+```
+
+### 19.2 PR7 의 핵심 명제
+
+> **Unresolved evidence gaps do not refute a claim.**
+> **Only explicit contradiction relations can make a candidate claim refutable.**
+
+한국어:
+
+> 증거 부족은 반박이 아니다. 증거 부족은 "아직 모름" 이며 `candidate` 가 유지된다.
+> 반박은 호출자가 명시적으로 등록한 contradiction relation 이 있을 때만 가능하다.
+
+이 명제가 PR7 의 모든 결정을 지배한다. `refuted` 를 단순히 "confirm 의 반대" 로
+잡으면 `candidate` (모름) 와 `refuted` (반박) 가 섞여 엔진 판단력이 흐려진다.
+
+### 19.3 저장 위치 — Engine 내부 dict
+
+```python
+# Engine.__init__
+self._contradictions: dict[int, set[int]] = {}  # claim_id → set of evidence_ids
+```
+
+`Evidence` / `Claim` / `Relation` dataclass 는 **변경 없음** (PR2~PR6 의 single-field
+data 결정 유지). 외부 접근은 메서드를 통해서만.
+
+PR4 의 `_gap_dedup_index` / `_claim_gap_refs`, PR5 의 `_gap_resolutions` 와 동일
+패턴 — dataclass 보존 + Engine 내부 인덱스로 lifecycle 상태 표현.
+
+### 19.4 API
+
+```python
+def register_contradiction(self, claim_id: int, evidence_id: int) -> bool:
+    """Register an explicit contradiction relation: evidence contradicts claim.
+
+    Returns:
+        True  — 이번 호출로 새로 등록됨.
+        False — (claim_id, evidence_id) 가 이미 등록돼 있음 (idempotent no-op).
+
+    Raises:
+        KeyError: unknown claim_id or unknown evidence_id.
+
+    Notes:
+        - **Cross-claim 허용**: ``evidence.claim_id == claim_id`` 는 강제하지 않는다.
+          "Port 22 closed" 같은 다른 claim 의 evidence 가 "SSH exposed" claim 을
+          반박하는 흐름이 contradiction 의 본질이다.
+        - **Target status 무관**: confirmed / refuted claim 에도 등록 허용.
+          데이터 등록과 lifecycle 결정은 분리 (refute_claim_if_ready 의 status
+          guard 가 결정 시점에 동작).
+        - **No semantic inference**: 엔진은 "이 evidence 가 정말 그 claim 을
+          반박하는가" 를 판단하지 않는다. 호출자 책임.
+    """
+
+def contradictions_for_claim(self, claim_id: int) -> tuple[int, ...]:
+    """Return contradicting evidence_ids for the claim.
+
+    Returns:
+        evidence_id 오름차순 tuple. 없으면 빈 tuple.
+
+    Raises:
+        KeyError: unknown claim_id.
+    """
+
+def refute_claim_if_ready(self, claim_id: int) -> bool:
+    """Transition candidate → refuted if at least one contradiction is registered.
+
+    전이 조건:
+        - ``claim.status == CLAIM_STATUS_CANDIDATE``
+        - ``len(contradictions_for_claim(claim_id)) >= 1``
+
+    Returns:
+        True  — 이번 호출로 candidate → refuted 전이.
+        False — 전이 없음 (조건 불충족 / 이미 confirmed / 이미 refuted).
+                False 는 실패가 아니다 (no-op 도 False).
+
+    Raises:
+        KeyError: unknown claim_id.
+    """
+```
+
+API 이름 선택 (PR6 패턴 미러):
+
+| | PR6 | PR7 |
+|---|---|---|
+| 명시 호출 promotion | `confirm_claim_if_ready` | `refute_claim_if_ready` |
+| Trigger 조건 | 모든 referenced gap resolved | ≥1 contradiction 등록됨 |
+
+**의미는 단순 미러가 아니다** — confirm 은 "충분 조건" (gap 다 채워짐), refute 는
+"존재 조건" (반박 1개라도). 19.7 결정표에서 잠금.
+
+### 19.5 결정표 (refute 전이 규칙)
+
+| Claim 상태 | contradictions 수 | 결과 상태 | 반환 |
+|---|---|---|---|
+| `candidate` | 0 | `candidate` | `False` |
+| `candidate` | 1+ | **`refuted`** | **`True`** |
+| `confirmed` | any | `confirmed` | `False` (no-op) |
+| `refuted` | any | `refuted` | `False` (no-op) |
+
+**Unresolved gap 의 영향은 0**:
+
+| Claim 상태 | gap 상태 | contradictions | refute 결과 |
+|---|---|---|---|
+| `candidate` | 모두 unresolved | 0 | `False` (gap 부족은 반박 아님) |
+| `candidate` | 모두 resolved | 0 | `False` (resolved gap 도 반박 아님) |
+| `candidate` | 일부/전부 unresolved | 1+ | `True` (contradiction 만이 trigger) |
+
+### 19.6 `register_contradiction` 결정표
+
+| target claim 상태 | 새 (claim_id, evidence_id)? | 결과 | 반환 |
+|---|---|---|---|
+| any | 새로움 | `_contradictions[claim_id]` 에 추가 | `True` |
+| any | 이미 등록됨 | 무변화 | `False` |
+
+| 에러 케이스 | 동작 |
+|---|---|
+| unknown `claim_id` | `KeyError` |
+| unknown `evidence_id` | `KeyError` |
+
+evidence 의 cross-claim 여부 / target claim 의 status / target claim 의 gap 상태
+모두 **등록 조건에 영향 없음**.
+
+### 19.7 Idempotency
+
+```python
+# 첫 등록
+engine.register_contradiction(c, e)  # → True
+
+# 두 번째 등록 (같은 쌍)
+engine.register_contradiction(c, e)  # → False (이미 있음)
+
+# 첫 refute
+engine.refute_claim_if_ready(c)  # → True (candidate → refuted)
+
+# 두 번째 refute
+engine.refute_claim_if_ready(c)  # → False (이미 refuted, no-op)
+engine.get_claim(c).status        # → CLAIM_STATUS_REFUTED (유지)
+```
+
+PR4 dedup + PR5 first-keep + PR6 confirm idempotent 와 동일 정신.
+
+### 19.8 보존 (impact 없음)
+
+| | PR7 영향 |
+|---|---|
+| `Claim` / `Evidence` / `Gap` / `Relation` dataclass | 없음 |
+| `add_claim` / `add_evidence` / `add_gap` 의미 | 없음 |
+| `resolve_gaps_for_evidence` / `gap_resolution` 의미 | 없음 |
+| `confirm_claim_if_ready` 의미 | 없음 |
+| `gaps_for_claim` / `_gap_resolutions` | 없음 |
+| `fire_rule*` / `RuleStats.firing_count` | 없음 |
+| `base_confidence` / `compute_effective_confidence` | 없음 |
+
+### 19.9 Invariants (테스트로 잠금)
+
+1. candidate + 0 contradiction → `False`, 상태 보존
+2. candidate + 1+ contradiction → `True`, 상태 `refuted`
+3. **unresolved gap 만으로 refuted 금지** — PR7 핵심 명제 (§19.2)
+4. **resolved gap 도 refute trigger 아님** — refute 의 trigger 는 contradiction 뿐
+5. 이미 confirmed → `False`, 상태 보존 (PR7 범위 밖)
+6. 이미 refuted → `False`, 상태 보존 (no-op)
+7. unknown `claim_id` → `KeyError` (PR1~PR6 fail-fast 패턴)
+8. `register_contradiction` idempotent — 같은 쌍 재호출 `False`
+9. **Cross-claim contradiction 허용** — `evidence.claim_id != claim_id` 케이스도 `register_contradiction` 정상 동작
+10. `register_contradiction` 은 target claim 의 status 와 무관 (confirmed/refuted 에도 등록 가능)
+11. `register_contradiction` / `refute_claim_if_ready` 호출은 gap state / base_confidence / 다른 claim 의 상태 무변화
+12. `contradictions_for_claim` 은 evidence_id 오름차순 (PR5 결정성 패턴)
+13. unknown `evidence_id` 등록 시도 → `KeyError`
+14. 기존 435 tests 그대로 통과 (회귀 방지)
+
+### 19.10 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| `confirmed → refuted` 전이 | history / audit / 재판단 정책 필요 — PR8+ |
+| `refuted → candidate` 복구 | 별도 결정점 |
+| `confirmed → disputed` / `superseded` / `retracted` | 더 정교한 상태 — PR9+ |
+| `confidence` (`base_confidence` / `effective`) 재계산 | scoring 변경 별도 PR |
+| `refuted_at` timestamp / contradiction registration history | 직렬화 PR |
+| **Semantic contradiction inference** — 엔진이 의미 추론 | 호출자 책임 (§19.4 Notes) |
+| Contradiction scope check (target/entity/scope 일치 검증) | 도메인 판단, core 밖 |
+| `evidence.type` 기반 contradiction rule | rule engine 확장 |
+| Lifecycle trace (refuted 이벤트 trace) | PR3 trace 구조 확장 별도 PR |
+| Auto refute (resolve / add_evidence / register_contradiction 안 side effect) | 명시성 원칙 (§17.7 정신) |
+
+### 19.11 Position in flow
+
+```text
+PR6 까지:
+  Rule fires → Claim (candidate) + Gap
+  resolve(ev)  → gap 닫힘
+  confirm_if_ready(c) → 모든 gap resolved 면 candidate → confirmed
+
+PR7:
+  Rule fires → Claim (candidate) + Gap
+  resolve(ev)  → gap 닫힘 (변화 없음)
+  register_contradiction(c, ev_b) → 명시 등록
+  refute_if_ready(c) → contradiction 1+ 있으면 candidate → refuted
+                       (gap 상태 무관 — §19.2 명제)
+```
+
+구현 단계 (35/36차) — **테스트 먼저 잠금 → 구현** 순서:
+- 35차: tests (위 14개 invariant 중 1~13) — `AttributeError` 로 fail 하는 상태로 잠금
+- 36차: `Engine.register_contradiction` / `contradictions_for_claim` / `refute_claim_if_ready` 구현 — 35차 테스트 통과로 입증
