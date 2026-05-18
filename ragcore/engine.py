@@ -225,6 +225,12 @@ class Engine:
         if claim_id not in self._claims:
             raise KeyError(f"unknown claim_id: {claim_id}")
 
+        # severity 검증은 dedup 분기 전에 한다. severity 는 dedup key 가 아니지만,
+        # 입력 검증 의미 (ScoreValue 의 [0.0, 1.0] 검증) 는 dedup hit/miss 모두에서
+        # 동일하게 적용되어야 한다. dedup hit 시 검증을 건너뛰면 잘못된 severity 가
+        # silent pass 됨 — PR4 이전 add_gap 의 입력 검증 의미와 충돌.
+        validated_severity = ScoreValue(severity)
+
         subject_id = self._claims[claim_id].subject_id
         key = (subject_id, rule_id, gap_type, required_evidence_type)
 
@@ -239,7 +245,7 @@ class Engine:
             claim_id=claim_id,  # first registering claim — §16 의미 약화
             type=gap_type,
             required_evidence_type=required_evidence_type,
-            severity=ScoreValue(severity),
+            severity=validated_severity,
             created_by_rule=rule_id,
         )
         self._gap_dedup_index[key] = gap_id

@@ -477,6 +477,33 @@ class TestAddGapDedupKeyFields:
         )
         assert engine.get_gap(gap_id).severity == ScoreValue(0.3)
 
+    def test_dedup_hit_still_rejects_out_of_range_severity(self) -> None:
+        """dedup hit 이라도 잘못된 severity 입력은 ValueError.
+
+        severity 는 dedup key 가 아니지만, 입력 검증 의미는 보존되어야 한다.
+        dedup hit/miss 모두 동일하게 ScoreValue 의 [0.0, 1.0] 범위 검증 적용.
+        기존 Gap 의 severity 는 영향 받지 않음 (merge 금지).
+        """
+        engine = Engine()
+        entity_id = engine.add_entity(entity_type=1)
+        claim_a = self._claim_for(engine, entity_id)
+        claim_b = self._claim_for(engine, entity_id, claim_type=2)
+
+        gap_id = engine.add_gap(
+            claim_id=claim_a, gap_type=1,
+            required_evidence_type=42, severity=0.5, rule_id=7,
+        )
+
+        # 같은 dedup key, 잘못된 severity → ValueError (dedup hit 검증 우회 X)
+        with pytest.raises(ValueError):
+            engine.add_gap(
+                claim_id=claim_b, gap_type=1,
+                required_evidence_type=42, severity=1.5, rule_id=7,
+            )
+
+        # 기존 Gap 의 severity 는 first registering 값 그대로 유지
+        assert engine.get_gap(gap_id).severity == ScoreValue(0.5)
+
 
 class TestAddGapDedupConsistency:
     """§16 — public API ↔ private state 일관성, engine 격리."""
