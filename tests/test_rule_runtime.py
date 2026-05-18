@@ -21,13 +21,19 @@ import pytest
 from ragcore import (
     CLAIM_STATUS_CANDIDATE,
     Engine,
+    RequiredEvidenceTemplate,
     ScoreValue,
+    compile_required_evidence,
     compile_rule_condition,
     compile_rule_definition,
     compile_rule_output,
     load_rule_spec,
     load_rule_spec_from_yaml,
     register_rule_spec,
+)
+from ragcore.rule_gap import (
+    DEFAULT_GAP_SEVERITY,
+    GAP_TYPE_MISSING_EVIDENCE,
 )
 from ragcore.rule_runtime import fire_rule
 
@@ -362,4 +368,223 @@ output:
             subject_id=subject_id, context=ctx,
         )
         assert result is None
+        assert engine.get_rule_stats(1, 1).firing_count == 0
+
+
+# =====================================================================
+# 19차 — required_evidence 인자로 Gap 생성
+# =====================================================================
+
+class TestFireRuleWithRequiredEvidence:
+    CTX_MATCH = {"port": 22, "banner": "OpenSSH_7.4p1"}
+
+    def test_required_evidence_none_creates_no_gaps(self) -> None:
+        """기본값 None — 16차 동작 보존 (하위 호환)."""
+        engine, definition, cond, out, subject = _setup()
+        claim_id = fire_rule(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=None,
+        )
+        assert claim_id is not None
+        assert engine.gaps_for_claim(claim_id) == []
+
+    def test_required_evidence_omitted_creates_no_gaps(self) -> None:
+        """인자 생략도 None 과 동일."""
+        engine, definition, cond, out, subject = _setup()
+        claim_id = fire_rule(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+        )
+        assert engine.gaps_for_claim(claim_id) == []
+
+    def test_empty_template_creates_no_gaps(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        template = RequiredEvidenceTemplate(evidence_types=())
+        claim_id = fire_rule(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=template,
+        )
+        assert engine.gaps_for_claim(claim_id) == []
+
+    def test_three_evidence_types_creates_three_gaps(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        template = RequiredEvidenceTemplate(evidence_types=(1, 2, 3))
+        claim_id = fire_rule(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=template,
+        )
+        gaps = engine.gaps_for_claim(claim_id)
+        assert len(gaps) == 3
+
+    def test_gap_claim_id_links_to_created_claim(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        template = RequiredEvidenceTemplate(evidence_types=(1,))
+        claim_id = fire_rule(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=template,
+        )
+        gap = engine.gaps_for_claim(claim_id)[0]
+        assert gap.claim_id == claim_id
+
+    def test_gap_type_is_missing_evidence(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        template = RequiredEvidenceTemplate(evidence_types=(1,))
+        claim_id = fire_rule(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=template,
+        )
+        gap = engine.gaps_for_claim(claim_id)[0]
+        assert gap.type == GAP_TYPE_MISSING_EVIDENCE
+
+    def test_gap_required_evidence_types_preserve_order(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        template = RequiredEvidenceTemplate(evidence_types=(3, 1, 2))
+        claim_id = fire_rule(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=template,
+        )
+        gaps = engine.gaps_for_claim(claim_id)
+        assert [g.required_evidence_type for g in gaps] == [3, 1, 2]
+
+    def test_gap_severity_is_default(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        template = RequiredEvidenceTemplate(evidence_types=(1,))
+        claim_id = fire_rule(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=template,
+        )
+        gap = engine.gaps_for_claim(claim_id)[0]
+        assert gap.severity == DEFAULT_GAP_SEVERITY
+
+    def test_gap_created_by_rule_is_definition_id(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        template = RequiredEvidenceTemplate(evidence_types=(1,))
+        claim_id = fire_rule(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=template,
+        )
+        gap = engine.gaps_for_claim(claim_id)[0]
+        assert gap.created_by_rule == definition.id
+
+    def test_duplicate_evidence_types_create_duplicate_gaps(self) -> None:
+        """MVP — dedup 안 함. compile_required_evidence 가 중복 보존하면
+        runtime 도 그대로 중복 Gap 생성."""
+        engine, definition, cond, out, subject = _setup()
+        template = RequiredEvidenceTemplate(evidence_types=(2, 2, 2))
+        claim_id = fire_rule(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=template,
+        )
+        gaps = engine.gaps_for_claim(claim_id)
+        assert len(gaps) == 3
+        assert [g.required_evidence_type for g in gaps] == [2, 2, 2]
+
+
+class TestFireRuleFalseWithRequiredEvidence:
+    def test_false_condition_creates_no_gaps_even_with_template(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        template = RequiredEvidenceTemplate(evidence_types=(1, 2, 3))
+        result = fire_rule(
+            engine, definition, cond, out,
+            subject_id=subject, context={"port": 80},  # banner 누락 + port 다름
+            required_evidence=template,
+        )
+        assert result is None
+        # claim_id 가 할당되지 않았음 → Gap 도 없음
+        # gaps_for_claim 은 unknown claim 에 KeyError
+        with pytest.raises(KeyError):
+            engine.gaps_for_claim(1)
+
+    def test_false_condition_firing_count_still_zero(self) -> None:
+        engine, definition, cond, out, subject = _setup()
+        template = RequiredEvidenceTemplate(evidence_types=(1, 2, 3))
+        fire_rule(
+            engine, definition, cond, out,
+            subject_id=subject, context={"port": 80},
+            required_evidence=template,
+        )
+        stats = engine.get_rule_stats(definition.id, definition.version)
+        assert stats.firing_count == 0
+
+
+class TestFireRuleYamlEndToEndWithGaps:
+    YAML_TEXT = """
+id: RULE_DOMAIN_SSH_001
+version: 1
+maturity: experimental
+reliability:
+  prior_confidence: 0.55
+condition:
+  all:
+    - field: port
+      op: eq
+      value: 22
+    - field: banner
+      op: contains
+      value: "OpenSSH_7."
+output:
+  claim:
+    type: outdated_ssh_candidate
+    status: candidate
+    base_confidence: 0.55
+    reason_code: OPENSSH_7_SERIES_BANNER
+    required_evidence:
+      - exact_openssh_version
+      - os_family
+      - package_backport_status
+"""
+
+    def test_full_chain_creates_claim_and_three_gaps(self) -> None:
+        engine = Engine()
+        spec = load_rule_spec_from_yaml(self.YAML_TEXT)
+        definition = register_rule_spec(engine, spec)
+        condition = compile_rule_condition(spec)
+        output = compile_rule_output(spec)
+        required = compile_required_evidence(spec)
+        subject_id = engine.add_entity(entity_type=1)
+
+        ctx = {"port": 22, "banner": "OpenSSH_7.4p1"}
+        claim_id = fire_rule(
+            engine, definition, condition, output,
+            subject_id=subject_id, context=ctx,
+            required_evidence=required,
+        )
+        assert claim_id is not None
+        gaps = engine.gaps_for_claim(claim_id)
+        assert len(gaps) == 3
+        assert [g.required_evidence_type for g in gaps] == [1, 2, 3]
+        for gap in gaps:
+            assert gap.claim_id == claim_id
+            assert gap.type == GAP_TYPE_MISSING_EVIDENCE
+            assert gap.severity == DEFAULT_GAP_SEVERITY
+            assert gap.created_by_rule == definition.id
+
+    def test_full_chain_false_condition_creates_nothing(self) -> None:
+        engine = Engine()
+        spec = load_rule_spec_from_yaml(self.YAML_TEXT)
+        definition = register_rule_spec(engine, spec)
+        condition = compile_rule_condition(spec)
+        output = compile_rule_output(spec)
+        required = compile_required_evidence(spec)
+        subject_id = engine.add_entity(entity_type=1)
+
+        ctx = {"port": 22, "banner": "OpenSSH_9.0p1"}  # 7.x 아님
+        result = fire_rule(
+            engine, definition, condition, output,
+            subject_id=subject_id, context=ctx,
+            required_evidence=required,
+        )
+        assert result is None
+        # claim 없음 → gap 도 없음
+        with pytest.raises(KeyError):
+            engine.gaps_for_claim(1)
         assert engine.get_rule_stats(1, 1).firing_count == 0
