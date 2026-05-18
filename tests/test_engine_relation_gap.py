@@ -662,3 +662,271 @@ class TestMinimalLoopClosesEnd2End:
         assert engine.get_claim(claim_id).created_by_rule == 42
         assert engine.evidences_for_claim(claim_id)[0].id == evidence_id
         assert engine.gaps_for_claim(claim_id)[0].id == gap_id
+
+
+class TestGapResolutionSmoke:
+    """PR5 §17 — 최소 스모크. 11개 invariant 전체 잠금은 32차."""
+
+    def test_matching_evidence_resolves_matching_gap(self) -> None:
+        engine = Engine()
+        _entity_id, claim_id = _entity_and_claim(engine)
+        gap_id = engine.add_gap(
+            claim_id=claim_id,
+            gap_type=1,
+            required_evidence_type=7,
+            severity=0.5,
+            rule_id=1,
+        )
+        evidence_id = engine.add_evidence(
+            claim_id=claim_id,
+            raw_ref_id=0,
+            evidence_type=7,
+            strength=0.8,
+        )
+
+        resolved = engine.resolve_gaps_for_evidence(evidence_id)
+
+        assert resolved == (gap_id,)
+        assert engine.gap_resolution(gap_id) == evidence_id
+
+    def test_non_matching_evidence_resolves_nothing(self) -> None:
+        engine = Engine()
+        _entity_id, claim_id = _entity_and_claim(engine)
+        gap_id = engine.add_gap(
+            claim_id=claim_id,
+            gap_type=1,
+            required_evidence_type=7,
+            severity=0.5,
+            rule_id=1,
+        )
+        evidence_id = engine.add_evidence(
+            claim_id=claim_id,
+            raw_ref_id=0,
+            evidence_type=99,  # type mismatch
+            strength=0.8,
+        )
+
+        resolved = engine.resolve_gaps_for_evidence(evidence_id)
+
+        assert resolved == ()
+        assert engine.gap_resolution(gap_id) is None
+
+    def test_gap_resolution_returns_none_when_unresolved(self) -> None:
+        engine = Engine()
+        _entity_id, claim_id = _entity_and_claim(engine)
+        gap_id = engine.add_gap(
+            claim_id=claim_id,
+            gap_type=1,
+            required_evidence_type=7,
+            severity=0.5,
+            rule_id=1,
+        )
+
+        assert engine.gap_resolution(gap_id) is None
+
+    def test_unknown_evidence_id_raises(self) -> None:
+        engine = Engine()
+        with pytest.raises(KeyError):
+            engine.resolve_gaps_for_evidence(999)
+
+    def test_unknown_gap_id_in_gap_resolution_raises(self) -> None:
+        engine = Engine()
+        with pytest.raises(KeyError):
+            engine.gap_resolution(999)
+
+
+class TestGapResolutionInvariants:
+    """PR5 §17 — §17.12 11개 invariant 전체 잠금 (32차).
+
+    31차 ``TestGapResolutionSmoke`` 와 합쳐 invariant 1~10 + 회귀(11) 모두 커버.
+    """
+
+    def test_already_resolved_gap_keeps_first_evidence(self) -> None:
+        """§17.8 — 두 번째 evidence 는 기존 resolution 을 덮어쓰지 않고, 빈 tuple 반환."""
+        engine = Engine()
+        _, claim_id = _entity_and_claim(engine)
+        gap_id = engine.add_gap(
+            claim_id=claim_id,
+            gap_type=1,
+            required_evidence_type=42,
+            severity=0.5,
+            rule_id=1,
+        )
+        first_ev = engine.add_evidence(
+            claim_id=claim_id, raw_ref_id=0, evidence_type=42, strength=0.8,
+        )
+        first_call = engine.resolve_gaps_for_evidence(first_ev)
+        assert first_call == (gap_id,)
+
+        second_ev = engine.add_evidence(
+            claim_id=claim_id, raw_ref_id=0, evidence_type=42, strength=0.9,
+        )
+        second_call = engine.resolve_gaps_for_evidence(second_ev)
+
+        assert second_call == ()
+        assert engine.gap_resolution(gap_id) == first_ev
+
+    def test_one_evidence_resolves_multiple_matching_gaps(self) -> None:
+        """§17.4 + §17.5 — 같은 claim 의 matching gap 들을 한 호출로 모두 닫는다.
+
+        created_by_rule 이 달라도 (다른 rule 의 gap 이라도) scope 안에 있고
+        required_evidence_type 이 같으면 함께 resolve. ``created_by_rule`` 은
+        매칭 조건이 아님.
+        """
+        engine = Engine()
+        _, claim_id = _entity_and_claim(engine)
+        gap_a = engine.add_gap(
+            claim_id=claim_id, gap_type=1, required_evidence_type=42,
+            severity=0.5, rule_id=1,
+        )
+        gap_b = engine.add_gap(
+            claim_id=claim_id, gap_type=1, required_evidence_type=42,
+            severity=0.5, rule_id=2,  # 다른 rule_id -> PR4 dedup key 가 달라 별개 gap
+        )
+        assert gap_a != gap_b
+        ev = engine.add_evidence(
+            claim_id=claim_id, raw_ref_id=0, evidence_type=42, strength=0.8,
+        )
+
+        resolved = engine.resolve_gaps_for_evidence(ev)
+
+        assert set(resolved) == {gap_a, gap_b}
+        assert engine.gap_resolution(gap_a) == ev
+        assert engine.gap_resolution(gap_b) == ev
+
+    def test_evidence_does_not_resolve_other_type_gap_in_same_claim(self) -> None:
+        """§17.4 — required_evidence_type 이 다른 gap 은 같은 claim 안에서도 무관."""
+        engine = Engine()
+        _, claim_id = _entity_and_claim(engine)
+        matching_gap = engine.add_gap(
+            claim_id=claim_id, gap_type=1, required_evidence_type=42,
+            severity=0.5, rule_id=1,
+        )
+        other_gap = engine.add_gap(
+            claim_id=claim_id, gap_type=1, required_evidence_type=99,
+            severity=0.5, rule_id=1,
+        )
+        ev = engine.add_evidence(
+            claim_id=claim_id, raw_ref_id=0, evidence_type=42, strength=0.8,
+        )
+
+        resolved = engine.resolve_gaps_for_evidence(ev)
+
+        assert resolved == (matching_gap,)
+        assert engine.gap_resolution(matching_gap) == ev
+        assert engine.gap_resolution(other_gap) is None
+
+    def test_cross_claim_reused_gap_is_gap_scoped(self) -> None:
+        """§17.6 — PR4 dedup 으로 share 된 gap 은 한 claim 의 evidence 로 resolved 되면
+        다른 claim 에서도 resolved 로 보인다 (gap-scoped resolution).
+        """
+        engine = Engine()
+        entity_id = engine.add_entity(entity_type=1)
+        claim_a = engine.add_claim(
+            subject_id=entity_id, claim_type=1, rule_id=7, rule_version=1, reason_code=0,
+        )
+        claim_b = engine.add_claim(
+            subject_id=entity_id, claim_type=1, rule_id=7, rule_version=1, reason_code=0,
+        )
+        gap_a_id = engine.add_gap(
+            claim_id=claim_a, gap_type=1, required_evidence_type=42,
+            severity=0.5, rule_id=7,
+        )
+        gap_b_id = engine.add_gap(
+            claim_id=claim_b, gap_type=1, required_evidence_type=42,
+            severity=0.5, rule_id=7,
+        )
+        # PR4 §16: 같은 (subject, rule, gap_type, evidence_type) → 같은 gap 재사용
+        assert gap_a_id == gap_b_id
+        shared_gap = gap_a_id
+
+        ev = engine.add_evidence(
+            claim_id=claim_a, raw_ref_id=0, evidence_type=42, strength=0.8,
+        )
+        resolved = engine.resolve_gaps_for_evidence(ev)
+
+        assert resolved == (shared_gap,)
+        # Claim B 에서 보는 동일 gap 도 resolved 상태로 보임
+        assert engine.gap_resolution(shared_gap) == ev
+        assert shared_gap in {g.id for g in engine.gaps_for_claim(claim_b)}
+
+    def test_scope_restricted_to_evidence_claim(self) -> None:
+        """§17.5 — resolve scope 는 evidence.claim_id 가 참조하는 gap 으로 제한된다.
+
+        다른 subject 의 claim 이 가진 matching gap (PR4 dedup 으로 share 안 됨)
+        은 절대 resolve 되지 않는다.
+        """
+        engine = Engine()
+        entity_a = engine.add_entity(entity_type=1)
+        entity_b = engine.add_entity(entity_type=1)
+        claim_a = engine.add_claim(
+            subject_id=entity_a, claim_type=1, rule_id=1, rule_version=1, reason_code=0,
+        )
+        claim_b = engine.add_claim(
+            subject_id=entity_b, claim_type=1, rule_id=1, rule_version=1, reason_code=0,
+        )
+        gap_a = engine.add_gap(
+            claim_id=claim_a, gap_type=1, required_evidence_type=42,
+            severity=0.5, rule_id=1,
+        )
+        gap_b = engine.add_gap(
+            claim_id=claim_b, gap_type=1, required_evidence_type=42,
+            severity=0.5, rule_id=1,
+        )
+        # 다른 subject → dedup 안 됨 → 별개 gap
+        assert gap_a != gap_b
+
+        ev = engine.add_evidence(
+            claim_id=claim_a, raw_ref_id=0, evidence_type=42, strength=0.8,
+        )
+        resolved = engine.resolve_gaps_for_evidence(ev)
+
+        # Claim A 의 gap 만 닫힘. Claim B 의 gap 은 unresolved.
+        assert resolved == (gap_a,)
+        assert engine.gap_resolution(gap_a) == ev
+        assert engine.gap_resolution(gap_b) is None
+
+    def test_add_evidence_does_not_mutate_gap_resolutions(self) -> None:
+        """§17.7 — add_evidence 자체에는 자동 resolve side effect 가 없다."""
+        engine = Engine()
+        _, claim_id = _entity_and_claim(engine)
+        gap_id = engine.add_gap(
+            claim_id=claim_id, gap_type=1, required_evidence_type=42,
+            severity=0.5, rule_id=1,
+        )
+
+        # add_evidence 만 — resolve 호출 없음
+        engine.add_evidence(
+            claim_id=claim_id, raw_ref_id=0, evidence_type=42, strength=0.8,
+        )
+
+        # internal state 직접 확인 (자동 resolve 금지 invariant)
+        assert engine._gap_resolutions == {}
+        assert engine.gap_resolution(gap_id) is None
+
+    def test_returned_gap_ids_are_ascending(self) -> None:
+        """§17.9 — 반환 tuple 은 항상 gap_id 오름차순."""
+        engine = Engine()
+        _, claim_id = _entity_and_claim(engine)
+        # 다른 rule_id 로 3개 gap 생성 (PR4 dedup 회피)
+        gap_first = engine.add_gap(
+            claim_id=claim_id, gap_type=1, required_evidence_type=42,
+            severity=0.5, rule_id=3,
+        )
+        gap_second = engine.add_gap(
+            claim_id=claim_id, gap_type=1, required_evidence_type=42,
+            severity=0.5, rule_id=1,
+        )
+        gap_third = engine.add_gap(
+            claim_id=claim_id, gap_type=1, required_evidence_type=42,
+            severity=0.5, rule_id=2,
+        )
+        ev = engine.add_evidence(
+            claim_id=claim_id, raw_ref_id=0, evidence_type=42, strength=0.8,
+        )
+
+        resolved = engine.resolve_gaps_for_evidence(ev)
+
+        assert list(resolved) == sorted([gap_first, gap_second, gap_third])
+        # 강한 단언: 결과 그 자체가 오름차순
+        assert list(resolved) == sorted(resolved)

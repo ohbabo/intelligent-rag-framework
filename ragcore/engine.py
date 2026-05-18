@@ -41,6 +41,8 @@ class Engine:
         # key = (subject_id, created_by_rule, gap_type, required_evidence_type)
         self._gap_dedup_index: dict[tuple[int, int, int, int], int] = {}
         self._claim_gap_refs: dict[int, set[int]] = {}
+        # PR5 §17: gap_id -> evidence_id (first registering, no overwrite).
+        self._gap_resolutions: dict[int, int] = {}
 
     def _allocate_id(self, kind: str) -> int:
         next_id = self._next_id.get(kind, 0) + 1
@@ -271,6 +273,46 @@ class Engine:
             (self._gaps[gid] for gid in gap_ids),
             key=lambda g: g.id,
         )
+
+    # ---- Gap resolution (PR5 §17) -----------------------------------------
+
+    def resolve_gaps_for_evidence(self, evidence_id: int) -> tuple[int, ...]:
+        """Close matching unresolved gaps using the given evidence.
+
+        매칭 규칙: ``gap.required_evidence_type == evidence.type``.
+        검사 범위: ``gaps_for_claim(evidence.claim_id)`` — 이 evidence 가 속한
+        claim 이 참조하는 gap 들만. created_by_rule 은 매칭 조건에 포함하지 않는다.
+
+        이미 ``_gap_resolutions`` 에 등록된 gap 은 건너뛴다 (first evidence 유지,
+        overwrite 금지). 이번 호출에서 새로 resolved 된 gap_id 들만
+        gap_id 오름차순 tuple 로 반환한다.
+
+        Raises:
+            KeyError: unknown evidence_id.
+        """
+        if evidence_id not in self._evidences:
+            raise KeyError(f"unknown evidence_id: {evidence_id}")
+        evidence = self._evidences[evidence_id]
+        newly_resolved: list[int] = []
+        for gap in self.gaps_for_claim(evidence.claim_id):
+            if gap.required_evidence_type != evidence.type:
+                continue
+            if gap.id in self._gap_resolutions:
+                continue
+            self._gap_resolutions[gap.id] = evidence_id
+            newly_resolved.append(gap.id)
+        newly_resolved.sort()
+        return tuple(newly_resolved)
+
+    def gap_resolution(self, gap_id: int) -> int | None:
+        """Return the evidence_id that resolved this gap, or None if unresolved.
+
+        Raises:
+            KeyError: unknown gap_id.
+        """
+        if gap_id not in self._gaps:
+            raise KeyError(f"unknown gap_id: {gap_id}")
+        return self._gap_resolutions.get(gap_id)
 
     # ---- Rule registry -----------------------------------------------------
 

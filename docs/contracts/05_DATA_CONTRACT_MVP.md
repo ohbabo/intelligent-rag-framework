@@ -1400,3 +1400,251 @@ PR4:
 구현 단계 (27/28차):
 - 27차: `Engine` 에 `_gap_dedup_index` / `_claim_gap_refs` 추가, `add_gap` dedup 로직, `gaps_for_claim` 의미 확장
 - 28차: tests (위 11개 시나리오) + 회귀 보장
+
+## 17. Evidence-based Gap resolution (MVP)
+
+> 상태: 30/31/32차 (PR5). Evidence 가 매칭 Gap 을 닫는 최소 루프. **Claim lifecycle (candidate→confirmed/refuted) 은 본 PR 범위 밖** — PR6.
+
+### 17.1 목적
+
+PR4 까지의 흐름:
+
+```text
+Rule fires → Claim + Gap(s) 생성 (또는 reuse)
+Evidence 추가 → 어디에도 연결되지 않음
+```
+
+PR5 추가:
+
+```text
+Rule fires      → Claim + Gap(s)
+Evidence 추가   → (변화 없음 — 기존 의미 유지)
+resolve 호출    → Evidence 가 매칭 Gap 들을 닫음
+```
+
+즉, **"Evidence 가 Gap 을 닫는다"** 는 최소 루프만 만든다.
+Evidence 의미는 PR1~PR4 와 동일 — `add_evidence` 자체에는 자동 부작용 없음.
+
+### 17.2 저장 위치
+
+```python
+# Engine 내부 신규 슬롯
+_gap_resolutions: dict[int, int]   # gap_id → 그 gap 을 resolve 한 evidence_id
+```
+
+- `Gap` dataclass 는 **변경 없음** (PR2 §14 / PR4 §16 의 단일 필드 구조 유지)
+- 외부에 노출은 `gap_resolution(gap_id) -> int | None` 메서드를 통해서만
+- `_gap_resolutions` 자체는 public 아님
+
+이유 (PR4 의 `_gap_dedup_index` 와 동일 패턴):
+
+| 옵션 | 채택 | 이유 |
+|---|---|---|
+| (A) `Gap.resolved_by_evidence_id` 필드 추가 | ✗ | dataclass 변경. PR4 의 "Gap dataclass 단일 필드" 결정과 충돌 |
+| (B) Engine 내부 dict | ✓ | dataclass 보존. PR4 패턴과 일관. 추가 인덱스가 자연스러움 |
+| (C) Relation 으로 표현 | ✗ | "resolved by" 는 의미 관계가 아닌 lifecycle 상태. Relation 의미 오염 |
+
+### 17.3 API
+
+```python
+def resolve_gaps_for_evidence(self, evidence_id: int) -> tuple[int, ...]:
+    """주어진 evidence 로 매칭되는 unresolved gap 들을 resolve.
+
+    매칭 규칙:
+        gap.required_evidence_type == evidence.type
+
+    검사 범위:
+        gaps_for_claim(evidence.claim_id) — evidence 가 속한 claim 의 gap 들만
+
+    동작:
+        - 매칭되는 gap 들 중 _gap_resolutions 에 없는 것만 resolve
+        - 이미 resolved 된 gap 은 건너뜀 (first evidence 유지, overwrite 금지)
+        - 이번 호출에서 새로 resolved 된 gap_id 들만 반환
+
+    반환:
+        gap_id 오름차순 tuple. 매칭 없거나 모두 already-resolved 면 빈 tuple.
+
+    예외:
+        KeyError — unknown evidence_id
+    """
+
+def gap_resolution(self, gap_id: int) -> int | None:
+    """gap 을 resolve 한 evidence_id 반환. unresolved 면 None.
+
+    예외:
+        KeyError — unknown gap_id
+    """
+```
+
+### 17.4 매칭 규칙
+
+```python
+gap.required_evidence_type == evidence.type
+```
+
+- `gap.created_by_rule` 은 **매칭 조건에 포함하지 않음**
+- `gap.gap_type` 은 매칭 조건에 포함하지 않음 (현재 단일값 `MISSING_EVIDENCE=1`)
+- `gap.severity` 는 매칭에 무관
+
+### 17.5 검사 범위 — 매우 중요
+
+```python
+search_scope = self.gaps_for_claim(evidence.claim_id)
+```
+
+즉, **evidence 가 속한 claim 의 gap 들만** 검사한다.
+
+**Global cross-rule search/resolution 은 제외.**
+단, `evidence.claim_id` 가 참조하는 gap 목록 안에서는 `created_by_rule` 을 매칭 조건으로 보지 않는다.
+
+> 표현 주의: "cross-rule resolution 제외" 라고만 쓰면 모호. 정확히는:
+> - **금지**: engine 전체 / subject 전체 / rule 전체 gap 검색
+> - **허용**: 같은 claim 이 참조하는 gap 중 `required_evidence_type` 매칭되는 것 모두 resolve — 그 gap 들이 서로 다른 rule 에서 만들어졌어도 OK (검사 범위 안이라면)
+
+PR5 시점에서는 한 claim 안에 서로 다른 rule_id 의 gap 이 들어올 일은 일반적으로 없지만, 위 정의는 **검사 범위로 boundary 를 그은 것**이지 rule_id 로 boundary 를 그은 것이 아니다.
+
+### 17.6 Cross-claim semantics (PR4 dedup 과의 상호작용)
+
+PR4 dedup 으로 여러 Claim 이 같은 Gap 을 공유할 수 있다.
+
+```python
+# fire_rule 2회 (같은 입력)
+claim_a = fire_rule(...)  # → Claim A, Gap g1
+claim_b = fire_rule(...)  # → Claim B, Gap g1 (reuse)
+
+# Claim A 에 evidence 추가 + resolve
+ev = engine.add_evidence(claim_a, raw_ref_id=..., evidence_type=..., strength=...)
+resolved = engine.resolve_gaps_for_evidence(ev)  # → (g1,)
+
+# 결과: g1 은 resolved
+engine.gap_resolution(g1)  # → ev (Claim B 에서 봐도 동일)
+```
+
+**Resolution 은 gap-scoped.** 한 claim 의 evidence 로 닫힌 gap 은 그 gap 을 share 하는 다른 claim 에서도 resolved 로 보인다.
+
+이유:
+- Gap 자체가 PR4 부터 "subject+rule+type+evidence" 정체성 — claim_id 보다 위 레벨
+- "어떤 evidence 가 그 정체성의 gap 을 채웠는가" 는 claim 과 독립적인 사실
+- Claim 별로 다른 resolution 을 갖는다면 Gap 정체성이 다시 claim 종속이 되어 PR4 와 모순
+
+### 17.7 `add_evidence` 의미 — 변화 없음
+
+```python
+def add_evidence(self, claim_id, raw_ref_id, evidence_type, strength) -> int:
+    # PR1 부터 의미 그대로. 자동 resolve 없음.
+```
+
+이유:
+
+| | 자동 resolve 의 문제 |
+|---|---|
+| 순서 의존성 | `add_evidence` 시점에 모든 Gap 이 이미 만들어졌다는 보장 없음 |
+| 명시성 | "evidence 가 gap 을 닫았다" 는 의도된 행위여야 함, 부작용 X |
+| 테스트성 | resolve 시점을 명시적으로 분리해야 invariant 검증이 깨끗 |
+| 미래 확장성 | strength/score-weighted resolution, partial resolution 등은 명시적 메서드여야 자연스러움 |
+
+→ 호출자가 명시적으로 `resolve_gaps_for_evidence(evidence_id)` 호출.
+
+### 17.8 Re-resolution 정책 — first evidence 유지
+
+```python
+# 첫 evidence
+ev1 = engine.add_evidence(claim, type=T, ...)
+engine.resolve_gaps_for_evidence(ev1)  # → (g1,)
+engine.gap_resolution(g1)              # → ev1
+
+# 두 번째 evidence (같은 type)
+ev2 = engine.add_evidence(claim, type=T, ...)
+engine.resolve_gaps_for_evidence(ev2)  # → () (g1 은 이미 resolved, 빈 tuple 반환)
+engine.gap_resolution(g1)              # → ev1 (유지, overwrite 없음)
+```
+
+PR4 의 severity 정책 (`first registering keep, no merge`) 과 같은 패턴.
+
+이유:
+- "어떤 evidence 가 처음으로 gap 을 닫았는가" 는 stable 한 사실
+- 덮어쓰면 동일 입력에 대한 결과가 호출 순서에 의존 (non-deterministic-feeling)
+- Strength-weighted "더 좋은 evidence 로 교체" 같은 동작은 미래 PR 의 명시적 결정
+
+### 17.9 반환 순서
+
+```python
+resolve_gaps_for_evidence(evidence_id) → tuple[int, ...]   # gap_id 오름차순
+```
+
+PR4 의 `gaps_for_claim` 과 동일한 결정성. `set` 의 iteration 비결정성 회피.
+
+### 17.10 예외
+
+| 입력 | 동작 |
+|---|---|
+| unknown `evidence_id` (`resolve_gaps_for_evidence`) | `KeyError` |
+| unknown `gap_id` (`gap_resolution`) | `KeyError` |
+| 매칭 gap 없음 | 빈 tuple 반환 (정상) |
+| 모든 매칭 gap 이 이미 resolved | 빈 tuple 반환 (정상) |
+
+`gap_resolution` 은 unknown gap_id 에서 `None` 이 아니라 `KeyError` — "resolution 미설정" 과 "gap 자체 없음" 을 구분.
+
+### 17.11 보존 (impact 없음)
+
+| | PR5 영향 |
+|---|---|
+| `Gap` dataclass | 없음 (필드 변경 없음) |
+| `Claim` dataclass | 없음 |
+| `Claim.status` | **자동 전이 없음** — PR6 범위 |
+| `Evidence` dataclass | 없음 |
+| `Relation` | 없음 (resolved-by 는 Relation 아님) |
+| `add_evidence` 의미 | 없음 (자동 side effect 없음) |
+| `add_gap` / dedup | 없음 |
+| `gaps_for_claim` 의미 | 없음 (PR4 정의 그대로) |
+| `RuleStats.firing_count` | 없음 |
+| `fire_rule*` | 없음 |
+| `compute_effective_confidence` | 없음 (scoring 변경 없음) |
+
+### 17.12 Invariants (테스트로 잠금)
+
+1. 매칭되는 unresolved gap 이 있으면 `resolve_gaps_for_evidence` 반환 tuple 에 포함
+2. 매칭 gap 없으면 빈 tuple
+3. 이미 resolved 된 gap 은 두 번째 호출에서 빈 tuple (first evidence 유지)
+4. `gap_resolution(gap_id)` 는 resolve 한 evidence_id 반환, 또는 `None`
+5. 반환 순서는 항상 gap_id 오름차순
+6. 같은 claim 의 evidence 라도 type 이 다르면 다른 gap 들에 매칭
+7. **Cross-claim gap-scoped resolution**: PR4 dedup 으로 share 된 gap 은 한 claim 에서 resolved 되면 다른 claim 에서도 resolved 로 보임
+8. unknown `evidence_id` → `KeyError`
+9. unknown `gap_id` (in `gap_resolution`) → `KeyError`
+10. `add_evidence` 자체는 `_gap_resolutions` 를 변경하지 않음 (자동 resolve 금지)
+11. **기존 413 tests 그대로 통과** (회귀 방지)
+
+### 17.13 Out of Scope (의도적 제외)
+
+| 제외 | 이유 |
+|---|---|
+| `Claim.status` 자동 전이 (`candidate → confirmed/refuted`) | PR6 |
+| Strength-weighted resolution (더 좋은 evidence 로 overwrite) | 명시적 정책 결정 필요 |
+| Partial resolution / score-weighted gap close | PR6+ |
+| Rollback / unresolve | 별도 결정점 |
+| Resolution timestamp / history | 직렬화 PR 에서 |
+| `add_evidence` 의 auto-resolve side effect | 17.7 참조 |
+| Engine 전체 / subject 전체 / rule 전체 gap 검색 | 17.5 참조 |
+| Cross-rule global resolution | 17.5 참조 |
+| `compute_effective_confidence` 가 resolved gap 을 고려 | scoring 변경은 별도 PR |
+| Resolved gap 의 자동 archive / TTL | 별도 결정점 |
+
+### 17.14 Position in flow
+
+```text
+PR4 까지:
+  Rule fires → Claim + Gap (dedup) + firing_count +1
+  Evidence 추가 → 자체 보존만
+
+PR5:
+  Rule fires → Claim + Gap (dedup) + firing_count +1
+  Evidence 추가 → (변화 없음)
+  resolve_gaps_for_evidence(ev) → 매칭 gap 들 닫음
+                                  + _gap_resolutions 업데이트
+                                  + 새로 resolved 된 gap_id tuple 반환
+```
+
+구현 단계 (31/32차):
+- 31차: `Engine._gap_resolutions` 추가, `resolve_gaps_for_evidence` / `gap_resolution` 구현
+- 32차: tests (위 11개 invariant + 추가 케이스) + 회귀 보장
