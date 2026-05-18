@@ -1019,3 +1019,170 @@ Claim + 0 or N Gaps
 ```
 
 19차 끝나면 룰 firing 의 출력이 완성된다 — claim + 필요한 gaps + firing_count.
+
+---
+
+## 15. Rule firing trace (MVP)
+
+`fire_rule` 은 발화 결과를 `claim_id | None` 으로만 알려준다. **왜** 발화했는지 / 왜 안 했는지 / 어떤 condition predicate 가 어떻게 평가됐는지를 추적하려면 별도 함수 `fire_rule_with_trace` 가 필요하다. 이 섹션은 22차 구현의 전제.
+
+### Function 비대칭 (condition trace 와는 다름)
+
+조건 평가의 trace 와 **결정적으로 다른 점**: 두 firing 함수 모두 실제로 상태를 변경한다.
+
+| | `fire_rule` | `fire_rule_with_trace` |
+|---|---|---|
+| 반환값 | `int \| None` (claim_id) | `FiringTrace` |
+| Engine 상태 변경 | yes — Claim/Gap 생성, firing_count +1 | **yes — 동일** |
+| condition 평가 | 1회 (full eval internally, 결과만 사용) | 1회 (trace 도 함께 생성) |
+| 미등록 rule | `KeyError` (fail-fast) | `KeyError` (fail-fast, trace 미생성) |
+
+`evaluate_condition` ↔ `evaluate_condition_with_trace` 의 비대칭은 "fast path 는 짧게 / explain path 는 완전 평가" 였다. 여기는 다르다 — **둘 다 실제 발화 함수**이고, 단지 반환값이 다를 뿐.
+
+> 핵심: trace 함수라고 해서 "설명만 하고 상태는 안 건드림" 으로 만들면 안 된다. `fire_rule_with_trace` 는 rule firing **runtime** 함수다.
+
+### FiringTrace 구조
+
+```python
+@dataclass(frozen=True)
+class FiringTrace:
+    rule_id: int
+    rule_version: int
+    subject_id: int
+    fired: bool
+    condition_trace: Trace      # condition.Trace (= PredicateTrace | CombinatorTrace)
+    claim_id: int | None
+    gap_ids: tuple[int, ...]
+```
+
+`condition_trace` 는 `evaluate_condition_with_trace` 가 반환하는 `Trace` 객체 (조건 평가의 전체 설명).
+
+### 불변식 (반드시 잠가야 할 것)
+
+1. **`trace.fired == (trace.claim_id is not None)`**
+   - 두 표현이 항상 같은 사실을 가리킨다 — 별도 슬롯이지만 의미 일치.
+2. **`fired=False ⇒ claim_id=None and gap_ids=()`**
+   - 발화 안 했으면 Claim/Gap 0개.
+3. **`fired=True and required_evidence is None ⇒ gap_ids=()`**
+   - 발화했지만 required_evidence 없으면 gap_ids 빈 튜플.
+4. **`fired=True and required_evidence.evidence_types ⇒ len(gap_ids) == len(evidence_types)`**
+   - 각 evidence type 마다 정확히 1개 gap.
+5. **`trace.condition_trace.result == trace.fired`** (단, 미등록 rule 은 KeyError 로 trace 미생성)
+   - 평가 결과와 발화 결과 일치.
+
+### Engine ↔ Trace 분리
+
+- **Engine 은 trace 를 저장하지 않는다** — 반환만, 호출자 책임.
+- `RuleStats` (aggregate: firing_count 등) 는 계속 Engine 이 보유.
+- 두 역할 구분: trace = detailed event, stats = aggregate.
+- 무한 누적/persistence 부담은 호출자 (logger / 외부 store) 에게 넘김.
+
+### Internal sharing (divergence 방지)
+
+`fire_rule` 과 `fire_rule_with_trace` 의 로직이 두 군데로 복사되면 한쪽이 나중에 흐른다 — 가장 흔한 AI 실수.
+
+해결: 두 공개 함수는 **단일 private helper** 만 호출한다.
+
+```python
+def _fire_rule_core(...) -> FiringTrace:
+    """Single source of truth. fire_rule / fire_rule_with_trace 둘 다 이걸 호출."""
+    engine.get_rule_stats(...)            # pre-check (fail-fast)
+    condition_trace = evaluate_condition_with_trace(condition, context)
+
+    if not condition_trace.result:
+        return FiringTrace(
+            ...,
+            fired=False,
+            condition_trace=condition_trace,
+            claim_id=None,
+            gap_ids=(),
+        )
+
+    claim_id = engine.add_claim(...)
+    gap_ids = []
+    if required_evidence is not None:
+        for ev_type in required_evidence.evidence_types:
+            gap_ids.append(engine.add_gap(...))
+    engine.update_rule_stats(..., firing_delta=1)
+
+    return FiringTrace(
+        ...,
+        fired=True,
+        condition_trace=condition_trace,
+        claim_id=claim_id,
+        gap_ids=tuple(gap_ids),
+    )
+
+
+def fire_rule(...) -> int | None:
+    return _fire_rule_core(...).claim_id
+
+
+def fire_rule_with_trace(...) -> FiringTrace:
+    return _fire_rule_core(...)
+```
+
+**의도된 trade-off**: `fire_rule` 의 fast path 도 항상 `evaluate_condition_with_trace` (full eval) 를 호출하게 됨. condition 평가가 한 번뿐이라 divergence 위험은 0. fast path 성능 차이는 MVP 에서 미미. 성능이 측정 가능한 병목이 되면 별도 결정점.
+
+### Pre-check 동작 보존
+
+`fire_rule` 의 16차 fail-fast 동작 그대로:
+- `_fire_rule_core` 진입 즉시 `engine.get_rule_stats(rule_id, version)` 호출
+- 미등록 rule → `KeyError` raise, **FiringTrace 안 만들어짐**
+- 부분 mutation (claim 만 생기고 stats 못 갱신) 방지
+
+이 동작 자체는 trace 가 있든 없든 동일. `fire_rule_with_trace` 는 미등록 rule 을 try/except 로 잡아 "fired=False trace" 로 만들지 **않는다** — 미등록은 호출자 버그이므로 KeyError 가 맞다.
+
+### 하위 호환성
+
+`fire_rule` 의 시그니처는 **변경 없음**:
+
+```python
+fire_rule(
+    engine, definition, condition, output,
+    *,
+    subject_id, context,
+    required_evidence=None,
+) -> int | None
+```
+
+16~19차 호출자 코드 한 줄도 안 깨짐.
+
+### Out of scope (MVP)
+
+- **Trace 영속화** — Engine 저장 / DB 저장 / 직렬화 (JSON/YAML)
+- **Trace timestamp** — firing 시간 기록 (필요해지면 별도 결정점)
+- **Trace context snapshot** — 입력 context 의 deep copy 저장
+- **Trace pretty-printer / repr 강화**
+- **Bulk fire 의 trace 모음** — 여러 룰 동시 firing 시 trace 집합
+- **Trace ↔ RuleStats 자동 연동** — observed_precision 자동 갱신 등
+- **Trace diff/comparison** — 두 firing trace 비교
+
+### Tests (22차 최소 세트)
+
+1. `condition true` → `fired=True`, `claim_id` 값 존재, `condition_trace.result=True`
+2. `condition false (mismatch)` → `fired=False`, `claim_id=None`, `MISMATCH` reason 자식 trace 확인
+3. `condition false (missing field)` → `MISSING_FIELD` reason 확인
+4. `required_evidence=None` → `gap_ids=()`
+5. `required_evidence 3개` → `len(gap_ids)==3`, 각 id 로 `engine.get_gap` 조회 가능
+6. 미등록 rule → `KeyError` 그대로, trace 미생성
+7. **불변식**: `trace.fired == (trace.claim_id is not None)`
+8. YAML full chain end-to-end (compile 4 + register + fire_with_trace)
+9. **하위 호환**: 기존 `fire_rule` 테스트 (test_rule_runtime.py 의 16/19차 테스트들) 그대로 통과
+10. **상태 변화 동등성**: 동일 입력으로 `fire_rule` 과 `fire_rule_with_trace` 가 만든 engine 상태(Claim/Gap 개수, firing_count) 가 일치
+
+### Position in flow
+
+```text
+PR2 까지:
+  YAML → RuleSpec → compile 4종 → fire_rule → Claim + Gaps + stats
+
+PR3 (이 결정):
+  YAML → RuleSpec → compile 4종 → fire_rule_with_trace → FiringTrace
+                                                         ↳ rule_id, version, subject_id
+                                                         ↳ fired
+                                                         ↳ condition_trace
+                                                         ↳ claim_id, gap_ids
+
+기존 fire_rule 은 그대로 동작 (하위 호환). 둘은 단일 `_fire_rule_core` 공유.
+```
