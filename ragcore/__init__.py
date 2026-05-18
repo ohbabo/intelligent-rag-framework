@@ -1,4 +1,27 @@
+from ragcore.condition import (
+    TRACE_REASON_MATCH,
+    TRACE_REASON_MISMATCH,
+    TRACE_REASON_MISSING_FIELD,
+    TRACE_REASON_TYPE_MISMATCH,
+    Combinator,
+    CombinatorTrace,
+    Predicate,
+    PredicateTrace,
+    evaluate_condition,
+    evaluate_condition_with_trace,
+    load_condition_tree,
+)
 from ragcore.engine import Engine
+from ragcore.rule_compile import compile_rule_definition, register_rule_spec
+from ragcore.rule_loader import (
+    RuleSpec,
+    compile_rule_condition,
+    load_rule_spec,
+    load_rule_spec_from_yaml,
+)
+from ragcore.rule_gap import RequiredEvidenceTemplate, compile_required_evidence
+from ragcore.rule_output import RuleOutputTemplate, compile_rule_output
+from ragcore.rule_runtime import fire_rule
 from ragcore.types import (
     CLAIM_STATUS_CANDIDATE,
     CLAIM_STATUS_CONFIRMED,
@@ -28,6 +51,8 @@ __all__ = [
     "CLAIM_STATUS_CONFIRMED",
     "CLAIM_STATUS_REFUTED",
     "Claim",
+    "Combinator",
+    "CombinatorTrace",
     "Engine",
     "Entity",
     "Evidence",
@@ -39,11 +64,31 @@ __all__ = [
     "KIND_OBSERVATION",
     "KIND_RELATION",
     "Observation",
+    "Predicate",
+    "PredicateTrace",
     "RULE_MATURITY_DEPRECATED",
     "RULE_MATURITY_EXPERIMENTAL",
     "RULE_MATURITY_STABLE",
     "Relation",
+    "RequiredEvidenceTemplate",
     "RuleDefinition",
+    "RuleOutputTemplate",
+    "RuleSpec",
     "RuleStats",
     "ScoreValue",
+    "TRACE_REASON_MATCH",
+    "TRACE_REASON_MISMATCH",
+    "TRACE_REASON_MISSING_FIELD",
+    "TRACE_REASON_TYPE_MISMATCH",
+    "compile_required_evidence",
+    "compile_rule_condition",
+    "compile_rule_definition",
+    "compile_rule_output",
+    "evaluate_condition",
+    "evaluate_condition_with_trace",
+    "fire_rule",
+    "load_condition_tree",
+    "load_rule_spec",
+    "load_rule_spec_from_yaml",
+    "register_rule_spec",
 ]

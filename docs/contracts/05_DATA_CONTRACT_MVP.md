@@ -21,7 +21,7 @@ typedef uint16_t ClaimStatus;
 typedef uint16_t EvidenceType;
 typedef uint16_t RelationType;
 typedef uint16_t RuleId;
-typedef uint16_t RuleVersion;       // packed major*100 + minor
+typedef uint16_t RuleVersion;       // monotonic uint16 (1~65535); semver는 metadata only — see §8.3
 typedef uint16_t RuleMaturity;      // 0=experimental, 1=stable, 2=deprecated
 typedef uint16_t ReasonCode;
 typedef uint16_t GapType;
@@ -262,6 +262,41 @@ prior_confidence = 0.50, base_confidence = 0.80
 
 Phase 1 Engine은 등록되지 않은 `(rule_id, rule_version)`을 `add_claim`에서 허용한다 (advisory). 테스트와 초기 실험 부담을 줄이기 위함이다. Rule Engine 단계에서 strict mode가 옵션으로 들어간다.
 
+## 8.3 RuleVersion convention
+
+`RuleVersion` is a monotonic `uint16` integer used by the engine to distinguish rule behavior versions.
+
+- Valid range: `1..65535`
+- `0` is reserved for invalid/unset state.
+- The engine treats `(rule_id, rule_version)` as the stable rule identity.
+- RuleVersion is not a semantic version.
+- Semver-like labels such as `0.1.0` may be kept only as human-readable metadata or comments.
+- YAML rule definitions MUST use integer `version`.
+
+A rule version MUST be bumped when the rule's firing behavior changes, including condition logic, claim generation, scoring/confidence behavior, or output semantics.
+
+A rule version SHOULD NOT be bumped for comment-only, description-only, or documentation-only changes.
+
+### YAML example
+
+```yaml
+id: RULE_DOMAIN_SSH_001
+version: 1
+# human_label: 0.1.0
+```
+
+YAML 필드명 컨벤션 (yaml loader 구현 전 고정):
+
+```text
+룰 정의 파일:        id           (RuleDefinition.id 와 1:1)
+claim generated_by:  rule_id      (Claim의 출처 표기)
+엔진 내부 키:        (id, version) 튜플
+```
+
+같은 식별자라도 컨텍스트에 따라 필드명이 다르다. 룰 자체를 정의하는 위치에서는 `id`, 다른 객체가 그 룰을 가리키는 위치에서는 `rule_id`.
+
+핵심 문장: **RuleVersion은 문서 릴리즈 버전이 아니라, rule firing behavior의 버전이다.**
+
 ---
 
 ## 9. MVP Rules
@@ -301,7 +336,8 @@ RULE_ACTION_001 Gap-to-Check Action Selection
 
 ```yaml
 id: RULE_DOMAIN_SSH_001
-version: 0.1.0
+version: 1
+# human_label: 0.1.0
 domain: security.ssh
 maturity: experimental
 author: core
@@ -321,10 +357,18 @@ input:
 
 condition:
   all:
-    - port == 22
-    - protocol == tcp
-    - service == ssh
-    - banner contains "OpenSSH_7."
+    - field: port
+      op: eq
+      value: 22
+    - field: protocol
+      op: eq
+      value: tcp
+    - field: service
+      op: eq
+      value: ssh
+    - field: banner
+      op: contains
+      value: "OpenSSH_7."
 
 output:
   claim:
@@ -355,7 +399,7 @@ claim:
   base_confidence: 0.55
   generated_by:
     rule_id: RULE_DOMAIN_SSH_001
-    rule_version: 0.1.0
+    rule_version: 1
     rule_maturity: experimental
 ```
 
@@ -373,3 +417,605 @@ Rule에 reliability hook 자리가 예약되어 있어야 함
 ```
 
 추상 룰만으로는 보이지 않던 구조적 빈틈이, 도메인 룰 하나에서 바로 노출된다.
+
+---
+
+## 10. Condition syntax (MVP)
+
+룰의 `condition` 블록은 **structured form** 으로 표현한다. 문자열 DSL (`- port == 22`) 은 MVP 미지원 — 별도 파서가 필요해 condition evaluator 시작 전 의사결정이 늘어난다.
+
+### Structure
+
+```yaml
+condition:
+  all:
+    - field: <name>
+      op: <operator>
+      value: <literal>
+    - any:
+        - field: <name>
+          op: <operator>
+          value: <literal>
+        - ...
+```
+
+- 노드는 **정확히** predicate 또는 combinator 중 하나의 모양
+- 최상위는 predicate 또는 combinator 둘 다 가능 (단일 조건 룰을 위해 top-level predicate 허용)
+- 자식은 predicate 또는 nested combinator
+- predicate 노드의 키는 정확히 `{field, op, value}` — 추가 키 거부
+- combinator 노드의 키는 정확히 `{all}` 또는 `{any}` — 추가 키 거부 (오타로 인한 silent ignore 차단)
+- 중첩 가능 (`all` 안에 `any` 등)
+
+### Supported combinators
+
+| Combinator | 의미 | MVP |
+|---|---|---|
+| `all` | 모든 자식이 true | ✅ |
+| `any` | 자식 중 하나라도 true | ✅ |
+| `not` | 부정 | ❌ 다음 단계 |
+
+`not` 을 미루는 이유: 표현력은 늘지만 evaluator 복잡도 증가. 많은 경우 룰 재설계로 우회 가능. 구체적 필요가 보일 때 별도 결정점으로 도입.
+
+### Supported operators
+
+| op | 의미 | 적용 타입 |
+|---|---|---|
+| `eq` | 같음 | 모든 타입 |
+| `ne` | 다름 | 모든 타입 |
+| `lt` | `<` | int, float |
+| `le` | `<=` | int, float |
+| `gt` | `>` | int, float |
+| `ge` | `>=` | int, float |
+| `contains` | 부분 포함 | str (substring), list/tuple (membership) |
+
+### Input context
+
+evaluator 는 평가 대상을 **flat dict** 으로 받는다.
+
+```python
+context: Mapping[str, Any]
+# 예: {"port": 22, "protocol": "tcp", "banner": "OpenSSH_7.4"}
+```
+
+`field` 값은 context 의 top-level key 만 가리킨다. nested field (`evidence.banner` 같은 dot notation) 는 MVP 미지원.
+
+### Semantics
+
+| 상황 | MVP 결과 |
+|---|---|
+| field 가 context 에 없음 | 해당 predicate → `false` (전체 절이 아니라 그 predicate 만) |
+| context value 타입이 op 와 안 맞음 (예: `lt` 인데 string) | 해당 predicate → `false` |
+| `all` 의 자식이 비어있음 | `true` (vacuous truth) |
+| `any` 의 자식이 비어있음 | `false` |
+
+**원칙**: condition evaluator 는 입력 데이터 누락/이상에 **관대 (lenient)** 하다. 룰이 firing 못 했을 때 `claim 없음` 으로 표현되고, "왜 안 됐는지" 는 evaluator trace (별도 결정점) 가 책임진다.
+
+### Out of scope (MVP)
+
+- 문자열 DSL (`- port == 22`) — 별도 파서 필요, priority/precedence 결정점 늘어남
+- `not` combinator — 표현력은 늘지만 evaluator 복잡도 증가
+- Nested field access (`evidence.banner`) — context shape 결정 필요
+- Regex match (`re_match`)
+- 산술식 (`port * 2`)
+- Custom functions (`is_open_port(port)`)
+- 변수 binding / 패턴 매칭
+- Cross-evidence join
+
+MVP 가 안정화된 뒤 단계적으로 도입.
+
+### Loader 동작 (현재 단계)
+
+`load_rule_spec` 은 현재 condition 블록을 **검증하지 않고** `raw["condition"]` 에 그대로 보존한다. 별도 `load_condition_tree(raw["condition"]) → ConditionTree` 함수가 다음 단계에서 들어온다. 그 시점에 condition 의 구조 검증과 operator allowlist 확인이 발생한다.
+
+---
+
+## 11. Condition trace (MVP)
+
+`evaluate_condition` 은 lenient — missing field / type mismatch / value mismatch 가 전부 `false` 로 흘러간다. 그래서 룰이 firing 못 했을 때 **"왜"** 가 사라진다.
+
+```text
+banner 가 없어서 false?
+banner 값이 달라서 false?
+port 가 다른 타입이라 false?
+```
+
+이를 구별하기 위해 evaluation 의 **debug / explain layer** 로 trace 를 둔다. trace 는 judgment 가 아니다 — RuleStats / Claim.base_confidence / scoring 같은 판단 슬롯에 들어가지 않는다.
+
+### Function 비대칭
+
+| | `evaluate_condition` | `evaluate_condition_with_trace` |
+|---|---|---|
+| 반환값 | `bool` | `Trace` (tree) |
+| Short-circuit | yes (`all` 첫 false, `any` 첫 true 에서 멈춤) | **no** — 모든 child 평가 |
+| 사용 위치 | 룰 firing 판정 (fast path) | 디버깅 / "왜 안 됐어" 설명 |
+
+이 비대칭은 의도적이다.
+- 룰 firing 판정은 빨라야 함 → short-circuit 유지
+- "왜 false 인지" 알려면 모든 자식 결과가 필요 → full evaluation
+
+### Types
+
+```python
+@dataclass(frozen=True)
+class PredicateTrace:
+    field: str
+    op: str
+    expected: Any
+    actual: Any | None         # field 가 없으면 None (의미: 표시용 placeholder)
+    actual_present: bool       # context 에 field 가 있었는지 (None 값과 구분)
+    result: bool
+    reason: str                # TRACE_REASON_* 중 하나
+
+
+@dataclass(frozen=True)
+class CombinatorTrace:
+    kind: str                  # "all" | "any"
+    children: tuple[Trace, ...]
+    result: bool
+
+
+Trace = PredicateTrace | CombinatorTrace
+```
+
+`actual` 과 `actual_present` 가 분리되어 있는 이유: context 에 `{"x": None}` 같은 명시적 `None` 값이 들어왔을 때 "field 없음" 과 구별 가능해야 함.
+
+### Reason discriminator
+
+| 상수 | 의미 | 발생 조건 |
+|---|---|---|
+| `TRACE_REASON_MATCH` | predicate true | 정상 매칭 |
+| `TRACE_REASON_MISMATCH` | predicate false (값 다름) | eq/ne/numeric/contains 모두 |
+| `TRACE_REASON_MISSING_FIELD` | field 가 context 에 없음 | `pred.field not in context` |
+| `TRACE_REASON_TYPE_MISMATCH` | 타입 불일치로 false | numeric op 가 non-number, contains 가 부적절 타입 |
+
+Combinator 노드에는 `reason` 이 없다 — 자식들의 reason 집합이 곧 설명이다.
+
+### Example
+
+```python
+from ragcore import (
+    evaluate_condition_with_trace,
+    load_condition_tree,
+    TRACE_REASON_MATCH,
+    TRACE_REASON_MISMATCH,
+)
+
+tree = load_condition_tree({
+    "all": [
+        {"field": "port", "op": "eq", "value": 22},
+        {"field": "banner", "op": "contains", "value": "OpenSSH_7."},
+    ]
+})
+
+trace = evaluate_condition_with_trace(
+    tree,
+    {"port": 22, "banner": "OpenSSH_9.0"},
+)
+
+assert trace.result is False
+assert trace.kind == "all"
+assert trace.children[0].result is True
+assert trace.children[0].reason == TRACE_REASON_MATCH
+assert trace.children[1].result is False
+assert trace.children[1].reason == TRACE_REASON_MISMATCH
+```
+
+### Out of scope (MVP)
+
+- Trace 직렬화 (JSON/YAML 등) — debug 단계는 repr 로 충분
+- Trace 시간 측정 (latency profile)
+- 여러 룰 firing 의 trace aggregation
+- RuleStats 갱신과 trace 자동 연동
+- Diff/comparison between traces
+- Trace pretty-printer
+
+### Loader 동작 변경 없음
+
+`load_condition_tree` 는 동일하게 동작한다. trace 는 evaluator 단계의 새 함수일 뿐, ConditionTree 구조나 loader 책임에는 영향이 없다.
+
+---
+
+## 12. RuleId mapping (MVP)
+
+`RuleSpec.id` 는 문자열이다 (예: `"RULE_DOMAIN_SSH_001"`). `RuleDefinition.id` 는 `uint16` 이다. 두 표현 사이의 매핑 규칙을 여기서 고정한다.
+
+`RuleSpec.maturity` 도 같은 문제 — 문자열 (`"experimental"`) ↔ 정수 (`RULE_MATURITY_*`).
+
+### 결정사항
+
+1. **Static mapping table** — 코드 안에 dict 로 둔다 (외부 파일 / hash / 동적 등록 미사용 MVP)
+2. **Compile 시점 1회 lookup** — `compile_rule_definition(spec)` 이 매핑 적용
+3. **Unknown id → `ValueError`** — 매핑에 없는 문자열은 거부 (strict)
+4. **Unknown maturity → `ValueError`** — 알려진 3개 값 외 거부
+5. **0 reserved / 1..65535 range** — `RULE_ID_MAP` 의 값 범위 (RuleVersion 과 동일 규칙)
+6. **모듈 로딩 시 정적 검증** — id 값 범위 위반 / 중복은 import 시점에 거부
+
+### 매핑 구조
+
+```python
+# 위치 추천: ragcore/rule_loader.py (혹은 ragcore/rule_compile.py)
+
+from collections.abc import Mapping
+from ragcore.types import (
+    RULE_MATURITY_DEPRECATED,
+    RULE_MATURITY_EXPERIMENTAL,
+    RULE_MATURITY_STABLE,
+)
+
+RULE_ID_MAP: Mapping[str, int] = {
+    "RULE_DOMAIN_SSH_001": 1,
+    # 새 룰은 여기에 한 줄 추가, PR review 에서 충돌 검토
+}
+
+RULE_MATURITY_MAP: Mapping[str, int] = {
+    "experimental": RULE_MATURITY_EXPERIMENTAL,  # 0
+    "stable":       RULE_MATURITY_STABLE,        # 1
+    "deprecated":   RULE_MATURITY_DEPRECATED,    # 2
+}
+```
+
+### Compile 흐름
+
+```python
+def compile_rule_definition(spec: RuleSpec) -> RuleDefinition: ...
+```
+
+동작:
+
+```text
+spec.id (str)                      → RULE_ID_MAP lookup → uint16 RuleId
+spec.version (int)                 → 그대로 (이미 1..65535 검증됨)
+spec.maturity (str)                → RULE_MATURITY_MAP lookup → uint8 RuleMaturity
+spec.prior_confidence (ScoreValue) → 그대로
+```
+
+### Error 분기
+
+| 상황 | 결과 |
+|---|---|
+| `spec.id` 가 `RULE_ID_MAP` 에 없음 | `ValueError("unknown rule id: {id}")` |
+| `spec.maturity` 가 `RULE_MATURITY_MAP` 에 없음 | `ValueError("unknown maturity: {maturity}")` |
+| `RULE_ID_MAP` 값이 `<1` 또는 `>65535` | 모듈 로딩 시 assertion 실패 |
+| `RULE_ID_MAP` 값에 중복 (다른 키가 같은 int) | 모듈 로딩 시 assertion 실패 |
+
+### 새 룰 추가 절차
+
+1. yaml 룰 정의에 `id: NEW_RULE_NAME` 사용
+2. `RULE_ID_MAP` 에 한 줄 추가: `"NEW_RULE_NAME": <next_unused_int>`
+3. PR review 에서 id 값 충돌 / 의미 검토 (사람이 검토하는 게 핵심)
+4. `compile_rule_definition` 호출 시 자동으로 새 매핑 적용
+
+### Why static map (MVP)
+
+| 후보 | 트레이드오프 |
+|---|---|
+| **Static map (선택)** | 단순. 코드에서 grep 가능. PR review 로 충돌 검토. 부담 최소. |
+| 외부 YAML registry | 룰 추가 시 두 파일 동기화. 로딩 복잡도 ↑. MVP 부담. |
+| Hash 기반 자동 매핑 | id 안정성 X (룰 이름 바뀌면 키 충돌 가능). 추적 어려움. |
+| 동적 등록 (`Engine.register_rule_id`) | strict mode 결정 필요. Engine 책임 비대. 다음 결정점. |
+
+### Out of scope (MVP)
+
+- 동적 룰 등록 / hot reload
+- 외부 매핑 파일 로딩 (yaml/json registry)
+- Hash / UUID 기반 자동 id 생성
+- 룰 이름 변경 시 alias 처리
+- Multi-tenant 룰 namespace
+- `Engine.register_rule` 자동 호출 (12차 compile 만 함, Engine 연동은 별도 결정점)
+
+### Compile 모듈 위치 (선택지)
+
+12차 구현 시점에 둘 중 선택:
+
+- **옵션 L** — `ragcore/rule_loader.py` 에 `compile_rule_definition` + 매핑 테이블 추가. 단순.
+- **옵션 C** — `ragcore/rule_compile.py` 신규 파일로 분리. loader (header validation) 와 compile (string → int 매핑) 책임 명시적 분리.
+
+추천은 **옵션 C** (책임 분리). 12차 구현 직전 다시 확인.
+
+### Loader 동작 변경 없음
+
+`load_rule_spec` / `load_rule_spec_from_yaml` / `compile_rule_condition` 모두 동작 변경 없음. 이 결정은 다음 단계 (12차 `compile_rule_definition` 구현) 의 전제만 고정.
+
+---
+
+## 13. Rule output claim (MVP)
+
+룰이 firing 됐을 때 어떤 `Claim` 을 만들지 YAML 에서 표현한다. 이 섹션은 **15차 parser/compile 구현의 전제** — 어떤 필드를 받고, 어떤 매핑을 적용하고, 무엇은 호출자 책임인지 고정한다.
+
+### MVP shape
+
+```yaml
+output:
+  claim:
+    type: outdated_ssh_candidate          # str → ClaimType uint16 (CLAIM_TYPE_MAP)
+    status: candidate                     # str → ClaimStatus uint16 (CLAIM_STATUS_MAP)
+    base_confidence: 0.55                 # float 0.0~1.0
+    reason_code: OPENSSH_7_SERIES_BANNER  # str → ReasonCode uint16 (REASON_CODE_MAP)
+```
+
+### 핵심 결정: `subject_id` 는 YAML 이 해석하지 않는다
+
+룰 output 은 "어떤 종류의 claim 을 어떤 상태로 만들지" 만 기술한다. **누구에 대한 claim 인가** (subject_id) 는 `fire_rule` 호출자가 외부에서 제공한다.
+
+```python
+fire_rule(engine, compiled_rule, subject_id, context)
+```
+
+이유: YAML 에 `subject: service:ssh` 같은 표기를 넣는 순간 entity resolver 가 열린다. resolver 는 자체 결정점 (어떤 entity 가 무엇인지, namespace, lookup 정책 등) — MVP 부담 vs 가치 비례 안 맞음.
+
+§9 SSH_001 yaml 예시의 `subject:` 줄은 **broader intent** 의 표기일 뿐, MVP parser 가 해석하지 않음.
+
+### 매핑 (static, §12 RULE_ID_MAP 와 동일 패턴)
+
+```python
+# 위치 추천: ragcore/rule_output.py (15차에서 신규 생성)
+
+CLAIM_TYPE_MAP: Mapping[str, int] = {
+    "outdated_ssh_candidate": 1,
+    # 새 claim type 추가는 PR review 로 충돌 검토
+}
+
+CLAIM_STATUS_MAP: Mapping[str, int] = {
+    "candidate": CLAIM_STATUS_CANDIDATE,    # 0
+    "confirmed": CLAIM_STATUS_CONFIRMED,    # 1
+    "refuted":   CLAIM_STATUS_REFUTED,      # 2
+}
+
+REASON_CODE_MAP: Mapping[str, int] = {
+    "OPENSSH_7_SERIES_BANNER": 1,
+    "SSH_PORT_OPEN":           2,
+    # 새 reason code 도 PR review 로 충돌 검토
+}
+```
+
+각 매핑의 무결성 (범위 1..65535 / 중복 / 빈 키 / bool 차단) 은 §12 RULE_ID_MAP 과 동일하게 모듈 로딩 시 정적 검증한다.
+
+### Compile 흐름 (15차)
+
+```python
+@dataclass(frozen=True)
+class RuleOutputTemplate:
+    claim_type: int               # CLAIM_TYPE_MAP lookup
+    status: int                   # CLAIM_STATUS_MAP lookup
+    base_confidence: ScoreValue
+    reason_code: int              # REASON_CODE_MAP lookup
+
+
+def compile_rule_output(spec: RuleSpec) -> RuleOutputTemplate: ...
+```
+
+동작:
+- `spec.raw["output"]["claim"]` 에서 4개 필드 꺼냄
+- 각 문자열을 매핑으로 변환
+- `base_confidence` 는 `ScoreValue` 로 wrap (range 검증)
+- frozen 으로 반환
+
+호출자가 firing 시점에 (16차 fire_rule):
+
+```python
+template = compile_rule_output(spec)
+engine.add_claim(
+    subject_id=external_subject_id,           # 외부 제공
+    claim_type=template.claim_type,
+    rule_id=compiled_rule_def.id,
+    rule_version=compiled_rule_def.version,
+    reason_code=template.reason_code,
+    base_confidence=template.base_confidence.value,
+    status=template.status,
+)
+```
+
+### Error 분기
+
+| 상황 | 결과 |
+|---|---|
+| `output` 또는 `output.claim` 누락 | `ValueError("missing required field: ...")` |
+| `type` 누락 또는 unknown | `ValueError("unknown claim type: ...")` |
+| `status` 누락 또는 unknown | `ValueError("unknown claim status: ...")` |
+| `reason_code` 누락 또는 unknown | `ValueError("unknown reason code: ...")` |
+| `base_confidence` 범위 위반 | `ValueError` (ScoreValue 가 던짐) |
+| `base_confidence` 누락 / 비-숫자 | `ValueError` / `TypeError` |
+| 매핑 정합성 위반 (값 범위 / 중복) | 모듈 로딩 시 `AssertionError` (§12 패턴) |
+
+### Out of scope (MVP)
+
+- **`subject` 필드** — YAML 에서 entity resolver 안 함, fire_rule 호출자 책임
+- **`required_evidence`** — 별도 결정점 (17차, Gap 생성과 연동)
+- **`evidence_strength`** — Claim 자체에 evidence_strength 필드 없음. 증거 강도는 별도 evidence 흐름에서 다룸
+- **여러 claim 동시 생성** — MVP 는 룰 하나 firing → claim 하나
+- **`reason_code` list** — MVP 는 단일 reason_code. 다중 이유는 별도 결정점
+- **출력 dynamic interpolation** (`{{ banner }}` 같은 placeholder) — scope 밖
+- **claim 의 `flags` 필드 표현** — 표현 안 함, 기본값 0
+
+### YAML loader 동작 변경 없음
+
+`load_rule_spec` / `load_rule_spec_from_yaml` 는 변경 없음. `output` 블록은 여전히 `spec.raw["output"]` 에 보존만 됨. 15차에서 `compile_rule_output(spec)` 이 들어올 때 처음 검증된다.
+
+### Position in flow
+
+```text
+YAML
+  ↓ load_rule_spec_from_yaml                                            (3차)
+RuleSpec
+  ↓ compile_rule_definition   id/maturity str → int                     (12차 ✅)
+RuleDefinition
+  ↓ engine.register_rule (via register_rule_spec)                       (13차 ✅)
+Engine (rule registered, stats initialized)
+
+별도 경로:
+RuleSpec
+  ↓ compile_rule_condition    raw["condition"] → ConditionTree          (8차 ✅)
+ConditionTree
+  ↓ evaluate_condition / _with_trace                                    (6, 10차 ✅)
+bool / Trace
+
+신규 (15차):
+RuleSpec
+  ↓ compile_rule_output       raw["output"] → RuleOutputTemplate        (15차 신규)
+RuleOutputTemplate
+
+16차 (fire_rule) 에서 위 세 가지 결과를 묶는다:
+- ConditionTree 평가 (evaluate_condition)
+- true 면 RuleOutputTemplate + caller 제공 subject_id 로 engine.add_claim
+- RuleStats firing_count 증분
+```
+
+---
+
+## 14. Required evidence → Gap (MVP)
+
+룰이 firing 됐을 때 (`condition` true), `output.claim.required_evidence` 에 명시된 evidence type 들을 각각 `Gap` 으로 생성한다. 이 섹션은 17~19차 작업의 전제.
+
+§13 의 `compile_rule_output` 은 4개 핵심 필드만 보고 `required_evidence` 는 무시한다. 이번 결정은 `required_evidence` 를 **별도 compile 함수** (`compile_required_evidence`) 로 처리하는 흐름을 고정한다 — output template 의 책임이 비대해지지 않도록.
+
+### MVP shape
+
+```yaml
+output:
+  claim:
+    type: outdated_ssh_candidate
+    status: candidate
+    base_confidence: 0.55
+    reason_code: OPENSSH_7_SERIES_BANNER
+    required_evidence:           # ← 14차 scope
+      - exact_openssh_version
+      - os_family
+      - package_backport_status
+```
+
+- 리스트의 각 원소는 **EvidenceType 매핑 가능한 문자열**
+- 빈 리스트 또는 누락 = required_evidence 없음 → Gap 0개
+
+### 결정사항
+
+1. **각 string → 별개 Gap** — list 원소 N개면 Gap N개 생성
+2. **Gap.claim_id = 방금 생성된 Claim 의 id** — 명시적 link (Gap struct 의 기존 claim_id 슬롯 사용)
+3. **Gap.type = `GAP_TYPE_MISSING_EVIDENCE`** (단일 상수, MVP 는 한 종류)
+4. **Gap.required_evidence_type = `REQUIRED_EVIDENCE_MAP` lookup**
+5. **Gap.severity = `ScoreValue(0.5)`** (MVP 고정 default — 차별화는 별도 결정점)
+6. **Gap.created_by_rule = rule_id** (해당 룰 ID)
+7. **condition false 시 Gap 생성 0** — Claim 도 없으니 Gap 도 없음
+8. **중복 방지 안 함** — 같은 룰이 여러 번 fire 되면 Gap 도 여러 번 생성됨 (dedup 은 별도 결정점)
+9. **fire_rule 반환값 unchanged** — `claim_id | None`. Gap ID 들은 `engine.gaps_for_claim(claim_id)` 로 조회
+
+### 매핑 (static, §12 / §13 패턴)
+
+```python
+# 위치 추천: ragcore/rule_gap.py (18차 신규)
+
+REQUIRED_EVIDENCE_MAP: Mapping[str, int] = {
+    "exact_openssh_version":   1,
+    "os_family":               2,
+    "package_backport_status": 3,
+    # 새 evidence type: PR review 로 충돌 검토 후 한 줄 추가
+}
+
+GAP_TYPE_MISSING_EVIDENCE = 1
+DEFAULT_GAP_SEVERITY = 0.5
+```
+
+각 매핑의 무결성 (값 범위 1..65535 / 중복 / 빈 키 / bool 차단) 은 §12 RULE_ID_MAP 패턴 그대로 모듈 로딩 시 정적 검증.
+
+`GAP_TYPE_MISSING_EVIDENCE` 는 MVP 단일 상수 — 다른 GapType 은 별도 결정점.
+
+### Compile (18차)
+
+```python
+# ragcore/rule_gap.py
+
+@dataclass(frozen=True)
+class RequiredEvidenceTemplate:
+    evidence_types: tuple[int, ...]   # REQUIRED_EVIDENCE_MAP lookup 결과들
+
+
+def compile_required_evidence(spec: RuleSpec) -> RequiredEvidenceTemplate: ...
+```
+
+동작:
+- `spec.raw["output"]["claim"]["required_evidence"]` 가 없거나 빈 리스트 → `evidence_types = ()`
+- 각 원소 string → `REQUIRED_EVIDENCE_MAP` lookup → uint16
+- 결과는 frozen tuple (순서 보존)
+
+`RuleSpec.id` 가 등록된 룰인지 등은 검증 안 함 — 다른 단계 책임.
+
+### Runtime 확장 (19차)
+
+```python
+# rule_runtime.py — fire_rule 시그니처 확장
+
+def fire_rule(
+    engine: Engine,
+    definition: RuleDefinition,
+    condition: ConditionTree,
+    output: RuleOutputTemplate,
+    *,
+    subject_id: int,
+    context: Mapping[str, Any],
+    required_evidence: RequiredEvidenceTemplate | None = None,  # 신규
+) -> int | None: ...
+```
+
+동작 변경:
+- `required_evidence` 인자 추가, 기본값 `None`
+- condition true 시 claim 생성 직후 각 evidence_type 마다 `engine.add_gap` 호출
+- `required_evidence=None` 또는 `evidence_types=()` 면 Gap 생성 안 함 (16차 동작과 동일)
+
+```python
+# pseudo-code
+if evaluate_condition(...):
+    claim_id = engine.add_claim(...)
+    if required_evidence is not None:
+        for ev_type in required_evidence.evidence_types:
+            engine.add_gap(
+                claim_id=claim_id,
+                gap_type=GAP_TYPE_MISSING_EVIDENCE,
+                required_evidence_type=ev_type,
+                severity=DEFAULT_GAP_SEVERITY,
+                rule_id=definition.id,
+            )
+    engine.update_rule_stats(..., firing_delta=1)
+    return claim_id
+return None
+```
+
+기본값 `None` 덕분에 기존 16차 호출자는 변경 없이 동작 — 하위 호환.
+
+### Error 분기
+
+| 상황 | 결과 |
+|---|---|
+| `required_evidence` 누락 또는 `[]` | Gap 0개 (정상) |
+| `required_evidence` 가 list 아님 | `TypeError` |
+| 원소가 string 아님 | `TypeError` |
+| 원소가 `REQUIRED_EVIDENCE_MAP` 에 없음 | `ValueError("unknown evidence type: ...")` |
+| 매핑 정합성 위반 | 모듈 로딩 `AssertionError` |
+
+### Out of scope (MVP)
+
+- **Gap severity 차별화** — yaml 에서 per-evidence severity 표기. MVP 는 `0.5` 고정.
+- **다양한 GapType** — `MISSING_EVIDENCE` 외 (예: `STALE_EVIDENCE`, `AMBIGUOUS_EVIDENCE`). 별도 결정점.
+- **Gap 중복 방지** — 같은 `(claim_subject, required_evidence_type)` dedup. 별도 merge 단계.
+- **Cross-claim Gap** — 여러 claim 의 공통 gap 합치기.
+- **Gap 자체에 confidence / reason_code** — gap 메타 확장.
+- **Gap → Action 연결** — gap 이 어떤 도구/도메인 action 으로 메워질 수 있는지.
+- **`compile_rule_output` 통합** — required_evidence 처리는 의도적으로 별도 함수로 분리.
+
+### YAML loader 동작 변경 없음
+
+`load_rule_spec` / `load_rule_spec_from_yaml` / `compile_rule_output` 모두 변경 없음. `required_evidence` 는 여전히 `spec.raw["output"]["claim"]["required_evidence"]` 에 보존만 됨. 18차에서 `compile_required_evidence(spec)` 가 처음 검증.
+
+### Position in flow
+
+```text
+YAML
+  ↓ load_rule_spec_from_yaml
+RuleSpec
+  ↓ register_rule_spec
+  ↓ compile_rule_condition       → ConditionTree
+  ↓ compile_rule_output          → RuleOutputTemplate
+  ↓ compile_required_evidence    → RequiredEvidenceTemplate    ⟵ 18차 신규
+  ↓ fire_rule(..., required_evidence=evidence_template)        ⟵ 19차 확장
+Claim + 0 or N Gaps
+```
+
+19차 끝나면 룰 firing 의 출력이 완성된다 — claim + 필요한 gaps + firing_count.

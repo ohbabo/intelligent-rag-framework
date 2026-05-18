@@ -181,9 +181,7 @@ def compute_effective_confidence(self, claim_id: int) -> ScoreValue:
 
 먼저 정해야 할 결정점:
 
-1. **RuleVersion 변환 규칙** — yaml `version: 0.1.0` (semver) ↔ Python `rule_version: int` / C `uint16_t RuleVersion` 매핑 규칙
-   - 후보: `0.1.0 → 10`, `1.2.3 → 10203` (major\*10000 + minor\*100 + patch)
-   - 후보: MVP는 `version: 1` 같은 단순 정수만 허용
+1. ~~**RuleVersion 변환 규칙**~~ — **결정됨 (2026-05-18)**: monotonic `uint16` 정수. semver는 metadata only. 자세한 내용은 [docs/contracts/05 §8.3 RuleVersion convention](../contracts/05_DATA_CONTRACT_MVP.md#83-ruleversion-convention).
 
 그 다음 구현 순서:
 
