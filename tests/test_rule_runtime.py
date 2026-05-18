@@ -483,9 +483,18 @@ class TestFireRuleWithRequiredEvidence:
         gap = engine.gaps_for_claim(claim_id)[0]
         assert gap.created_by_rule == definition.id
 
-    def test_duplicate_evidence_types_create_duplicate_gaps(self) -> None:
-        """MVP — dedup 안 함. compile_required_evidence 가 중복 보존하면
-        runtime 도 그대로 중복 Gap 생성."""
+    def test_duplicate_evidence_types_dedup_to_single_gap(self) -> None:
+        """PR4 §16 — exact-match dedup. yaml 의 evidence_type 이 N번 같아도
+        (subject, rule, gap_type, evidence_type) 동일하면 단 1개 Gap 만 생성.
+
+        compile_required_evidence 는 여전히 중복을 tuple 에 보존하지만
+        (e.g., evidence_types=(2,2,2)), Engine.add_gap 의 dedup 이 두 번째
+        호출부터 기존 gap_id 를 반환한다. 따라서 engine 안의 실제 Gap 은 1개.
+
+        FiringTrace.gap_ids 는 reuse 된 gap_id 를 N번 포함할 수 있다 (§15
+        계약 — "신규 또는 재사용된 Gap id"). 다만 engine 의 set-based
+        _claim_gap_refs 가 dedup 하므로 gaps_for_claim 은 1개 반환.
+        """
         engine, definition, cond, out, subject = _setup()
         template = RequiredEvidenceTemplate(evidence_types=(2, 2, 2))
         claim_id = fire_rule(
@@ -494,8 +503,8 @@ class TestFireRuleWithRequiredEvidence:
             required_evidence=template,
         )
         gaps = engine.gaps_for_claim(claim_id)
-        assert len(gaps) == 3
-        assert [g.required_evidence_type for g in gaps] == [2, 2, 2]
+        assert len(gaps) == 1
+        assert gaps[0].required_evidence_type == 2
 
 
 class TestFireRuleFalseWithRequiredEvidence:
@@ -976,3 +985,165 @@ output:
         # 실제 engine 상태도 일치
         assert engine.get_rule_stats(1, 1).firing_count == 1
         assert len(engine.gaps_for_claim(trace.claim_id)) == 3
+
+
+# =====================================================================
+# 28차 — Gap dedup invariants in fire_rule flow (§16)
+# =====================================================================
+
+class TestFireRuleDedupInvariants:
+    """§16 Gap Dedup MVP 계약을 fire_rule 흐름에서 잠금.
+
+    구현은 27차 ef16e08 에서 완료. 이번 클래스는 의미 회귀 방지용 잠금
+    테스트 — engine.add_gap level 의 잠금은 test_engine_relation_gap.py
+    의 TestAddGapDedup* 가 담당.
+    """
+
+    CTX_MATCH = {"port": 22, "banner": "OpenSSH_7.4p1"}
+
+    def _setup_with_required(
+        self,
+    ) -> tuple[Engine, Any, Any, Any, int, RequiredEvidenceTemplate]:
+        """SSH_001 setup + required_evidence (3개) template 까지."""
+        engine, definition, cond, out, subject = _setup()
+        template = RequiredEvidenceTemplate(evidence_types=(1, 2, 3))
+        return engine, definition, cond, out, subject, template
+
+    def test_fire_twice_same_input_creates_two_claims_but_one_gap_set(
+        self,
+    ) -> None:
+        """같은 rule + 같은 subject 두 번 firing → Claim 2개, 실제 Gap 3개 (중복 X)."""
+        engine, definition, cond, out, subject, template = self._setup_with_required()
+
+        claim1 = fire_rule(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=template,
+        )
+        claim2 = fire_rule(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=template,
+        )
+
+        assert claim1 != claim2  # Claim 은 매번 생성
+        # engine 의 실제 Gap 총 개수 — set 으로 모아서 보면 3개
+        all_gap_ids: set[int] = set()
+        for c in (claim1, claim2):
+            for gap in engine.gaps_for_claim(c):
+                all_gap_ids.add(gap.id)
+        assert len(all_gap_ids) == 3  # 6개가 아니라 3개 (dedup)
+
+    def test_fire_twice_returns_same_gap_ids_in_trace(self) -> None:
+        """2번째 fire 의 FiringTrace.gap_ids = 1번째 fire 의 gap_ids."""
+        engine, definition, cond, out, subject, template = self._setup_with_required()
+
+        trace1 = fire_rule_with_trace(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=template,
+        )
+        trace2 = fire_rule_with_trace(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=template,
+        )
+
+        assert trace1.gap_ids == trace2.gap_ids
+
+    def test_fire_twice_both_claims_reference_same_gaps(self) -> None:
+        """gaps_for_claim(Claim1) ≡ gaps_for_claim(Claim2) (같은 reused gap set)."""
+        engine, definition, cond, out, subject, template = self._setup_with_required()
+
+        claim1 = fire_rule(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=template,
+        )
+        claim2 = fire_rule(
+            engine, definition, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=template,
+        )
+
+        ids1 = {g.id for g in engine.gaps_for_claim(claim1)}
+        ids2 = {g.id for g in engine.gaps_for_claim(claim2)}
+        assert ids1 == ids2
+        assert len(ids1) == 3
+
+    def test_different_rule_version_reuses_gap_per_section_16(self) -> None:
+        """§16 — rule_version 은 dedup key 에 포함되지 않음.
+
+        같은 rule_id 의 다른 version 두 개를 모두 등록한 뒤 각각 firing 해도
+        (subject, rule_id, gap_type, evidence_type) 가 같으면 gap reuse.
+        """
+        engine = Engine()
+        # 두 버전 등록
+        spec_v1_dict = dict(SSH_SPEC_DICT)
+        spec_v1_dict["version"] = 1
+        spec_v2_dict = dict(SSH_SPEC_DICT)
+        spec_v2_dict["version"] = 2
+
+        spec_v1 = load_rule_spec(spec_v1_dict)
+        spec_v2 = load_rule_spec(spec_v2_dict)
+
+        def_v1 = register_rule_spec(engine, spec_v1)
+        def_v2 = register_rule_spec(engine, spec_v2)
+
+        cond = compile_rule_condition(spec_v1)
+        out = compile_rule_output(spec_v1)
+        required = compile_required_evidence(spec_v1)
+        subject = engine.add_entity(entity_type=1)
+
+        claim_v1 = fire_rule(
+            engine, def_v1, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=required,
+        )
+        claim_v2 = fire_rule(
+            engine, def_v2, cond, out,
+            subject_id=subject, context=self.CTX_MATCH,
+            required_evidence=required,
+        )
+
+        # 두 claim 모두 같은 reused gap 참조
+        ids_v1 = {g.id for g in engine.gaps_for_claim(claim_v1)}
+        ids_v2 = {g.id for g in engine.gaps_for_claim(claim_v2)}
+        assert ids_v1 == ids_v2
+
+    def test_firing_count_increments_per_firing_regardless_of_dedup(
+        self,
+    ) -> None:
+        """§16 — dedup 발생해도 firing 마다 firing_count +1."""
+        engine, definition, cond, out, subject, template = self._setup_with_required()
+
+        for _ in range(3):
+            fire_rule(
+                engine, definition, cond, out,
+                subject_id=subject, context=self.CTX_MATCH,
+                required_evidence=template,
+            )
+
+        stats = engine.get_rule_stats(definition.id, definition.version)
+        assert stats.firing_count == 3  # dedup 무관 +1 누적
+
+    def test_condition_false_creates_no_claim_no_gap_no_refs(self) -> None:
+        """§16 — condition false 면 Claim/Gap/_claim_gap_refs 모두 변화 0."""
+        engine, definition, cond, out, subject, template = self._setup_with_required()
+
+        result = fire_rule(
+            engine, definition, cond, out,
+            subject_id=subject, context={"port": 80},  # mismatch
+            required_evidence=template,
+        )
+
+        assert result is None
+        # claim/gap 미생성 — id=1 도 없음
+        with pytest.raises(KeyError):
+            engine.get_claim(1)
+        with pytest.raises(KeyError):
+            engine.gaps_for_claim(1)
+        # firing_count 변화 0
+        assert engine.get_rule_stats(definition.id, definition.version).firing_count == 0
+        # private invariant 직접 검증 — refs 도 비어있어야 함
+        assert engine._claim_gap_refs == {}
