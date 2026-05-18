@@ -6,8 +6,11 @@ Reference implementation. ID 발급은 kind 별 단조 증가 카운터.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from ragcore.types import (
     CLAIM_STATUS_CANDIDATE,
+    CLAIM_STATUS_CONFIRMED,
     KIND_CLAIM,
     KIND_ENTITY,
     KIND_EVIDENCE,
@@ -313,6 +316,41 @@ class Engine:
         if gap_id not in self._gaps:
             raise KeyError(f"unknown gap_id: {gap_id}")
         return self._gap_resolutions.get(gap_id)
+
+    # ---- Claim lifecycle (PR6 §18) ----------------------------------------
+
+    def confirm_claim_if_ready(self, claim_id: int) -> bool:
+        """Promote candidate Claim → confirmed if every referenced Gap is resolved.
+
+        전이 조건 (§18.4):
+            - ``claim.status == CLAIM_STATUS_CANDIDATE``
+            - ``len(gaps_for_claim(claim_id)) >= 1``
+            - 모든 gap 에 ``gap_resolution(gap.id) is not None``
+
+        Returns:
+            True  — 이번 호출로 candidate → confirmed 전이 발생.
+            False — 전이 없음 (조건 불충족 / 이미 confirmed / refuted / Gap 0개).
+                    False 는 실패가 아니다 (no-op 도 False).
+
+        Raises:
+            KeyError: unknown claim_id.
+
+        Note:
+            Resolved 의 truth-source 는 PR5 §17 의 ``_gap_resolutions`` (gap_id →
+            evidence_id). Gap dataclass 에는 status 필드가 없다.
+        """
+        if claim_id not in self._claims:
+            raise KeyError(f"unknown claim_id: {claim_id}")
+        claim = self._claims[claim_id]
+        if claim.status != CLAIM_STATUS_CANDIDATE:
+            return False
+        gaps = self.gaps_for_claim(claim_id)
+        if not gaps:
+            return False
+        if not all(self.gap_resolution(g.id) is not None for g in gaps):
+            return False
+        self._claims[claim_id] = replace(claim, status=CLAIM_STATUS_CONFIRMED)
+        return True
 
     # ---- Rule registry -----------------------------------------------------
 
