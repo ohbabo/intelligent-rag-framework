@@ -1186,3 +1186,217 @@ PR3 (이 결정):
 
 기존 fire_rule 은 그대로 동작 (하위 호환). 둘은 단일 `_fire_rule_core` 공유.
 ```
+
+---
+
+## 16. Gap dedup (MVP)
+
+같은 의미의 Required Evidence Gap 이 반복 생성되지 않도록 한다. **MVP 는 exact-match dedup** — semantic merge / 유사도 / LLM 판단 안 함.
+
+### 핵심 문제
+
+PR2 §14 의 Gap 모델은 `Gap.claim_id` 단일 필드로 claim 에 강하게 묶여있다. 같은 룰을 같은 subject 에 두 번 firing 하면:
+
+```text
+1번째 fire: Claim A + Gap(g1, g2, g3) for (os_family, exact_version, package)
+2번째 fire: Claim B + Gap(g4, g5, g6) for same evidence types  ← 중복!
+```
+
+이건 운영 노이즈를 만든다. dedup 필요.
+
+### 결정사항
+
+**1. dedup scope**: subject + rule scoped
+
+dedup key:
+
+```python
+GapDedupKey = (subject_id, created_by_rule, gap_type, required_evidence_type)
+```
+
+키 필드별 이유:
+
+| 필드 | 이유 |
+|---|---|
+| `subject_id` | 어느 entity 에 대한 gap 인지 — 다른 entity 는 별개 |
+| `created_by_rule` | 어느 룰의 gap 인지 — 다른 룰이 같은 evidence 요구해도 별개 |
+| `gap_type` | 같은 evidence_type 이라도 gap 종류 다르면 별개 (안전장치) |
+| `required_evidence_type` | 진짜 dedup 대상 — 같은 종류 evidence 요구 |
+
+명시적 제외:
+
+| 제외 필드 | 이유 |
+|---|---|
+| `rule_version` | 룰 버전 올라도 같은 subject 에 같은 evidence slot 요구하면 같은 gap. version 마다 새 gap 만들면 누적 폭발 |
+| `severity` | severity 는 gap 의 우선순위 속성이지, "무슨 evidence 가 부족한가" 의 정체성 아님. severity 다른 두 gap = 같은 의미의 gap |
+
+`subject_id` 는 `Gap` 에 직접 없음 — `engine.get_claim(claim_id).subject_id` 로 도출.
+
+**2. Gap.claim_id 의미 약화**
+
+```text
+이전: Gap.claim_id = 이 Gap 이 속한 유일한 Claim
+이후: Gap.claim_id = 이 Gap 을 최초로 등록한 Claim
+```
+
+Gap dataclass 구조는 **변경 없음** (claim_id 그대로 단일 필드). Phase 2 §14 의 "Gap.claim_id 로 명시적 link" 결정은 유지 — 단 의미가 "first registering" 으로 약화.
+
+`Gap.claim_id` 를 `tuple[int, ...]` 로 바꾸는 큰 스키마 변경은 **MVP 밖**.
+
+**3. Engine 내부 참조 인덱스**
+
+```python
+# Engine 신규 슬롯
+_gap_dedup_index: dict[GapDedupKey, int]   # key → gap_id
+_claim_gap_refs: dict[int, set[int]]       # claim_id → set of referenced gap_ids
+```
+
+`_claim_gap_refs` 가 핵심 — Gap 의 의미 약화로 인한 정보 손실 방지.
+
+```text
+fire SSH_001 on entity:1 (1번째):
+  Claim 1 생성, Gap g1/g2/g3 생성
+  _claim_gap_refs[1] = {g1, g2, g3}
+  _gap_dedup_index[(1, RULE_SSH, GAP_MISSING, OS_FAMILY)] = g1
+  ...
+
+fire SSH_001 on entity:1 (2번째):
+  Claim 2 생성, dedup hit → g1/g2/g3 재사용
+  _claim_gap_refs[2] = {g1, g2, g3}  ← 같은 set
+  _gap_dedup_index 변화 없음
+```
+
+이제 어느 Claim 이 어떤 Gap 을 요구했는지 Engine 상태에서 추적 가능.
+
+**4. `gaps_for_claim` 의미 확장**
+
+```python
+# 이전 (Phase 2):
+def gaps_for_claim(self, claim_id: int) -> list[Gap]:
+    return [g for g in self._gaps.values() if g.claim_id == claim_id]
+
+# 이후 (PR4):
+def gaps_for_claim(self, claim_id: int) -> list[Gap]:
+    return [self._gaps[gid] for gid in self._claim_gap_refs.get(claim_id, ())]
+```
+
+"이 Claim 이 참조하는 모든 Gap" 으로 의미 확장. dedup 으로 reuse 된 gap 도 포함.
+
+기존 Phase 2 호출자에게는 동작 동일 (dedup 없으면 동일 결과). dedup 발생한 시점부터 의미가 살아남.
+
+**5. `Engine.add_gap` 변경**
+
+```python
+def add_gap(
+    self,
+    claim_id: int,
+    gap_type: int,
+    required_evidence_type: int,
+    severity: float,
+    rule_id: int,
+) -> int:
+    if claim_id not in self._claims:
+        raise KeyError(...)
+
+    subject_id = self._claims[claim_id].subject_id
+    key = (subject_id, rule_id, gap_type, required_evidence_type)
+
+    if key in self._gap_dedup_index:
+        # Dedup hit — 기존 gap 재사용, 새 gap 안 만듦
+        existing_gap_id = self._gap_dedup_index[key]
+        self._claim_gap_refs.setdefault(claim_id, set()).add(existing_gap_id)
+        return existing_gap_id
+
+    # 신규 gap
+    gap_id = self._allocate_id("gap")
+    self._gaps[gap_id] = Gap(
+        id=gap_id,
+        claim_id=claim_id,  # first registering claim
+        type=gap_type,
+        required_evidence_type=required_evidence_type,
+        severity=ScoreValue(severity),
+        created_by_rule=rule_id,
+    )
+    self._gap_dedup_index[key] = gap_id
+    self._claim_gap_refs.setdefault(claim_id, set()).add(gap_id)
+    return gap_id
+```
+
+호출자 시그니처/반환 변경 0 — 여전히 `gap_id` 반환. dedup 발생 시 기존 gap_id 반환.
+
+**6. severity 정책**
+
+```text
+- dedup key 에 severity 포함 안 함
+- 동일 key 재사용 시 기존 Gap 의 severity 유지
+- severity merge / update / max-of-N 등은 PR4 범위 밖
+```
+
+문서에 명시. 나중에 정책 결정점 열릴 때 별도 PR.
+
+**7. FiringTrace.gap_ids 의미**
+
+```text
+gap_ids = [신규 또는 재사용된 gap_id 들 — 호출 순서대로]
+```
+
+Phase 3 §15 의 정의 그대로 유지 ("실제 생성 또는 재사용된 Gap id 반환"). dedup hit 면 기존 id 가 들어감.
+
+**8. RuleStats / Claim 의미 보존**
+
+| | dedup 발생해도 |
+|---|---|
+| Claim | 매 firing 마다 생성 (의미 변화 0) |
+| `RuleStats.firing_count` | dedup 무관 +1 (의미 변화 0) |
+| FiringTrace 의 다른 필드 | 변화 0 |
+
+### 불변식 (테스트로 잠금)
+
+1. **같은 (subject_id, rule_id, gap_type, evidence_type) 은 정확히 하나의 Gap**
+2. **`gaps_for_claim(claim_id)` 는 해당 claim 의 `_claim_gap_refs` 와 일치**
+3. **dedup hit 시에도 `FiringTrace.gap_ids` 는 비지 않음** (재사용 id 반환)
+4. **2번째 firing 의 `gap_ids` 는 1번째와 동일** (같은 input 일 때)
+5. **`gap.severity` 는 최초 등록 시 값으로 유지** (재사용 시 변경 없음)
+6. **`Claim` 은 매 firing 생성 — dedup 영향 없음**
+7. **`RuleStats.firing_count` 는 매 firing +1 — dedup 영향 없음**
+
+### Out of scope (MVP)
+
+- **`Gap.claim_id` → `claim_ids` tuple 화** — 큰 스키마 변경, MVP 밖
+- **Cross-rule dedup** — 다른 룰이 같은 evidence 요구하는 경우 합치기
+- **Cross-version dedup 확장 / 격리** — 현재는 version 무시. 격리 필요해지면 별도 결정
+- **severity merge / max-of-N / history**
+- **Semantic merge / 유사도 / LLM 판단** — exact match 만
+- **Gap 삭제 / archive / TTL** — 영구 보존
+- **`_gap_dedup_index` 외부 노출** — public API 미공개
+
+### Tests (27/28차 최소 세트)
+
+1. **같은 rule + 같은 subject 2회 firing**: Claim 2개, Gap 중복 없음, 2번째 trace.gap_ids = 1번째 gap_ids
+2. **`gaps_for_claim(Claim A)`**: 1번째 gap_ids 반환
+3. **`gaps_for_claim(Claim B)`**: 같은 (재사용) gap_ids 반환
+4. **다른 subject**: 같은 rule/evidence 라도 신규 Gap
+5. **다른 rule**: 같은 subject/evidence 라도 신규 Gap
+6. **같은 rule/subject/evidence + 다른 gap_type**: 신규 Gap
+7. **다른 rule_version**: 기존 gap 재사용 (version 무시)
+8. **다른 severity**: 기존 gap 재사용 (severity 무시), 기존 severity 유지
+9. **condition false**: Claim/Gap/ref 모두 0
+10. **`RuleStats.firing_count`**: 매 firing +1 (dedup 무관)
+11. **기존 394 tests 그대로 통과** (회귀 방지)
+
+### Position in flow
+
+```text
+PR3 까지:
+  fire_rule_with_trace → Claim 매번 생성 + Gap 매번 생성 + firing_count +1
+
+PR4:
+  fire_rule_with_trace → Claim 매번 생성 + Gap dedup (subject+rule+type+evidence)
+                                       + firing_count +1
+                                       + _claim_gap_refs 업데이트
+                                       → gap_ids 에 재사용 id 포함
+```
+
+구현 단계 (27/28차):
+- 27차: `Engine` 에 `_gap_dedup_index` / `_claim_gap_refs` 추가, `add_gap` dedup 로직, `gaps_for_claim` 의미 확장
+- 28차: tests (위 11개 시나리오) + 회귀 보장
