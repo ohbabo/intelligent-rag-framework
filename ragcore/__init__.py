@@ -19,6 +19,7 @@ from ragcore.rule_loader import (
     load_rule_spec,
     load_rule_spec_from_yaml,
 )
+from ragcore.rule_output import RuleOutputTemplate, compile_rule_output
 from ragcore.types import (
     CLAIM_STATUS_CANDIDATE,
     CLAIM_STATUS_CONFIRMED,
@@ -68,6 +69,7 @@ __all__ = [
     "RULE_MATURITY_STABLE",
     "Relation",
     "RuleDefinition",
+    "RuleOutputTemplate",
     "RuleSpec",
     "RuleStats",
     "ScoreValue",
@@ -77,6 +79,7 @@ __all__ = [
     "TRACE_REASON_TYPE_MISMATCH",
     "compile_rule_condition",
     "compile_rule_definition",
+    "compile_rule_output",
     "evaluate_condition",
     "evaluate_condition_with_trace",
     "load_condition_tree",
