@@ -19,6 +19,7 @@ from ragcore.rule_loader import (
     load_rule_spec,
     load_rule_spec_from_yaml,
 )
+from ragcore.rule_gap import RequiredEvidenceTemplate, compile_required_evidence
 from ragcore.rule_output import RuleOutputTemplate, compile_rule_output
 from ragcore.rule_runtime import fire_rule
 from ragcore.types import (
@@ -69,6 +70,7 @@ __all__ = [
     "RULE_MATURITY_EXPERIMENTAL",
     "RULE_MATURITY_STABLE",
     "Relation",
+    "RequiredEvidenceTemplate",
     "RuleDefinition",
     "RuleOutputTemplate",
     "RuleSpec",
@@ -78,6 +80,7 @@ __all__ = [
     "TRACE_REASON_MISMATCH",
     "TRACE_REASON_MISSING_FIELD",
     "TRACE_REASON_TYPE_MISMATCH",
+    "compile_required_evidence",
     "compile_rule_condition",
     "compile_rule_definition",
     "compile_rule_output",
