@@ -357,10 +357,18 @@ input:
 
 condition:
   all:
-    - port == 22
-    - protocol == tcp
-    - service == ssh
-    - banner contains "OpenSSH_7."
+    - field: port
+      op: eq
+      value: 22
+    - field: protocol
+      op: eq
+      value: tcp
+    - field: service
+      op: eq
+      value: ssh
+    - field: banner
+      op: contains
+      value: "OpenSSH_7."
 
 output:
   claim:
@@ -409,3 +417,89 @@ Rule에 reliability hook 자리가 예약되어 있어야 함
 ```
 
 추상 룰만으로는 보이지 않던 구조적 빈틈이, 도메인 룰 하나에서 바로 노출된다.
+
+---
+
+## 10. Condition syntax (MVP)
+
+룰의 `condition` 블록은 **structured form** 으로 표현한다. 문자열 DSL (`- port == 22`) 은 MVP 미지원 — 별도 파서가 필요해 condition evaluator 시작 전 의사결정이 늘어난다.
+
+### Structure
+
+```yaml
+condition:
+  all:
+    - field: <name>
+      op: <operator>
+      value: <literal>
+    - any:
+        - field: <name>
+          op: <operator>
+          value: <literal>
+        - ...
+```
+
+- 최상위는 combinator 노드 (`all` 또는 `any`)
+- 자식은 predicate 노드 (`{field, op, value}`) 또는 nested combinator
+- 중첩 가능 (`all` 안에 `any` 등)
+
+### Supported combinators
+
+| Combinator | 의미 | MVP |
+|---|---|---|
+| `all` | 모든 자식이 true | ✅ |
+| `any` | 자식 중 하나라도 true | ✅ |
+| `not` | 부정 | ❌ 다음 단계 |
+
+`not` 을 미루는 이유: 표현력은 늘지만 evaluator 복잡도 증가. 많은 경우 룰 재설계로 우회 가능. 구체적 필요가 보일 때 별도 결정점으로 도입.
+
+### Supported operators
+
+| op | 의미 | 적용 타입 |
+|---|---|---|
+| `eq` | 같음 | 모든 타입 |
+| `ne` | 다름 | 모든 타입 |
+| `lt` | `<` | int, float |
+| `le` | `<=` | int, float |
+| `gt` | `>` | int, float |
+| `ge` | `>=` | int, float |
+| `contains` | 부분 포함 | str (substring), list (membership) |
+
+### Input context
+
+evaluator 는 평가 대상을 **flat dict** 으로 받는다.
+
+```python
+context: Mapping[str, Any]
+# 예: {"port": 22, "protocol": "tcp", "banner": "OpenSSH_7.4"}
+```
+
+`field` 값은 context 의 top-level key 만 가리킨다. nested field (`evidence.banner` 같은 dot notation) 는 MVP 미지원.
+
+### Semantics
+
+| 상황 | MVP 결과 |
+|---|---|
+| field 가 context 에 없음 | 해당 predicate → `false` (전체 절이 아니라 그 predicate 만) |
+| context value 타입이 op 와 안 맞음 (예: `lt` 인데 string) | 해당 predicate → `false` |
+| `all` 의 자식이 비어있음 | `true` (vacuous truth) |
+| `any` 의 자식이 비어있음 | `false` |
+
+**원칙**: condition evaluator 는 입력 데이터 누락/이상에 **관대 (lenient)** 하다. 룰이 firing 못 했을 때 `claim 없음` 으로 표현되고, "왜 안 됐는지" 는 evaluator trace (별도 결정점) 가 책임진다.
+
+### Out of scope (MVP)
+
+- 문자열 DSL (`- port == 22`) — 별도 파서 필요, priority/precedence 결정점 늘어남
+- `not` combinator — 표현력은 늘지만 evaluator 복잡도 증가
+- Nested field access (`evidence.banner`) — context shape 결정 필요
+- Regex match (`re_match`)
+- 산술식 (`port * 2`)
+- Custom functions (`is_open_port(port)`)
+- 변수 binding / 패턴 매칭
+- Cross-evidence join
+
+MVP 가 안정화된 뒤 단계적으로 도입.
+
+### Loader 동작 (현재 단계)
+
+`load_rule_spec` 은 현재 condition 블록을 **검증하지 않고** `raw["condition"]` 에 그대로 보존한다. 별도 `load_condition_tree(raw["condition"]) → ConditionTree` 함수가 다음 단계에서 들어온다. 그 시점에 condition 의 구조 검증과 operator allowlist 확인이 발생한다.
