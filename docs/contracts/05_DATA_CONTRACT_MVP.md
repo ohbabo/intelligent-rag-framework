@@ -3318,3 +3318,209 @@ PR11-D:
 구현 단계 (55/56차) — **테스트 먼저 잠금 → 구현** 순서:
 - 55차: tests (위 17 invariant) — 기존 stub 동작 (base 그대로) 으로 disputed/refuted 테스트 fail
 - 56차: `_STATUS_MODIFIER_*` 4 private constants + `compute_effective_confidence` 본문 교체 — 55차 테스트 통과로 입증
+
+## 25. Evidence freshness query (MVP — query only)
+
+> 상태: 58/59/60차 (PR11-A). evidence 의 등록 순서를 freshness 로 노출.
+> **PR10-A refute 정책 / PR11-D effective scoring / 새 lifecycle 전이 / 새
+> 상태 / 새 dataclass 모두 본 PR 범위 밖** — PR11-B 또는 PR12+.
+
+### 25.1 PR11-A 의 한 줄 정의
+
+> **PR11-A 는 freshness 를 lifecycle 결정에 도입하는 PR 이 아니라, freshness
+> 라는 새 관찰 축을 read-only query 로 처음 노출하는 PR 이다.**
+
+PR10-B 가 lifecycle transition 의 audit 축을 query 로 노출했듯, PR11-A 는
+evidence 의 freshness 축을 query 로 노출. engine 동작 변경 0.
+
+### 25.2 핵심 명제
+
+```text
+Freshness is evidence-registration order, not wall-clock time.
+
+PR11-A exposes freshness as read-only query state.
+It does not change lifecycle transitions, refutation policy, or effective
+confidence scoring.
+```
+
+한국어:
+
+```text
+Freshness 는 evidence 의 등록 순서이며, wall-clock 시간이 아니다.
+
+PR11-A 는 freshness 를 read-only query 로만 노출한다. lifecycle 전이 /
+refute 정책 / effective confidence scoring 모두 변경하지 않는다.
+```
+
+### 25.3 Sub-decision A — Freshness = evidence.id
+
+```python
+evidence_freshness(evidence_id) -> int
+# = evidence.id  (PR1 의 _next_id["evidence"] 카운터 기반 등록 순서)
+```
+
+| 후보 | 채택 | 이유 |
+|---|---|---|
+| (a) `evidence.id` | ✓ | PR1 의 `_next_id` 카운터가 이미 등록 순서 표현 |
+| (b) `_lifecycle_seq` (PR10-B) | ✗ | lifecycle transition seq 이지 evidence 등록 seq 아님 |
+| (c) 새 freshness counter | ✗ | 불필요한 carrier 추가 |
+| (d) wall-clock timestamp | ✗ | PR10-A / PR10-B 의 "외부 clock 안 봄" 정신 위반 |
+
+값 의미:
+- `evidence.id` 가 클수록 더 최근 등록
+- 같은 engine 안에서만 의미 (cross-engine 비교 무의미, PR10-B Sub-decision L 정신)
+
+### 25.4 Sub-decision B — Query only (engine 동작 변경 0)
+
+PR11-A 는 다음을 **건드리지 않는다**:
+
+| 영역 | PR11-A 영향 |
+|---|---|
+| 5 lifecycle API (`confirm_*` / `refute_*` / `dispute_*` / `resolve_disputed_*` / `refute_disputed_*`) | 없음 |
+| `refute_disputed_claim_if_ready` 의 threshold 정책 (PR10-A) | 없음 |
+| `compute_effective_confidence` 의 status_modifier (PR11-D) | 없음 |
+| `register_contradiction` / `register_contradiction_resolution` | 없음 |
+| `_record_claim_lifecycle_transition` (PR10-B) | 없음 |
+| `_contradictions` / `_resolved_contradictions` 인덱스 | 없음 |
+| `_lifecycle_seq` / `_claim_lifecycle_events` | 없음 |
+
+PR11-A 가 추가하는 것: **2 read-only query API 만**. 호출 결과는 외부 view —
+caller 가 그것으로 무엇을 하든 engine 상태 영향 없음.
+
+### 25.5 Sub-decision C — C-pair API
+
+```python
+def evidence_freshness(self, evidence_id: int) -> int:
+    """Return the freshness signal of the evidence.
+
+    PR11-A §25.3 — freshness = evidence.id (등록 순서, 큰 값일수록 최근).
+
+    Returns:
+        evidence.id (즉 PR1 의 _next_id 카운터 기반 등록 순서).
+
+    Raises:
+        KeyError: unknown evidence_id.
+    """
+
+def active_contradictions_by_freshness(
+    self, claim_id: int,
+) -> tuple[int, ...]:
+    """Return active contradicting evidence_ids ordered by freshness (most recent first).
+
+    PR9-A active_contradictions_for_claim 과 **같은 set** 이지만 정렬 키가 다름:
+        active_contradictions_for_claim         → evidence_id asc
+        active_contradictions_by_freshness      → evidence_id desc (most recent first)
+
+    Returns:
+        active contradiction evidence_ids, **freshness desc** order.
+        없으면 빈 tuple.
+
+    Raises:
+        KeyError: unknown claim_id.
+    """
+```
+
+이게 PR11-A 의 전부.
+
+| 옵션 | 채택 | 이유 |
+|---|---|---|
+| (C-minimal) primitive 1개만 | ✗ | caller 가 매번 정렬 코드 작성 |
+| **(C-pair) primitive + 가장 자주 쓰일 패턴** | ✓ | 균형. PR9-A 차집합 의미는 그대로, 정렬 키만 다름 |
+| (C-extensive) more | ✗ | 사용 패턴 보고 후속 PR 에서 결정 |
+
+### 25.6 PR9-A 와의 정합 — 같은 set, 다른 정렬
+
+```python
+# PR9-A
+active_contradictions_for_claim(c)
+# = (contradictions_for_claim(c) - resolved_contradictions_for_claim(c))
+# 정렬: evidence_id asc
+
+# PR11-A
+active_contradictions_by_freshness(c)
+# = 같은 set
+# 정렬: evidence_id desc (freshness desc — 큰 id 가 최근)
+```
+
+PR9-A 의 차집합 의미는 그대로 보존. PR11-A 가 추가하는 것은 **다른 view** 만.
+
+### 25.7 보존 (impact 없음)
+
+| | PR11-A 영향 |
+|---|---|
+| `Claim` / `Evidence` / `Gap` / `Relation` / `ScoreValue` / `ClaimLifecycleEvent` dataclass | 없음 |
+| `add_claim` / `add_evidence` / `add_gap` 의미 | 없음 |
+| `_next_id` (evidence counter) | 없음 (읽기만, 변경 없음) |
+| 5 lifecycle API (PR6~PR10-A) | 없음 |
+| `register_contradiction*` (PR7, PR9-A) | 없음 |
+| `contradictions_for_claim` / `resolved_contradictions_for_claim` / `active_contradictions_for_claim` | 없음 |
+| `_contradictions` / `_resolved_contradictions` / `_gap_resolutions` 인덱스 | 없음 |
+| `_lifecycle_seq` / `_claim_lifecycle_events` (PR10-B) | 없음 |
+| `claim_lifecycle_history` | 없음 |
+| `compute_effective_confidence` (PR11-D) | 없음 |
+| `_STATUS_MODIFIER_*` / `_STATUS_TO_MODIFIER` (PR11-D) | 없음 |
+| `_REFUTATION_STRENGTH_THRESHOLD` (PR10-A) | 없음 |
+| `CLAIM_STATUS_MAP` / `_ALLOWED_CLAIM_STATUSES` | 없음 (Sub-decision D 정합) |
+| `fire_rule*` / `RuleStats` | 없음 |
+| public exports | 없음 (새 dataclass / 상수 없음) |
+| 외부 dependency | 없음 (외부 clock 안 봄) |
+
+PR11-A 는 **engine 동작 변경 0**. 2 신규 query API 만 추가.
+
+### 25.8 Invariants (테스트로 잠금)
+
+1. `evidence_freshness` unknown evidence_id → `KeyError`
+2. `active_contradictions_by_freshness` unknown claim_id → `KeyError`
+3. `evidence_freshness(ev)` 는 `ev` (evidence.id 값) 그대로 반환
+4. 더 최근 등록 evidence 의 freshness 가 더 크다
+5. `active_contradictions_by_freshness` 는 desc order (가장 최근 첫째)
+6. `active_contradictions_by_freshness` 의 set 은 `active_contradictions_for_claim` 와 동일
+7. `active_contradictions_by_freshness` 는 resolved contradiction 제외 (PR9-A 차집합 정합)
+8. **PR10-A `refute_disputed_claim_if_ready` 의 동작 무변화** ★ (Sub-decision B)
+9. **PR11-D `compute_effective_confidence` 의 동작 무변화** ★ (Sub-decision B)
+10. PR9-A `active_contradictions_for_claim` 의 asc 정렬 의미 무변화
+11. `evidence_freshness` / `active_contradictions_by_freshness` 호출이
+    engine 의 어떤 state 도 변경 안 함 (read-only)
+12. 빈 active (모두 resolved 또는 없음) → 빈 tuple
+13. 같은 evidence_id 의 freshness 가 시간이 흘러도 변하지 않음 (등록 시점 고정)
+14. 기존 534 회귀 없음 (전체 통과로 입증)
+
+### 25.9 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| PR10-A `refute_disputed_claim_if_ready` 정책 변경 (freshness 가중치) | PR11-B 자연 후속 (Sub-decision B 정신) |
+| PR11-D `compute_effective_confidence` modifier 분해 (status × freshness) | PR11-C 또는 PR12+ |
+| 새 `freshness_for_claim(claim_id)` 같은 claim 전체 freshness 조회 | 사용 패턴 보고 후속 |
+| `most_recent_evidence(claim_id)` 같은 single-most-recent 조회 | (C-extensive) — 후속 |
+| `freshness_rank(evidence_id)` 같은 normalized rank | 별도 결정점 (PR1 의 _next_id 가 unbounded int) |
+| Wall-clock timestamp 도입 | PR10-A / PR10-B 와 일관 영구 OOS |
+| Freshness based scoring / refute / lifecycle 자동 결정 | side effect 의 side effect — 명시성 위반 |
+| 새 dataclass / 새 상수 (public) | engine read-only query 만 — 새 carrier 없음 |
+| Persistence / 직렬화 | 별도 PR |
+| Cross-engine freshness 비교 | per-engine — 의미 없음 (PR10-B Sub-decision L 정신) |
+| `evidence.id` 외 다른 freshness signal | Sub-decision A 일관 |
+
+### 25.10 Position in flow
+
+```text
+PR11-D 까지:
+  evidence 의 등록 순서는 evidence.id 에 암묵적으로 표현됨
+  → caller 가 직접 evidence.id 비교해야 freshness 비교 가능
+
+PR11-A:
+  evidence_freshness(ev) → evidence.id (1급 의미)
+  active_contradictions_by_freshness(c) → freshness desc tuple
+
+  엔진은 freshness 자체에 따라 어떤 결정도 자동으로 내리지 않음.
+  caller 가 freshness 를 보고 의사결정에 사용할 자유만 부여.
+
+  미래 (PR11-B / PR11-C / PR12):
+    - refute 정책에 freshness 가중치 통합
+    - effective_confidence modifier 분해 (status × freshness)
+    - freshness-aware confidence scoring
+```
+
+구현 단계 (59/60차) — **테스트 먼저 잠금 → 구현** 순서:
+- 59차: tests (위 14 invariant) — `AttributeError` 로 fail (단, invariant 8/9/10 같은 무변화 검증은 이미 pass)
+- 60차: `evidence_freshness` + `active_contradictions_by_freshness` 두 메서드 구현 — 59차 테스트 통과로 입증
