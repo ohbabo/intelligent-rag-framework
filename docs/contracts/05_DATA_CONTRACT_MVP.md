@@ -4332,3 +4332,242 @@ PR12-D:
 구현 단계 (71/72차) — **테스트 먼저 잠금 → 구현** 순서:
 - 71차: tests (위 24 invariant) — PR11-C 본문에 gap 적용 안 됨 → gap-affected 시나리오 일부 fail
 - 72차: `_GAP_PENALTY_MODIFIER` private constant + `compute_effective_confidence` 본문 확장 (× gap_modifier 추가) — 71차 테스트 통과로 입증
+
+## 29. Engine persistence (MVP — snapshot)
+
+> 상태: 74/75/76차 (PR-H). engine state 의 결정적 snapshot/restore.
+> **file IO / database / event sourcing / migration / partial restore /
+> cross-version compatibility / compression / external RAG corpus persistence
+> 모두 본 PR 범위 밖** — PR-H+ 자연 후속.
+
+### 29.1 PR-H 의 한 줄 정의
+
+> **PR-H 는 재판단 PR 이 아니라, 닫힌 engine state 의 결정적 snapshot/restore PR 이다.**
+
+### 29.2 핵심 명제
+
+```text
+Persistence is state preservation, not re-judgment.
+
+Persistence MVP stores and restores a versioned engine snapshot.
+It must not re-run rules, re-evaluate evidence, or infer new lifecycle
+transitions.
+```
+
+한국어:
+
+```text
+복원은 재판단이 아니라, 닫힌 engine 상태의 결정적 복원이다.
+
+PR-H 는 versioned engine snapshot 의 저장/복원만 한다.
+rule 재실행 / evidence 재평가 / 새 lifecycle 전이 추론 모두 금지.
+```
+
+### 29.3 Sub-decision H-1 — Snapshot 먼저 (Event sourcing 아님)
+
+```text
+복원 방식: 현재 engine state 의 직접 직렬화
+NOT: lifecycle history 재생 / rule 재실행
+```
+
+| 옵션 | 채택 | 이유 |
+|---|---|---|
+| **(H-1-snapshot)** | ✓ | 결정성 100%, 단순, "닫힌 상태 보존" 정신 |
+| (H-1-event-sourcing) | ✗ | rule 재실행 필요 → 결정성 / 의미 보존 위험 |
+| (H-1-hybrid) | ✗ | 결정 부담 큼 |
+
+PR10-B `claim_lifecycle_history` 는 보존되지만 **재생 안 함**. snapshot 이
+history 도 그대로 저장하고 그대로 복원.
+
+### 29.4 Sub-decision H-2 — JSON-compatible dict 까지만
+
+```python
+engine.to_snapshot() -> dict   # JSON-serializable
+Engine.from_snapshot(snapshot: dict) -> Engine
+```
+
+file IO / database / encoding format 모두 OOS. caller 가 dict 를 받아서
+`json.dumps` 하든 pickle 하든 자유.
+
+| 옵션 | 채택 | 이유 |
+|---|---|---|
+| **(H-2-dict-only)** | ✓ | 외부 의존 0, 미래 자유 |
+| (H-2-file-io) | ✗ | file path / format / error handling 결정 부담 |
+| (H-2-pickle) | ✗ | Python-specific, cross-language 의미 손실 |
+
+### 29.5 Sub-decision H-3 — schema_version
+
+```python
+snapshot = {
+    "schema_version": 1,
+    ...
+}
+```
+
+snapshot 최상단에 `schema_version` 배치. PR-H+ 의 migration 자리 확보.
+
+PR-H MVP 는 schema_version 검증만 (version != 1 → ValueError). migration
+로직은 PR-H+ 또는 별도 PR.
+
+### 29.6 Sub-decision H-4 — API
+
+```python
+def to_snapshot(self) -> dict[str, Any]:
+    """Serialize engine state to JSON-compatible dict.
+
+    Returns:
+        dict with "schema_version" + all engine state fields.
+
+    Note:
+        결정성 보장 — 같은 engine state → 같은 dict (set/dict iteration
+        비결정성 회피 위해 정렬).
+    """
+
+@classmethod
+def from_snapshot(cls, snapshot: dict[str, Any]) -> "Engine":
+    """Restore engine from snapshot dict.
+
+    Returns:
+        New Engine instance with all state restored.
+
+    Raises:
+        ValueError: unknown schema_version (≠ 1) or malformed snapshot.
+
+    Note:
+        rule 재실행 / evidence 재평가 / lifecycle 재추론 절대 안 함.
+    """
+```
+
+### 29.7 Sub-decision H-5 — 보존 대상 (rule registry 포함)
+
+snapshot 에 보존되는 state:
+
+| 항목 | 보존? | 이유 |
+|---|---|---|
+| `_next_id` (kind별 카운터) | ✓ | restore 후 새 entity 등록 시 ID 충돌 방지 |
+| `_entities` | ✓ | core state |
+| `_observations` | ✓ | core state |
+| `_claims` | ✓ | core state (status 포함) |
+| `_evidences` | ✓ | core state |
+| `_relations` | ✓ | core state |
+| `_gaps` | ✓ | core state |
+| `_rule_definitions` | ✓ | rule registry (PR2) |
+| `_rule_stats` | ✓ | firing_count 등 누적 카운터 |
+| `_gap_dedup_index` (PR4) | ✓ | tuple key — special handling |
+| `_claim_gap_refs` (PR4) | ✓ | claim_id → gap_id set |
+| `_gap_resolutions` (PR5) | ✓ | gap_id → evidence_id |
+| `_contradictions` (PR7) | ✓ | claim_id → evidence_id set |
+| `_resolved_contradictions` (PR9-A) | ✓ | claim_id → evidence_id set |
+| `_lifecycle_seq` (PR10-B) | ✓ | monotonic counter |
+| `_claim_lifecycle_events` (PR10-B) | ✓ | claim_id → list of events |
+
+**Rule registry 포함 결정 이유:**
+- `RuleStats.firing_count` 가 PR2 부터 누적된 카운터 — engine state 의 일부
+- caller 가 `from_snapshot` 후 같은 rule 로 재실행하려면 rule registry 필수
+- "닫힌 engine 상태 보존" 의 의미와 정합
+
+### 29.8 Sub-decision H-6 — Tuple key / set 직렬화
+
+JSON 은 tuple key / set 미지원. 변환 규칙:
+
+| Python | JSON 표현 |
+|---|---|
+| `tuple` (in field value) | list |
+| `set[int]` | sorted list (결정성) |
+| `dict[int, X]` (int key) | list of `{"key": int, "value": X}` (결정성: key asc) |
+| `dict[tuple, X]` (`_gap_dedup_index`) | list of `{"key": [t1,t2,t3,t4], "value": X}` (key tuple asc) |
+| `ScoreValue` dataclass | `{"value": float}` (asdict) |
+| frozen dataclass | asdict (모든 필드 평탄화) |
+
+이 규칙이 결정성 + JSON 호환성 + 단순성 모두 만족.
+
+### 29.9 핵심 invariant — Round-trip identity
+
+```text
+같은 engine state → to_snapshot() → 같은 dict (정렬 결정성)
+같은 dict → from_snapshot() → functionally identical engine
+
+restored.compute_effective_confidence(c) == original.compute_effective_confidence(c)
+restored.claim_lifecycle_history(c) == original.claim_lifecycle_history(c)
+restored.active_contradictions_for_claim(c) == original.active_contradictions_for_claim(c)
+... 모든 query 동일
+```
+
+### 29.10 보존 (impact 없음)
+
+| | PR-H 영향 |
+|---|---|
+| `Claim` / `Evidence` / `Gap` / `Relation` / `ScoreValue` / `ClaimLifecycleEvent` dataclass | 없음 (asdict 활용) |
+| 5 lifecycle API (PR6~PR10-A) / PR11-B sibling | 없음 |
+| `compute_effective_confidence` (PR11-D/C, PR12-D) | 없음 |
+| PR11-A query / PR10-B history / PR9-A asc | 없음 |
+| `register_contradiction*` (PR7, PR9-A) | 없음 |
+| All private constants (`_REFUTATION_STRENGTH_THRESHOLD`, `_STATUS_MODIFIER_*`, `_FRESHNESS_PENALTY_WEIGHT`, `_GAP_PENALTY_MODIFIER`) | 없음 |
+| `CLAIM_STATUS_MAP` / `_ALLOWED_CLAIM_STATUSES` | 없음 (Sub-decision D 정합) |
+| `fire_rule*` | 없음 |
+| public exports | 없음 (`to_snapshot` / `from_snapshot` 은 instance/classmethod 추가만, 새 dataclass / 상수 없음) |
+| 외부 dependency | 없음 (표준 라이브러리만) |
+
+PR-H 는 **2 신규 메서드 추가만**. engine 동작 변경 0.
+
+### 29.11 Invariants (테스트로 잠금)
+
+1. `to_snapshot` 의 결과는 dict
+2. snapshot 에 `"schema_version": 1` 포함
+3. **Round-trip — 빈 engine**: `from_snapshot(to_snapshot(Engine()))` 의 모든 state 가 새 Engine 과 동일
+4. **Round-trip — 단일 claim**: 모든 query 동일
+5. **Round-trip — 전체 lifecycle (candidate → confirmed → disputed → refuted)**: 모든 query 동일
+6. **Round-trip — gap_resolution**: PR5 의미 보존
+7. **Round-trip — contradictions / resolved**: PR7/PR9-A 의미 보존
+8. **Round-trip — lifecycle history**: seq + transition labels 보존
+9. **Round-trip — rule registry**: firing_count 등 보존
+10. **Round-trip — _next_id**: 복원 후 새 entity 등록이 충돌 없이 동작
+11. **결정성**: 같은 engine state 2 번 `to_snapshot` → 같은 dict
+12. **결정성 — set 정렬**: set 들이 sorted list 로 직렬화
+13. **결정성 — dict[int] 정렬**: int key dict 이 key asc 로 직렬화
+14. **`schema_version != 1` → ValueError**
+15. **Malformed snapshot → ValueError** (missing required field)
+16. **JSON 호환성**: `json.dumps(snapshot)` 가 에러 없이 동작
+17. **restore 후 compute_effective_confidence** 가 모든 4 modifier 정확히 적용
+18. **restore 후 lifecycle API 호출 가능** (5 API + PR11-B sibling)
+19. **restore 후 register_contradiction / register_contradiction_resolution 호출 가능**
+20. **restore 후 add_entity / add_claim / add_evidence / add_gap 호출 가능** (next_id 충돌 없음)
+21. **PR1~PR12-D 모든 기존 API 의미 무변화** (PR-H 는 추가만, 변경 없음)
+22. 기존 612 회귀 없음 (전체 통과로 입증)
+
+### 29.12 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| File IO (snapshot 을 파일로 저장/로드) | Sub-decision H-2 (dict 까지만) |
+| Database persistence | 같은 이유 — caller 책임 |
+| Event sourcing (history 재생으로 복원) | Sub-decision H-1 (snapshot 우선) |
+| Migration system (schema_version > 1) | PR-H+ 자연 후속 |
+| Partial restore (특정 claim 만 복원) | PR-H+ |
+| Cross-version compatibility (1 → 2 → 3 등) | PR-H+ migration 결정 후 |
+| Compression / 직렬화 형식 (msgpack, protobuf 등) | caller 책임 |
+| External RAG corpus persistence | core 밖 |
+| Pickle / Python-specific 직렬화 | Sub-decision H-2 (JSON-compatible only) |
+| Incremental snapshot (diff 기반) | PR-H+ |
+| Snapshot 의 cryptographic signing | core 밖 |
+| Multi-engine snapshot 통합 | 별도 결정점 |
+
+### 29.13 Position in flow
+
+```text
+PR12-D 까지:
+  engine state 는 in-memory only
+  → process 종료 시 모든 state (lifecycle / history / scoring) 소실
+
+PR-H:
+  engine.to_snapshot() → JSON-compatible dict
+  → caller 가 dict 를 어떻게 보존하든 자유 (file / DB / network)
+
+  Engine.from_snapshot(dict) → restored engine
+  → rule 재실행 없이 원본과 functionally identical
+  → 모든 query (status / history / effective / freshness) 동일
+```
+
+구현 단계 (75/76차) — **테스트 먼저 잠금 → 구현** 순서:
+- 75차: tests (위 22 invariant) — `AttributeError` 로 fail (to_snapshot / from_snapshot 미구현). 단, "PR1~PR12-D 의미 무변화" 검증은 이미 pass
+- 76차: `to_snapshot` instance method + `from_snapshot` classmethod 구현 — 75차 테스트 통과로 입증
