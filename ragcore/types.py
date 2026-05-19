@@ -157,3 +157,20 @@ class RuleStats:
     confirmed_false_count: int = 0
     observed_precision: ScoreValue | None = None
     false_positive_rate: ScoreValue | None = None
+
+
+@dataclass(frozen=True)
+class ClaimLifecycleEvent:
+    """A Claim status transition record (PR10-B §23).
+
+    PR6~PR10-A 의 5 lifecycle API 가 ``True`` 를 반환할 때마다 Engine 이 한 개씩
+    추가하는 audit event. ``seq`` 는 per-engine monotonic 카운터 (wall-clock
+    timestamp 가 아님). ``transition`` 은 private string literal audit label
+    이며 public constant 가 아니다.
+    """
+
+    seq: int
+    claim_id: int
+    from_status: int
+    to_status: int
+    transition: str
