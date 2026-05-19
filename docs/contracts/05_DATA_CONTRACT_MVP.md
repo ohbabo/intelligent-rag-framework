@@ -3524,3 +3524,258 @@ PR11-A:
 구현 단계 (59/60차) — **테스트 먼저 잠금 → 구현** 순서:
 - 59차: tests (위 14 invariant) — `AttributeError` 로 fail (단, invariant 8/9/10 같은 무변화 검증은 이미 pass)
 - 60차: `evidence_freshness` + `active_contradictions_by_freshness` 두 메서드 구현 — 59차 테스트 통과로 입증
+
+## 26. Effective confidence — freshness modifier (MVP)
+
+> 상태: 62/63/64차 (PR11-C). PR11-D 의 modifier 구조를
+> `status × freshness` 로 분해.
+> **PR10-A refute 정책 변경 / 모든 active 가중합 / max strength / freshness rank
+> weighting / older strong evidence 고려 / gap modifier / RuleStats modifier
+> 모두 본 PR 범위 밖** — PR11-B 또는 PR12+.
+
+### 26.1 PR11-C 의 한 줄 정의
+
+> **PR11-C 는 confidence 를 0 까지 죽이는 PR 이 아니라, 최신 active
+> contradiction 이 있을 때 보수적으로 감쇠하는 PR 이다. 완전한 부정은 여전히
+> PR10-A 의 `refute_disputed_claim_if_ready` 가 담당한다.**
+
+PR11-D §24.5 의 명시적 미래 자리 ("미래 정책 도입 시 modifier 분해 가능") 의
+첫 활용. PR11-A 가 노출한 query (`active_contradictions_by_freshness`) 를
+PR11-D 의 modifier 분해에 input 으로 통합.
+
+### 26.2 핵심 명제
+
+```text
+Effective confidence under freshness modifier is continuous attenuation,
+not a binary kill.
+
+PR11-C 는 PR10-A 의 binary refute trigger 와 분리된 continuous attenuation
+을 도입한다. 같은 active contradiction strength 가 두 정책의 input 이지만
+의미가 다르다:
+  - PR10-A: strength >= 0.8 → status 전이 (binary, threshold)
+  - PR11-C: strength → effective 감쇠 (continuous, modifier)
+
+PR11-C 는 PR10-A refute 정책 / PR11-A freshness query /
+PR9-A active contradiction 의미를 변경하지 않는다.
+```
+
+### 26.3 공식 — modifier 분해
+
+```python
+effective_confidence(claim) = (
+    base_confidence
+    × status_modifier(claim.status)         # PR11-D §24 그대로
+    × freshness_modifier(claim_id)           # PR11-C 신규
+)
+```
+
+`status_modifier` 표 (PR11-D §24.3 변경 없음):
+
+| status | modifier |
+|---|---|
+| `CANDIDATE` | 1.0 |
+| `CONFIRMED` | 1.0 |
+| `DISPUTED` | 0.5 |
+| `REFUTED` | 0.0 |
+
+`freshness_modifier` 표 (PR11-C 신규):
+
+```python
+freshness_modifier(claim_id) = (
+    1.0
+    if active_contradictions_by_freshness(claim_id) == ()
+    else 1.0 - (most_recent_evidence.strength.value × _FRESHNESS_PENALTY_WEIGHT)
+)
+```
+
+`_FRESHNESS_PENALTY_WEIGHT = 0.5` (engine 내부 private).
+
+| `most_recent.strength.value` | `freshness_modifier` |
+|---|---|
+| 0.0 | 1.0 (감쇠 없음) |
+| 0.5 | 0.75 |
+| 0.8 | 0.6 |
+| 1.0 | 0.5 (최대 감쇠) |
+
+### 26.4 Sub-decision O — 최신 1개만 사용
+
+`freshness_modifier` 는 `active_contradictions_by_freshness(c)` 의 **첫 번째
+(가장 최근) evidence 하나만** 본다.
+
+| 옵션 | 채택 | 이유 |
+|---|---|---|
+| **(O-most-recent-only) 최신 1개** | ✓ | 가장 작은 잠금. PR10-A 단순성 정신 |
+| (O-all-weighted-sum) 모든 active 가중합 | ✗ | 결정 부담 큼, modifier 의미 복잡 |
+| (O-max-strength) max strength | ✗ | freshness 의미 무시, PR10-A 와 의미 중복 |
+| (O-rank-weighted) freshness rank weighting | ✗ | rank 정의 부담 |
+| (O-older-strong) older strong evidence 고려 | ✗ | "최근" 정의 모순 |
+
+이 단순성이 PR11-C 의 안전망. 확장은 PR11-B / PR12+.
+
+### 26.5 Sub-decision P — status × freshness, refuted 시 0 보존
+
+```python
+effective = base × status_modifier × freshness_modifier
+
+# refuted:
+#   status_modifier = 0.0
+#   freshness_modifier 무엇이든
+#   effective = base × 0.0 × X = 0.0
+```
+
+`status_modifier = 0.0` 인 refuted 케이스에서 freshness_modifier 가 무엇이든
+**effective = 0.0** 보장. PR11-D 의 "refuted = 확정 부정" 의미 유지.
+
+`freshness_modifier` 자체는 `status` 와 무관하게 계산 가능 (read-only on
+claim.status, no status guard inside).
+
+### 26.6 PR10-A 와의 정합 — 의미 분리
+
+| | PR10-A | PR11-C |
+|---|---|---|
+| Input | active contradiction strength | active contradiction strength |
+| 표현 | binary trigger (`>= 0.8`) | continuous attenuation (`1 - s × 0.5`) |
+| 결과 | status 전이 (`disputed → refuted`) | scoring 감쇠 (`effective` 값) |
+| Threshold | `_REFUTATION_STRENGTH_THRESHOLD = 0.8` | `_FRESHNESS_PENALTY_WEIGHT = 0.5` |
+| 시점 | refute 호출 시 | compute_effective 호출 시 |
+
+**의미 충돌 없음** — 하나는 lifecycle 상태 변환, 하나는 scoring view 감쇠.
+같은 input 을 두 정책에서 따로 활용.
+
+### 26.7 PR11-A 와의 정합
+
+PR11-C 가 `active_contradictions_by_freshness(claim_id)` 를 **input 으로만
+활용**. PR11-A query 의 의미 / return 형식 / 정렬 / 차집합 모두 변경 안 함.
+PR11-A 의 Sub-decision B (query only) 정신과 정합 — PR11-A 가 노출한 query 를
+PR11-C 가 처음 활용.
+
+### 26.8 PR11-D 와의 정합 — 시그니처 / KeyError / return type 보존
+
+```python
+# PR11-D (변경 안 됨)
+def compute_effective_confidence(self, claim_id: int) -> ScoreValue: ...
+```
+
+PR11-C 는 **시그니처 변경 0**:
+- `claim_id: int` 입력 그대로
+- `ScoreValue` 반환 그대로
+- unknown claim_id → KeyError 그대로
+
+본문만 `× freshness_modifier(claim_id)` 추가.
+
+### 26.9 결정성 (Determinism)
+
+```text
+같은 (claim.base_confidence, claim.status,
+      active_contradictions_by_freshness(claim_id) 결과,
+      evidence.strength) → 항상 같은 effective_confidence
+```
+
+PR11-C 는:
+- wall-clock 안 봄
+- random / external state 안 봄
+- PR1 `_next_id` 카운터 안 봄 (freshness 가 evidence.id 인 건 PR11-A 결정,
+  PR11-C 는 PR11-A 의 query 결과만 input 으로 사용)
+
+테스트 재현 100% 보장. PR11-D 결정성 그대로 유지.
+
+### 26.10 Private constant
+
+```python
+# Engine module level (PR11-D _STATUS_MODIFIER_* / PR10-A
+# _REFUTATION_STRENGTH_THRESHOLD 와 동일 위치)
+_FRESHNESS_PENALTY_WEIGHT = 0.5
+```
+
+- **Public export 안 함** (engine 내부 private)
+- PR10-A `_REFUTATION_STRENGTH_THRESHOLD` / PR11-D `_STATUS_MODIFIER_*` 와
+  동일 정신 — 미래 정책 변경 자유
+
+### 26.11 보존 (impact 없음)
+
+| | PR11-C 영향 |
+|---|---|
+| `Claim` / `Evidence` / `Gap` / `Relation` / `ScoreValue` / `ClaimLifecycleEvent` dataclass | 없음 |
+| `Claim.base_confidence` 값 | 없음 (read-only) |
+| `compute_effective_confidence` 시그니처 | 없음 (본문만 변경) |
+| PR11-D status_modifier 값 (1.0/1.0/0.5/0.0) | 없음 |
+| `_STATUS_MODIFIER_*` / `_STATUS_TO_MODIFIER` | 없음 (재활용) |
+| PR10-A refute 정책 (`_REFUTATION_STRENGTH_THRESHOLD`, `refute_disputed_claim_if_ready`) | 없음 |
+| PR9-A `active_contradictions_for_claim` asc 정렬 | 없음 |
+| PR11-A `evidence_freshness` / `active_contradictions_by_freshness` 시그니처 | 없음 |
+| 5 lifecycle API / `register_contradiction*` | 없음 |
+| `_contradictions` / `_resolved_contradictions` / `_gap_resolutions` 인덱스 | 없음 |
+| `_lifecycle_seq` / `_claim_lifecycle_events` (PR10-B) | 없음 |
+| `CLAIM_STATUS_MAP` / `_ALLOWED_CLAIM_STATUSES` | 없음 (Sub-decision D 정합) |
+| `fire_rule*` / `RuleStats` | 없음 |
+| public exports | 없음 (새 상수 / 새 메서드 없음, `_FRESHNESS_PENALTY_WEIGHT` private) |
+
+PR11-C 는 `compute_effective_confidence` 의 본문에 **곱셈 1개 추가** 만.
+
+### 26.12 Invariants (테스트로 잠금)
+
+1. unknown claim_id → `KeyError` (PR11-D 동작 보존)
+2. **candidate + active 0 → effective == base × 1.0 × 1.0 = base** (PR11-D 와 동일)
+3. **confirmed + active 0 → effective == base** (PR11-D 와 동일)
+4. **disputed + active 0 → effective == base × 0.5** (PR11-D 와 동일, freshness 1.0)
+5. **refuted + 어떤 active → effective == 0.0** ★ (Sub-decision P, status × freshness 와 무관)
+6. **confirmed + active 1+ strength 0.8 → effective == base × 1.0 × 0.6 = base × 0.6** ★ (PR11-C 핵심)
+7. **disputed + active 1+ strength 1.0 → effective == base × 0.5 × 0.5 = base × 0.25** ★ (modifier 곱셈)
+8. active 첫 evidence (`active_contradictions_by_freshness[0]`) 만 본다 (Sub-decision O)
+9. resolved contradiction 은 freshness 에서 제외 (PR9-A 차집합 정합)
+10. **PR10-A `refute_disputed_claim_if_ready` 동작 변경 없음** ★ (Sub-decision)
+11. **PR11-A `evidence_freshness` / `active_contradictions_by_freshness` 동작 변경 없음**
+12. **PR9-A `active_contradictions_for_claim` asc 동작 변경 없음**
+13. **PR11-D status_modifier (`_STATUS_MODIFIER_*`) 값 변경 없음**
+14. effective never exceeds base (no boost — Sub-decision N 정신 유지)
+15. compute is read-only (gap / contradictions / lifecycle_history /
+    base_confidence 무변화)
+16. determinism — 같은 input → 같은 output
+17. `_FRESHNESS_PENALTY_WEIGHT` private (ragcore + ragcore.types 미노출)
+18. 기존 547 회귀 없음 (전체 통과로 입증)
+
+### 26.13 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| 모든 active contradiction 가중합 | Sub-decision O |
+| max strength (active 들 중) | Sub-decision O |
+| Freshness rank weighting | Sub-decision O |
+| Older strong evidence 고려 | Sub-decision O (최신 1개만) |
+| PR10-A `refute_disputed_claim_if_ready` 정책 변경 (freshness 가중치 포함) | PR11-B 자연 후속 |
+| Gap-based modifier (unresolved gap 페널티) | PR12+ |
+| Contradiction count modifier (active 개수 기반) | PR12+ |
+| RuleStats-based modifier (observed_precision / false_positive_rate) | PR12+ |
+| Lifecycle history-based modifier (transition 횟수) | PR12+ |
+| Confidence boost (modifier > 1.0) | PR11-D Sub-decision N 일관 — 영구 OOS |
+| Caller-driven modifier 함수 / config injection | PR10-A / PR11-D 정신 |
+| LLM / semantic confidence | core 밖 |
+| Mutable confidence / setter | immutability |
+| Public `FRESHNESS_PENALTY_WEIGHT` constant | engine 내부 private |
+| Wall-clock timestamp 도입 | PR10-A/B / PR11-D / PR11-A 일관 OOS |
+| Cross-engine freshness 비교 | per-engine 의미 |
+
+### 26.14 Position in flow
+
+```text
+PR11-D 까지:
+  effective = base × status_modifier
+  → status 만 scoring 에 반영. active contradiction strength 는 무관.
+
+PR11-A 까지:
+  evidence_freshness / active_contradictions_by_freshness query 추가.
+  하지만 어떤 정책도 freshness 사용 안 함.
+
+PR11-C:
+  effective = base × status_modifier × freshness_modifier(claim_id)
+  freshness_modifier 는 가장 최근 active contradiction 의 strength 만 본다.
+  → PR11-A 가 노출한 query 를 PR11-D modifier 분해에 input 으로 통합.
+
+  PR10-A refute 와 의미 분리:
+    PR10-A: binary trigger (>= 0.8) → status 전이
+    PR11-C: continuous attenuation → scoring 감쇠
+```
+
+구현 단계 (63/64차) — **테스트 먼저 잠금 → 구현** 순서:
+- 63차: tests (위 18 invariant) — PR11-D 본문 변경 전 일부는 이미 pass (active 0 / refuted), 일부는 fail (active 1+ 시 추가 감쇠)
+- 64차: `_FRESHNESS_PENALTY_WEIGHT` private constant + `compute_effective_confidence` 본문 확장 (× freshness_modifier 추가) — 63차 테스트 통과로 입증
