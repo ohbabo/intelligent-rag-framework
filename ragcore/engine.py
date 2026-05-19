@@ -30,6 +30,11 @@ from ragcore.types import (
     ScoreValue,
 )
 
+# PR10-A §22.5 (Sub-decision G): strength-based refutation threshold for
+# disputed → refuted. Engine 내부 private — public export 안 함.
+# 미래 정책 (freshness / RuleStats / 가중합) 도입 시 자연스럽게 조정/대체.
+_REFUTATION_STRENGTH_THRESHOLD = 0.8
+
 
 class Engine:
     def __init__(self) -> None:
@@ -553,6 +558,47 @@ class Engine:
             return False
         self._claims[claim_id] = replace(claim, status=CLAIM_STATUS_CONFIRMED)
         return True
+
+    # ---- Disputed refutation (PR10-A §22) ---------------------------------
+
+    def refute_disputed_claim_if_ready(self, claim_id: int) -> bool:
+        """Transition disputed → refuted if any active contradiction is strong enough.
+
+        전이 조건 (§22.7):
+            - ``claim.status == CLAIM_STATUS_DISPUTED``
+            - ``len(active_contradictions_for_claim(claim_id)) >= 1``
+            - active contradiction 중 **단 하나라도**
+              ``evidence.strength.value >= _REFUTATION_STRENGTH_THRESHOLD`` (= 0.8)
+
+        Returns:
+            True  — 이번 호출로 disputed → refuted 전이.
+            False — 전이 없음 (status 불일치 / active 없음 / 모두 strength 부족 / no-op).
+
+        Raises:
+            KeyError: unknown claim_id.
+
+        Notes:
+            - PR9-A 의 ``resolve_disputed_claim_if_ready`` 와 sibling API.
+            - **Resolved contradiction 은 판정에서 제외** (§22.7) —
+              ``active_contradictions_for_claim`` 만 본다. ``contradictions_for_claim``
+              을 직접 보면 안 됨 (PR9-A 의 차집합 의미 정합).
+            - PR7 ``refute_claim_if_ready`` (candidate origin) 와는 status guard
+              만 다른 sibling. 결과 status 는 같은 ``CLAIM_STATUS_REFUTED``.
+              path 구분은 lifecycle history 영역 (PR10-B+).
+        """
+        if claim_id not in self._claims:
+            raise KeyError(f"unknown claim_id: {claim_id}")
+        claim = self._claims[claim_id]
+        if claim.status != CLAIM_STATUS_DISPUTED:
+            return False
+        for evidence_id in self.active_contradictions_for_claim(claim_id):
+            evidence = self._evidences[evidence_id]
+            if evidence.strength.value >= _REFUTATION_STRENGTH_THRESHOLD:
+                self._claims[claim_id] = replace(
+                    claim, status=CLAIM_STATUS_REFUTED,
+                )
+                return True
+        return False
 
     # ---- Rule registry -----------------------------------------------------
 
