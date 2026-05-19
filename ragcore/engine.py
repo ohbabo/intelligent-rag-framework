@@ -740,6 +740,57 @@ class Engine:
         resolved = self._resolved_contradictions.get(claim_id, set())
         return tuple(sorted(contras - resolved, reverse=True))
 
+    # ---- Freshness-aware refutation (PR11-B §27) --------------------------
+
+    def refute_disputed_claim_if_ready_by_freshness(
+        self, claim_id: int,
+    ) -> bool:
+        """Sibling refute API — inspects most recent active contradiction only.
+
+        PR10-A 의 ``refute_disputed_claim_if_ready`` 와 sibling:
+
+        | API           | inspects                | trigger              |
+        |---------------|-------------------------|----------------------|
+        | PR10-A refute | ANY active              | any strength >= 0.8  |
+        | PR11-B refute | FIRST by freshness only | first strength >= 0.8 |
+
+        같은 status target (REFUTED), 같은 threshold
+        (``_REFUTATION_STRENGTH_THRESHOLD = 0.8``, Sub-decision R 재사용),
+        다른 input set.
+
+        Returns:
+            True  — most_recent active.strength.value >= 0.8 → REFUTED 전이.
+            False — 전이 없음.
+
+        Raises:
+            KeyError: unknown claim_id.
+
+        Notes:
+            - ``active_contradictions_by_freshness(c)[0]`` 만 본다 (Sub-decision Q).
+            - True 반환 시 lifecycle event 기록 (transition label
+              ``"refute_disputed_by_freshness_if_ready"`` — Sub-decision S).
+            - PR10-A ``refute_disputed_claim_if_ready`` 의 의미 / 시그니처
+              변경 없음.
+        """
+        if claim_id not in self._claims:
+            raise KeyError(f"unknown claim_id: {claim_id}")
+        claim = self._claims[claim_id]
+        if claim.status != CLAIM_STATUS_DISPUTED:
+            return False
+        active = self.active_contradictions_by_freshness(claim_id)
+        if not active:
+            return False
+        most_recent_evidence = self._evidences[active[0]]
+        if most_recent_evidence.strength.value >= _REFUTATION_STRENGTH_THRESHOLD:
+            old_status = claim.status
+            self._claims[claim_id] = replace(claim, status=CLAIM_STATUS_REFUTED)
+            self._record_claim_lifecycle_transition(
+                claim_id, old_status, CLAIM_STATUS_REFUTED,
+                "refute_disputed_by_freshness_if_ready",
+            )
+            return True
+        return False
+
     # ---- Rule registry -----------------------------------------------------
 
     def register_rule(self, definition: RuleDefinition) -> None:
