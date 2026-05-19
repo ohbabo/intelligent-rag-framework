@@ -6,7 +6,8 @@ Reference implementation. ID 발급은 kind 별 단조 증가 카운터.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
+from typing import Any
 
 from ragcore.types import (
     CLAIM_STATUS_CANDIDATE,
@@ -940,3 +941,220 @@ class Engine:
                 else current.false_positive_rate
             ),
         )
+
+    # ---- Persistence snapshot (PR17 §29) ----------------------------------
+
+    def to_snapshot(self) -> dict[str, Any]:
+        """Serialize engine state to JSON-compatible dict (PR17 §29).
+
+        결정성 보장 — 같은 engine state → 같은 dict (모든 set/dict iteration
+        은 sorted). caller 가 ``json.dumps`` 등으로 영속화 자유.
+
+        Returns:
+            JSON-compatible dict with ``schema_version`` + all engine state.
+        """
+        return {
+            "schema_version": 1,
+            "next_id": dict(sorted(self._next_id.items())),
+            "lifecycle_seq": self._lifecycle_seq,
+            "entities": _serialize_dict_int_dataclass(self._entities),
+            "observations": _serialize_dict_int_dataclass(self._observations),
+            "claims": _serialize_dict_int_dataclass(self._claims),
+            "evidences": _serialize_dict_int_dataclass(self._evidences),
+            "relations": _serialize_dict_int_dataclass(self._relations),
+            "gaps": _serialize_dict_int_dataclass(self._gaps),
+            "rule_definitions": _serialize_dict_tuple_dataclass(self._rule_definitions),
+            "rule_stats": _serialize_dict_tuple_dataclass(self._rule_stats),
+            "gap_dedup_index": _serialize_dict_tuple4_int(self._gap_dedup_index),
+            "claim_gap_refs": _serialize_dict_int_set(self._claim_gap_refs),
+            "gap_resolutions": _serialize_dict_int_int(self._gap_resolutions),
+            "contradictions": _serialize_dict_int_set(self._contradictions),
+            "resolved_contradictions": _serialize_dict_int_set(self._resolved_contradictions),
+            "claim_lifecycle_events": _serialize_dict_int_list_dataclass(
+                self._claim_lifecycle_events,
+            ),
+        }
+
+    @classmethod
+    def from_snapshot(cls, snapshot: dict[str, Any]) -> "Engine":
+        """Restore engine from snapshot dict (PR17 §29).
+
+        rule 재실행 / evidence 재평가 / lifecycle 재추론 절대 안 함. 내부
+        state 만 그대로 복원.
+
+        Returns:
+            New Engine instance with all state restored.
+
+        Raises:
+            ValueError: missing or unknown schema_version.
+        """
+        if "schema_version" not in snapshot:
+            raise ValueError("snapshot missing schema_version")
+        if snapshot["schema_version"] != 1:
+            raise ValueError(
+                f"unknown schema_version: {snapshot['schema_version']}"
+            )
+        engine = cls()
+        engine._next_id = dict(snapshot.get("next_id", {}))
+        engine._lifecycle_seq = snapshot.get("lifecycle_seq", 0)
+        engine._entities = _restore_dict_int(snapshot["entities"], _entity_from_dict)
+        engine._observations = _restore_dict_int(
+            snapshot["observations"], _observation_from_dict,
+        )
+        engine._claims = _restore_dict_int(snapshot["claims"], _claim_from_dict)
+        engine._evidences = _restore_dict_int(
+            snapshot["evidences"], _evidence_from_dict,
+        )
+        engine._relations = _restore_dict_int(snapshot["relations"], _relation_from_dict)
+        engine._gaps = _restore_dict_int(snapshot["gaps"], _gap_from_dict)
+        engine._rule_definitions = _restore_dict_tuple(
+            snapshot["rule_definitions"], _rule_def_from_dict,
+        )
+        engine._rule_stats = _restore_dict_tuple(
+            snapshot["rule_stats"], _rule_stats_from_dict,
+        )
+        engine._gap_dedup_index = {
+            tuple(item["key"]): item["value"] for item in snapshot["gap_dedup_index"]
+        }
+        engine._claim_gap_refs = {
+            item["key"]: set(item["value"]) for item in snapshot["claim_gap_refs"]
+        }
+        engine._gap_resolutions = {
+            item["key"]: item["value"] for item in snapshot["gap_resolutions"]
+        }
+        engine._contradictions = {
+            item["key"]: set(item["value"]) for item in snapshot["contradictions"]
+        }
+        engine._resolved_contradictions = {
+            item["key"]: set(item["value"])
+            for item in snapshot["resolved_contradictions"]
+        }
+        engine._claim_lifecycle_events = {
+            item["key"]: [
+                ClaimLifecycleEvent(**event_dict) for event_dict in item["value"]
+            ]
+            for item in snapshot["claim_lifecycle_events"]
+        }
+        return engine
+
+
+# ---- Persistence serialization helpers (PR17 §29) -------------------------
+# PR12-D 다음 / Persistence (PR17 §29) 직렬화 보조. 결정성 (sorted) 보장.
+
+def _sv_to_dict(sv: ScoreValue | None) -> dict[str, float] | None:
+    """ScoreValue or None → dict or None."""
+    if sv is None:
+        return None
+    return {"value": sv.value}
+
+
+def _sv_from_dict(d: dict[str, float] | None) -> ScoreValue | None:
+    """dict or None → ScoreValue or None."""
+    if d is None:
+        return None
+    return ScoreValue(value=d["value"])
+
+
+def _entity_from_dict(d: dict[str, Any]) -> Entity:
+    return Entity(**d)
+
+
+def _observation_from_dict(d: dict[str, Any]) -> Observation:
+    return Observation(**d)
+
+
+def _claim_from_dict(d: dict[str, Any]) -> Claim:
+    d = dict(d)
+    d["base_confidence"] = _sv_from_dict(d["base_confidence"])
+    return Claim(**d)
+
+
+def _evidence_from_dict(d: dict[str, Any]) -> Evidence:
+    d = dict(d)
+    d["strength"] = _sv_from_dict(d["strength"])
+    return Evidence(**d)
+
+
+def _relation_from_dict(d: dict[str, Any]) -> Relation:
+    return Relation(**d)
+
+
+def _gap_from_dict(d: dict[str, Any]) -> Gap:
+    d = dict(d)
+    d["severity"] = _sv_from_dict(d["severity"])
+    return Gap(**d)
+
+
+def _rule_def_from_dict(d: dict[str, Any]) -> RuleDefinition:
+    d = dict(d)
+    d["prior_confidence"] = _sv_from_dict(d["prior_confidence"])
+    return RuleDefinition(**d)
+
+
+def _rule_stats_from_dict(d: dict[str, Any]) -> RuleStats:
+    d = dict(d)
+    d["observed_precision"] = _sv_from_dict(d.get("observed_precision"))
+    d["false_positive_rate"] = _sv_from_dict(d.get("false_positive_rate"))
+    return RuleStats(**d)
+
+
+def _serialize_dict_int_dataclass(d: dict[int, Any]) -> list[dict[str, Any]]:
+    """dict[int, dataclass] → sorted list of {key: int, value: asdict}."""
+    return [{"key": k, "value": asdict(v)} for k, v in sorted(d.items())]
+
+
+def _serialize_dict_tuple_dataclass(
+    d: dict[tuple[int, int], Any],
+) -> list[dict[str, Any]]:
+    """dict[tuple[int, int], dataclass] → sorted list of {key: list, value: asdict}."""
+    return [
+        {"key": list(k), "value": asdict(v)}
+        for k, v in sorted(d.items())
+    ]
+
+
+def _serialize_dict_tuple4_int(
+    d: dict[tuple[int, int, int, int], int],
+) -> list[dict[str, Any]]:
+    """dict[tuple4, int] → sorted list of {key: list[4], value: int}."""
+    return [
+        {"key": list(k), "value": v}
+        for k, v in sorted(d.items())
+    ]
+
+
+def _serialize_dict_int_set(d: dict[int, set[int]]) -> list[dict[str, Any]]:
+    """dict[int, set[int]] → sorted list of {key: int, value: sorted list}."""
+    return [
+        {"key": k, "value": sorted(v)}
+        for k, v in sorted(d.items())
+    ]
+
+
+def _serialize_dict_int_int(d: dict[int, int]) -> list[dict[str, int]]:
+    """dict[int, int] → sorted list of {key: int, value: int}."""
+    return [{"key": k, "value": v} for k, v in sorted(d.items())]
+
+
+def _serialize_dict_int_list_dataclass(
+    d: dict[int, list[Any]],
+) -> list[dict[str, Any]]:
+    """dict[int, list[dataclass]] → sorted list of {key: int, value: list of asdict}."""
+    return [
+        {"key": k, "value": [asdict(item) for item in v]}
+        for k, v in sorted(d.items())
+    ]
+
+
+def _restore_dict_int(
+    items: list[dict[str, Any]], from_dict: Any,
+) -> dict[int, Any]:
+    """list of {key: int, value: dict} → dict[int, dataclass]."""
+    return {item["key"]: from_dict(item["value"]) for item in items}
+
+
+def _restore_dict_tuple(
+    items: list[dict[str, Any]], from_dict: Any,
+) -> dict[tuple[int, int], Any]:
+    """list of {key: list[2], value: dict} → dict[tuple[int,int], dataclass]."""
+    return {tuple(item["key"]): from_dict(item["value"]) for item in items}
