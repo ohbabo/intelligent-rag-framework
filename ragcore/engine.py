@@ -687,6 +687,53 @@ class Engine:
             raise KeyError(f"unknown claim_id: {claim_id}")
         return tuple(self._claim_lifecycle_events.get(claim_id, ()))
 
+    # ---- Evidence freshness (PR11-A §25) ----------------------------------
+
+    def evidence_freshness(self, evidence_id: int) -> int:
+        """Return the freshness signal of the evidence.
+
+        PR11-A §25.3 — freshness = evidence.id (PR1 _next_id 기반 등록 순서).
+        더 큰 값일수록 더 최근 등록.
+
+        Returns:
+            evidence.id (= evidence_id 자체).
+
+        Raises:
+            KeyError: unknown evidence_id.
+
+        Note:
+            wall-clock 안 봄 (PR10-A / PR10-B 정신 일관). engine-local 의미만
+            가짐 (cross-engine 비교 무의미).
+        """
+        if evidence_id not in self._evidences:
+            raise KeyError(f"unknown evidence_id: {evidence_id}")
+        return evidence_id
+
+    def active_contradictions_by_freshness(
+        self, claim_id: int,
+    ) -> tuple[int, ...]:
+        """Return active contradicting evidence_ids ordered by freshness (most recent first).
+
+        ``active_contradictions_for_claim`` (PR9-A) 와 **같은 set** 이지만
+        정렬 키가 다름:
+            active_contradictions_for_claim       → evidence_id asc
+            active_contradictions_by_freshness    → evidence_id desc (most recent first)
+
+        PR9-A 의 차집합 의미는 그대로 보존 — resolved contradiction 제외.
+
+        Returns:
+            active contradicting evidence_ids, evidence_id desc tuple.
+            없으면 빈 tuple.
+
+        Raises:
+            KeyError: unknown claim_id.
+        """
+        if claim_id not in self._claims:
+            raise KeyError(f"unknown claim_id: {claim_id}")
+        contras = self._contradictions.get(claim_id, set())
+        resolved = self._resolved_contradictions.get(claim_id, set())
+        return tuple(sorted(contras - resolved, reverse=True))
+
     # ---- Rule registry -----------------------------------------------------
 
     def register_rule(self, definition: RuleDefinition) -> None:
