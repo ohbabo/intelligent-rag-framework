@@ -50,6 +50,8 @@ class Engine:
         self._gap_resolutions: dict[int, int] = {}
         # PR7 §19: claim_id -> set of contradicting evidence_ids.
         self._contradictions: dict[int, set[int]] = {}
+        # PR9-A §21: claim_id -> set of resolved evidence_ids (subset of contradictions).
+        self._resolved_contradictions: dict[int, set[int]] = {}
 
     def _allocate_id(self, kind: str) -> int:
         next_id = self._next_id.get(kind, 0) + 1
@@ -455,6 +457,101 @@ class Engine:
         if not self._contradictions.get(claim_id):
             return False
         self._claims[claim_id] = replace(claim, status=CLAIM_STATUS_DISPUTED)
+        return True
+
+    # ---- Disputed resolution (PR9-A §21) ----------------------------------
+
+    def register_contradiction_resolution(
+        self, claim_id: int, evidence_id: int,
+    ) -> bool:
+        """Register that this evidence is no longer an active contradiction for this claim.
+
+        Returns:
+            True  — 새로 resolved 로 등록됨.
+            False — (claim_id, evidence_id) 가 이미 resolved (idempotent no-op).
+
+        Raises:
+            KeyError:  unknown claim_id or unknown evidence_id.
+            ValueError: (claim_id, evidence_id) 가 ``_contradictions[claim_id]`` 에
+                        등록돼 있지 않음 — §21.2 relationship-bound 명제 위반.
+
+        Notes:
+            - PR5 first-keep 정신과 일관: 한 번 resolved 면 영구.
+            - ``_contradictions`` 원본 entry 는 **삭제하지 않는다** (audit 보존).
+            - Target claim status 무관 (데이터 등록, PR7 §19.6 일관).
+        """
+        if claim_id not in self._claims:
+            raise KeyError(f"unknown claim_id: {claim_id}")
+        if evidence_id not in self._evidences:
+            raise KeyError(f"unknown evidence_id: {evidence_id}")
+        contras = self._contradictions.get(claim_id, set())
+        if evidence_id not in contras:
+            raise ValueError(
+                f"evidence {evidence_id} is not registered as a contradiction "
+                f"for claim {claim_id}"
+            )
+        resolved = self._resolved_contradictions.setdefault(claim_id, set())
+        if evidence_id in resolved:
+            return False
+        resolved.add(evidence_id)
+        return True
+
+    def resolved_contradictions_for_claim(self, claim_id: int) -> tuple[int, ...]:
+        """Return resolved evidence_ids for the claim.
+
+        Returns:
+            evidence_id 오름차순 tuple. 없으면 빈 tuple.
+
+        Raises:
+            KeyError: unknown claim_id.
+        """
+        if claim_id not in self._claims:
+            raise KeyError(f"unknown claim_id: {claim_id}")
+        return tuple(sorted(self._resolved_contradictions.get(claim_id, set())))
+
+    def active_contradictions_for_claim(self, claim_id: int) -> tuple[int, ...]:
+        """Return contradicting evidence_ids that are still active (not resolved).
+
+        = contradictions_for_claim(c) - resolved_contradictions_for_claim(c)
+
+        Returns:
+            evidence_id 오름차순 tuple. status 무관 (모든 status 에서 호출 가능).
+
+        Raises:
+            KeyError: unknown claim_id.
+        """
+        if claim_id not in self._claims:
+            raise KeyError(f"unknown claim_id: {claim_id}")
+        contras = self._contradictions.get(claim_id, set())
+        resolved = self._resolved_contradictions.get(claim_id, set())
+        return tuple(sorted(contras - resolved))
+
+    def resolve_disputed_claim_if_ready(self, claim_id: int) -> bool:
+        """Transition disputed → confirmed if every contradiction is resolved.
+
+        전이 조건 (§21.8):
+            - ``claim.status == CLAIM_STATUS_DISPUTED``
+            - ``len(active_contradictions_for_claim(claim_id)) == 0``
+
+        Returns:
+            True  — 이번 호출로 disputed → confirmed 복귀.
+            False — 전이 없음 (status 불일치 / active contradiction 잔존 / no-op).
+
+        Raises:
+            KeyError: unknown claim_id.
+
+        Note:
+            API 이름 ``resolve_*`` 는 PR10+ 에서 ``disputed → refuted`` 같은
+            확장이 들어올 수 있는 자리를 남겨둔 것 (§21.6 Notes).
+        """
+        if claim_id not in self._claims:
+            raise KeyError(f"unknown claim_id: {claim_id}")
+        claim = self._claims[claim_id]
+        if claim.status != CLAIM_STATUS_DISPUTED:
+            return False
+        if self.active_contradictions_for_claim(claim_id):
+            return False
+        self._claims[claim_id] = replace(claim, status=CLAIM_STATUS_CONFIRMED)
         return True
 
     # ---- Rule registry -----------------------------------------------------
