@@ -52,6 +52,12 @@ _STATUS_TO_MODIFIER: dict[int, float] = {
     CLAIM_STATUS_REFUTED: _STATUS_MODIFIER_REFUTED,
 }
 
+# PR11-C §26: freshness modifier 의 strength → penalty 가중치.
+# effective = base × status_modifier × (1.0 - most_recent.strength × WEIGHT)
+# Engine 내부 private — public export 안 함.
+# 0.5 의 의미: "가장 최근 active contradiction 의 strength 가 1.0 이면 modifier 0.5"
+_FRESHNESS_PENALTY_WEIGHT = 0.5
+
 
 class Engine:
     def __init__(self) -> None:
@@ -770,19 +776,24 @@ class Engine:
         return self._rule_stats[key]
 
     def compute_effective_confidence(self, claim_id: int) -> ScoreValue:
-        """Effective confidence as base × status_modifier (PR11-D §24).
+        """Effective confidence as base × status × freshness (PR11-D §24 + PR11-C §26).
 
-        PR11-D MVP — status-only multiplier:
-            effective = base_confidence × status_modifier(claim.status)
+        Composition (PR11-D + PR11-C):
+            effective = base × status_modifier(claim.status) × freshness_modifier(claim_id)
 
-        modifier ∈ [0.0, 1.0]:
-            candidate / confirmed → 1.0 (그대로)
-            disputed → 0.5 (감쇠 — 재판정 대기)
-            refuted → 0.0 (확정 부정)
+        status_modifier (PR11-D §24.3, unchanged):
+            candidate / confirmed → 1.0
+            disputed → 0.5
+            refuted → 0.0
 
-        PR11-D 는 evidence / gap / contradiction / freshness / RuleStats /
-        lifecycle history 를 **보지 않는다** (§24.4 Sub-decision M). 정교한
-        scoring 은 PR11-A 또는 PR12+ 에서 modifier 분해로 확장.
+        freshness_modifier (PR11-C §26.3, Sub-decision O — 최신 1개만):
+            active = active_contradictions_by_freshness(claim_id)
+            if not active: → 1.0
+            else: → 1.0 - most_recent.strength.value × _FRESHNESS_PENALTY_WEIGHT
+
+        의미 분리 (PR10-A vs PR11-C, §26.6):
+            - PR10-A refute_disputed_claim_if_ready: binary trigger (strength >= 0.8)
+            - PR11-C 본 메서드: continuous attenuation (multiplicative modifier)
 
         Returns:
             ScoreValue (effective ≤ base, no boost — §24.5 Sub-decision N).
@@ -793,8 +804,21 @@ class Engine:
         if claim_id not in self._claims:
             raise KeyError(f"unknown claim_id: {claim_id}")
         claim = self._claims[claim_id]
-        modifier = _STATUS_TO_MODIFIER[claim.status]
-        return ScoreValue(claim.base_confidence.value * modifier)
+        status_modifier = _STATUS_TO_MODIFIER[claim.status]
+
+        active = self.active_contradictions_by_freshness(claim_id)
+        if not active:
+            freshness_modifier = 1.0
+        else:
+            most_recent_evidence = self._evidences[active[0]]
+            freshness_modifier = (
+                1.0
+                - most_recent_evidence.strength.value * _FRESHNESS_PENALTY_WEIGHT
+            )
+
+        return ScoreValue(
+            claim.base_confidence.value * status_modifier * freshness_modifier
+        )
 
     def update_rule_stats(
         self,
