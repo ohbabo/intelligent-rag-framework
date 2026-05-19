@@ -2024,3 +2024,230 @@ PR7:
 구현 단계 (35/36차) — **테스트 먼저 잠금 → 구현** 순서:
 - 35차: tests (위 14개 invariant 중 1~13) — `AttributeError` 로 fail 하는 상태로 잠금
 - 36차: `Engine.register_contradiction` / `contradictions_for_claim` / `refute_claim_if_ready` 구현 — 35차 테스트 통과로 입증
+
+## 20. Disputed lifecycle (MVP)
+
+> 상태: 38/39/40차 (PR8). `confirmed → disputed` 단일 전이.
+> **`disputed → *` 해소 정책 / `superseded` / scoring / history 는 본 PR 범위 밖** — PR9+.
+
+### 20.1 PR8 의 한 줄 정의
+
+> **PR8 은 판단 삼각형을 무너뜨리는 PR 이 아니라, confirmed 이후 충돌을 안전하게
+> 격리하기 위해 `disputed` 라는 재검토 상태를 추가하는 PR 이다.**
+
+### 20.2 핵심 명제
+
+```text
+A confirmed claim with explicit contradiction is not automatically refuted.
+It becomes disputed.
+
+Disputed means the claim was previously confirmed, but now has registered
+contradiction evidence requiring re-evaluation.
+```
+
+한국어:
+
+```text
+confirmed Claim 에 contradiction 이 생겼다고 곧바로 refuted 가 되는 것은 아니다.
+그 상태는 disputed 다.
+
+disputed 는 과거에는 confirmed 였지만, 이후 반대 근거가 등록되어 재검토가
+필요한 상태다.
+```
+
+`confirmed → refuted` 직접 전이는 PR7 §19 의 `refute_claim_if_ready` status
+guard 에서 이미 금지됨. PR8 은 그 부분을 우회하는 게 아니라 **별도 상태** 로
+격리.
+
+### 20.3 lifecycle 위치 — 삼각형은 보존, 격리 레이어 추가
+
+```text
+기본 판단 삼각형 (PR6/PR7 보존):
+  candidate
+    ├─ confirmed   (PR6)
+    └─ refuted     (PR7)
+
+Post-confirmation conflict quarantine (PR8 추가):
+  confirmed
+    └─ disputed    (PR8)  ← confirmed Claim 에 명시 contradiction 등록되면 전이
+```
+
+`disputed` 는 삼각형의 4번째 꼭짓점이 아니라 **confirmed 위에 얹는 격리 상태**.
+`candidate → disputed`, `refuted → disputed` 같은 진입은 금지.
+
+### 20.4 새 상수 — `CLAIM_STATUS_DISPUTED = 3`
+
+```python
+# ragcore/types.py
+CLAIM_STATUS_CANDIDATE = 0
+CLAIM_STATUS_CONFIRMED = 1
+CLAIM_STATUS_REFUTED   = 2
+CLAIM_STATUS_DISPUTED  = 3   # PR8 추가
+```
+
+public export 추가 (`ragcore/__init__.py`).
+
+### 20.5 Sub-decision D — YAML 룰 output 에 노출 안 함
+
+`disputed` 는 lifecycle 전이 결과 상태이지 **룰이 처음부터 만드는 초기 상태가
+아니다**. 따라서 `ragcore/rule_output.py` 의 정적 매핑 / validation 에는
+**추가하지 않는다**:
+
+```python
+# 그대로 유지 (변경 없음)
+CLAIM_STATUS_MAP: dict[str, int] = {
+    "candidate": CLAIM_STATUS_CANDIDATE,
+    "confirmed": CLAIM_STATUS_CONFIRMED,
+    "refuted":   CLAIM_STATUS_REFUTED,
+}
+
+_ALLOWED_CLAIM_STATUSES = frozenset({
+    CLAIM_STATUS_CANDIDATE,
+    CLAIM_STATUS_CONFIRMED,
+    CLAIM_STATUS_REFUTED,
+})
+```
+
+이유:
+
+> A YAML rule MUST NOT create a disputed claim directly. Only
+> `dispute_claim_if_ready` may transition a confirmed claim to disputed.
+
+만약 YAML 룰이 다음과 같이 작성되면 컴파일 단계에서 거부된다 (의도된 동작):
+
+```yaml
+output:
+  claim:
+    status: disputed   # → ValueError at rule_output.compile time
+```
+
+이게 `disputed` 의 lifecycle 의미를 코드 차원에서 보호한다.
+
+### 20.6 API
+
+```python
+def dispute_claim_if_ready(self, claim_id: int) -> bool:
+    """Transition confirmed → disputed if at least one contradiction is registered.
+
+    전이 조건:
+        - ``claim.status == CLAIM_STATUS_CONFIRMED``
+        - ``len(contradictions_for_claim(claim_id)) >= 1``
+
+    Returns:
+        True  — 이번 호출로 confirmed → disputed 전이.
+        False — 전이 없음 (조건 불충족 / 이미 disputed / candidate / refuted).
+                False 는 실패가 아니다 (no-op 도 False).
+
+    Raises:
+        KeyError: unknown claim_id.
+    """
+```
+
+PR6/PR7 패턴 미러:
+
+| | PR6 (confirm) | PR7 (refute) | PR8 (dispute) |
+|---|---|---|---|
+| 진입 상태 | `candidate` | `candidate` | `confirmed` |
+| 결과 상태 | `confirmed` | `refuted` | `disputed` |
+| Trigger | 모든 gap resolved | ≥1 contradiction | ≥1 contradiction |
+| 차이 | gap 기반 | candidate + contradiction | **confirmed** + contradiction |
+
+`refute_claim_if_ready` 와 `dispute_claim_if_ready` 는 **같은 contradiction 데이터를 본다**.
+다만 status guard 가 다르다 — `candidate` 면 refute, `confirmed` 면 dispute. 둘
+다 동일 시점에 trigger 될 수 없다 (status 는 한 시점에 한 값).
+
+### 20.7 결정표
+
+| Claim 상태 | contradictions 수 | `dispute_claim_if_ready` 결과 | 반환 |
+|---|---|---|---|
+| `candidate` | any | `candidate` (no-op) | `False` |
+| `confirmed` | 0 | `confirmed` (no-op) | `False` |
+| `confirmed` | 1+ | **`disputed`** | **`True`** |
+| `disputed` | any | `disputed` (no-op) | `False` |
+| `refuted` | any | `refuted` (no-op) | `False` |
+
+다른 lifecycle API 들이 `disputed` 와 만났을 때:
+
+| API | 입력 상태 | 결과 |
+|---|---|---|
+| `confirm_claim_if_ready(c)` | `disputed` | `False` (PR6 status guard 자동 동작) |
+| `refute_claim_if_ready(c)` | `disputed` | `False` (PR7 status guard 자동 동작) |
+| `register_contradiction(c, ev)` | `disputed` | 정상 등록 (status 무관, PR7 §19.6 일관) |
+
+### 20.8 Idempotency
+
+```python
+engine.confirm_claim_if_ready(c)   # → True (candidate → confirmed)
+engine.register_contradiction(c, e)  # → True (등록 가능, status 무관)
+engine.dispute_claim_if_ready(c)   # → True (confirmed → disputed)
+engine.dispute_claim_if_ready(c)   # → False (이미 disputed, no-op)
+engine.get_claim(c).status          # → CLAIM_STATUS_DISPUTED (유지)
+```
+
+PR4 dedup + PR5 first-keep + PR6 confirm + PR7 refute 와 동일 정신.
+
+### 20.9 보존 (impact 없음)
+
+| | PR8 영향 |
+|---|---|
+| `Claim` / `Evidence` / `Gap` / `Relation` dataclass | 없음 |
+| `add_claim` / `add_evidence` / `add_gap` 의미 | 없음 |
+| `resolve_gaps_for_evidence` / `gap_resolution` 의미 | 없음 |
+| `confirm_claim_if_ready` 의미 | 없음 (단 `disputed` 입력 시 status guard 가 False) |
+| `refute_claim_if_ready` 의미 | 없음 (단 `disputed` 입력 시 status guard 가 False) |
+| `register_contradiction` 의미 | 없음 (status 무관 등록 — PR7 §19.6 결정 그대로) |
+| `_contradictions` 인덱스 | 없음 (PR8 이 transition 만 추가) |
+| `base_confidence` / scoring | 없음 |
+| `CLAIM_STATUS_MAP` / `_ALLOWED_CLAIM_STATUSES` | 없음 (Sub-decision D) |
+| `fire_rule*` / `RuleStats` | 없음 |
+
+### 20.10 Invariants (테스트로 잠금)
+
+1. confirmed + 0 contradiction → `False`, 상태 보존
+2. confirmed + 1+ contradiction → `True`, 상태 `disputed`
+3. candidate + 1+ contradiction → `dispute_claim_if_ready` `False` (candidate 보존, PR7 refute 영역)
+4. refuted + 1+ contradiction → `False`, refuted 보존
+5. 이미 disputed → `False`, disputed 보존 (idempotent)
+6. unknown `claim_id` → `KeyError` (PR1~PR7 fail-fast)
+7. `confirm_claim_if_ready(disputed_claim)` → `False` (status guard)
+8. `refute_claim_if_ready(disputed_claim)` → `False` (status guard)
+9. `register_contradiction(disputed_claim, ev)` → 정상 등록 (status 무관)
+10. `contradictions_for_claim` 결과는 disputed 전이 후에도 보존 (gap state 와 함께)
+11. dispute 전이가 `base_confidence` / gap state 무변화
+12. **YAML 룰이 `output.claim.status = "disputed"` 작성 시 컴파일 거부** (Sub-decision D)
+13. `CLAIM_STATUS_DISPUTED` 가 `ragcore/__init__.py` 에 export 됨
+14. 기존 450 tests 그대로 통과 (회귀 방지)
+
+### 20.11 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| `disputed → confirmed` 복구 | history / audit / 정책 필요 — PR9+ |
+| `disputed → refuted` 강제 전이 | 별도 결정점 |
+| `disputed → resolved` / `archived` / `closed` | lifecycle 종결 정책 — 별도 PR |
+| `candidate → disputed` / `refuted → disputed` 진입 | `disputed` 의미 보호 (오직 confirmed 출신) |
+| `confirmed → refuted` 직접 전이 (PR7 와 일관 금지) | history 보호, PR9+ 결정점 |
+| `superseded` / `retracted` 같은 추가 상태 | PR9+ |
+| `confidence` 재계산 / scoring 변경 | 별도 PR |
+| `disputed_at` timestamp / status transition history | 직렬화 PR |
+| Auto-dispute (`register_contradiction` 안 side effect) | 명시성 원칙 (§17.7 정신) |
+| YAML 룰 output 에 `disputed` 노출 (Sub-decision D) | 20.5 참조 |
+
+### 20.12 Position in flow
+
+```text
+PR7 까지:
+  candidate + contradiction → refute_if_ready → refuted
+  confirmed + contradiction → register 가능, refute_if_ready 는 no-op (의도된 보호)
+                              → 이 상태가 PR8 의 트리거
+
+PR8:
+  confirmed + contradiction → dispute_if_ready → disputed
+  candidate + contradiction → 여전히 PR7 refute 영역
+  refuted   + contradiction → no-op (refuted 복구 금지)
+  disputed  + contradiction → register 가능, lifecycle 변화 없음 (PR9+)
+```
+
+구현 단계 (39/40차) — **테스트 먼저 잠금 → 구현** 순서:
+- 39차: tests (위 14개 invariant 중 1~13) — `AttributeError` + 컴파일 거부로 fail
+- 40차: `CLAIM_STATUS_DISPUTED` 상수 + export + `Engine.dispute_claim_if_ready` 구현 — 39차 테스트 통과로 입증
