@@ -4061,3 +4061,274 @@ PR11-B:
 구현 단계 (67/68차) — **테스트 먼저 잠금 → 구현** 순서:
 - 67차: tests (위 21 invariant) — PR11-B API 미구현 → `AttributeError` fail. 단, "PR10-A / PR11-C / PR11-A / PR9-A / PR11-D 무변화" 검증은 이미 pass (PR11-A 59차 / PR11-C 63차 패턴)
 - 68차: `refute_disputed_claim_if_ready_by_freshness` 메서드 구현 (PR10-B `_record_claim_lifecycle_transition` 호출 포함) — 67차 테스트 통과로 입증
+
+## 28. Effective confidence — gap modifier (MVP — binary, weak)
+
+> 상태: 70/71/72차 (PR12-D). PR11-D 의 modifier 분해 자리에 `gap_modifier`
+> 추가. `effective = base × status × freshness × gap`.
+> **N-dependent gap modifier / gap 종류별 가중치 / RuleStats / count modifier
+> / superseded/retracted 상태 모두 본 PR 범위 밖** — PR12+.
+
+### 28.1 PR12-D 의 한 줄 정의
+
+> **PR12-D 는 gap 판단을 정교화하는 PR 이 아니라, PR5 의 gap resolution
+> 의미가 effective_confidence 에 처음 연결되는 최소 연결 PR 이다.**
+
+PR11-D §24.5 의 modifier 분해 자리 (status × freshness 이미 채워짐) 의 **세
+번째 modifier** 활용. PR5 의 `gaps_for_claim` / `gap_resolution` 을
+effective scoring 에 input 으로 통합.
+
+### 28.2 핵심 명제 (§28.2)
+
+```text
+Gap modifier is binary and weak:
+unresolved gap means information is incomplete, not contradicted.
+```
+
+한국어:
+
+```text
+Gap modifier 는 binary 이고 약하다:
+unresolved gap 은 '정보 부족' 이지 '반박' 이 아니다.
+```
+
+이 명제가 Sub-decision T (값 0.8) 의 근거. PR10-A refute / PR11-C effective
+attenuation 보다 명확히 약한 페널티.
+
+### 28.3 공식 — modifier 분해 (status × freshness × gap)
+
+```python
+effective_confidence(claim) = (
+    base_confidence
+    × status_modifier(claim.status)         # PR11-D §24, 변경 없음
+    × freshness_modifier(claim_id)           # PR11-C §26, 변경 없음
+    × gap_modifier(claim_id)                 # PR12-D §28, 신규
+)
+```
+
+`status_modifier` (PR11-D, 변경 없음):
+
+| status | modifier |
+|---|---|
+| `CANDIDATE` | 1.0 |
+| `CONFIRMED` | 1.0 |
+| `DISPUTED` | 0.5 |
+| `REFUTED` | 0.0 |
+
+`freshness_modifier` (PR11-C, 변경 없음):
+
+```python
+1.0 if active 0 else (1.0 - most_recent.strength.value × 0.5)
+```
+
+`gap_modifier` (PR12-D 신규, Sub-decision T + U):
+
+```python
+def gap_modifier(claim_id):
+    gaps = self.gaps_for_claim(claim_id)
+    if not gaps:
+        return 1.0
+    if all(self.gap_resolution(g.id) is not None for g in gaps):
+        return 1.0
+    return _GAP_PENALTY_MODIFIER  # 0.8
+```
+
+`_GAP_PENALTY_MODIFIER = 0.8` (engine 내부 private).
+
+### 28.4 Sub-decision T — Constant 0.8
+
+```python
+_GAP_PENALTY_MODIFIER = 0.8
+```
+
+| 옵션 | 채택 | 의미 |
+|---|---|---|
+| (T-0.3) 강한 페널티 | ✗ | gap 부족이 거의 disputed 수준 — 과한 의미 부여 |
+| (T-0.5) 중간 | ✗ | PR11-D `disputed=0.5` / PR11-C `weight=0.5` 와 동급 — gap = lifecycle / contradiction 신호와 같은 무게 |
+| **(T-0.8) 약한 페널티** | ✓ | "정보 부족" 의 약한 신호. lifecycle / contradiction 보다 명확히 약함 |
+
+값의 의미 (단독으로):
+
+| 시나리오 | gap_modifier | 다른 modifier 1.0 가정 시 effective |
+|---|---|---|
+| gap 0 개 | 1.0 | base × 1.0 = base |
+| 모든 gap resolved | 1.0 | base × 1.0 = base |
+| unresolved 1+ | 0.8 | base × 0.8 |
+
+### 28.5 Sub-decision U — Binary, N 무관
+
+```text
+unresolved gap 1+ → 0.8
+그 외 → 1.0
+
+N 의존 없음 (1개든 10개든 동일).
+```
+
+| 옵션 | 채택 | 이유 |
+|---|---|---|
+| **(U-binary)** | ✓ | "최소 연결 PR" 정신. PR11-C Sub-decision O ("최신 1개만") 와 같은 단순성 |
+| (U-N-dependent) | ✗ | 함수 형태 / saturation / hard floor 등 추가 결정 부담 |
+
+PR12-D 의 본질은 "gap resolution 의미를 effective 에 처음 연결". 정교화는
+PR12+ 자연 후속.
+
+### 28.6 결정성 (Determinism)
+
+```text
+같은 (claim.base_confidence, claim.status,
+      active_contradictions_by_freshness(c),
+      gaps_for_claim(c), gap_resolution(g) for g in gaps,
+      evidence.strength) → 항상 같은 effective_confidence
+```
+
+PR12-D 는:
+- wall-clock 안 봄
+- random / external state 안 봄
+- PR5 `gaps_for_claim` + `gap_resolution` 결정성 그대로 유지
+
+PR11-D / PR11-C 결정성 그대로 + PR5 gap 의 결정성 통합.
+
+### 28.7 PR5 와의 정합 — gap_resolution 의미 보존
+
+`gap_modifier` 는 PR5 의 `gap_resolution(g.id)` 를 input 으로만 활용. PR5 의
+의미 / return / first-keep / KeyError 동작 변경 0.
+
+```text
+PR5: gap_resolution(g.id) → evidence_id | None
+PR12-D: gap_resolution(g.id) is None → unresolved
+        all resolved → modifier 1.0
+        any unresolved → modifier 0.8
+```
+
+### 28.8 PR11-D / PR11-C 와의 정합 — modifier 분해 자리 활용
+
+```python
+# PR11-D §24.5 의 명시적 미래 자리 (modifier 분해)
+effective = base × status_modifier × freshness_modifier × gap_modifier
+                                  └── PR11-C ───┘   └── PR12-D 신규 ──┘
+```
+
+PR11-D 의 시그니처 / KeyError / return type 그대로. 본문에 `× gap_modifier(claim_id)`
+추가만.
+
+| | PR11-D | PR11-C | PR12-D |
+|---|---|---|---|
+| 영역 | status | freshness | gap |
+| MVP 형태 | 4 status 의 4 값 | continuous (× 0.5 weight) | binary (× 0.8 or 1.0) |
+| Private constant | `_STATUS_MODIFIER_*` | `_FRESHNESS_PENALTY_WEIGHT = 0.5` | **`_GAP_PENALTY_MODIFIER = 0.8`** |
+
+세 modifier 모두 [0.0, 1.0] (no boost — PR11-D Sub-decision N 정신).
+
+### 28.9 의미 분리 (gap vs contradiction vs status)
+
+같은 effective 공식에 들어가는 세 modifier 의 의미:
+
+| modifier | 의미 신호 | 강도 |
+|---|---|---|
+| status_modifier | lifecycle 상태 (확정 / 반박 / 격리) | 강 (refuted = 0.0) |
+| freshness_modifier (PR11-C) | 최근 contradiction 의 strength | 중 (max 50% 감쇠) |
+| **gap_modifier (PR12-D)** | **정보 부족** | **약 (20% 감쇠 = 0.8)** |
+
+gap 신호가 contradiction / lifecycle 보다 명확히 약한 게 §28.2 명제의 직접
+표현.
+
+### 28.10 Sub-decision P 정신 보존 — refuted 시 0
+
+```text
+refuted:
+  status_modifier = 0.0
+  freshness_modifier × gap_modifier 무엇이든
+  effective = base × 0.0 × X × Y = 0.0
+```
+
+PR11-C Sub-decision P 와 같은 자연 결과. gap_modifier 가 무엇이든 status=0
+이면 effective=0.
+
+### 28.11 보존 (impact 없음)
+
+| | PR12-D 영향 |
+|---|---|
+| `Claim` / `Evidence` / `Gap` / `Relation` / `ScoreValue` / `ClaimLifecycleEvent` dataclass | 없음 |
+| `gaps_for_claim` / `gap_resolution` (PR5) 의미 | 없음 (read-only 활용) |
+| `_gap_resolutions` 인덱스 (PR5) | 없음 |
+| PR11-D `_STATUS_MODIFIER_*` / `_STATUS_TO_MODIFIER` | 없음 |
+| PR11-C `_FRESHNESS_PENALTY_WEIGHT` | 없음 |
+| PR10-A `_REFUTATION_STRENGTH_THRESHOLD` | 없음 |
+| 5 lifecycle API (PR6~PR10-A) + PR11-B sibling | 없음 |
+| `register_contradiction*` | 없음 |
+| PR11-A query / PR9-A asc | 없음 |
+| `_lifecycle_seq` / `_claim_lifecycle_events` (PR10-B) | 없음 |
+| `compute_effective_confidence` 시그니처 | 없음 (본문만 변경) |
+| `CLAIM_STATUS_MAP` / `_ALLOWED_CLAIM_STATUSES` | 없음 (Sub-decision D 정합) |
+| `fire_rule*` / `RuleStats` | 없음 |
+| public exports | 없음 (`_GAP_PENALTY_MODIFIER` private) |
+| 외부 dependency | 없음 |
+
+PR12-D 는 **`compute_effective_confidence` 본문에 곱셈 1개 추가만**.
+
+### 28.12 Invariants (테스트로 잠금)
+
+1. unknown claim_id → `KeyError` (PR11-D 동작 보존)
+2. **gap 0 개 + candidate → effective == base** (gap_modifier = 1.0)
+3. **gap 0 개 + confirmed → effective == base** (gap_modifier = 1.0)
+4. **gap 0 개 + disputed → effective == base × 0.5** (status × gap 1.0)
+5. **gap 0 개 + refuted → effective == 0.0** (status 0)
+6. **모든 gap resolved → gap_modifier == 1.0** (effective 변화 없음)
+7. **unresolved gap 1+ + candidate → effective == base × 0.8** ★
+8. **unresolved gap 1+ + confirmed → effective == base × 0.8** ★
+9. **unresolved gap 1+ + disputed → effective == base × 0.5 × 0.8 = base × 0.4** ★
+10. **unresolved gap 1+ + refuted → effective == 0.0** (Sub-decision P)
+11. **N 무관: unresolved 1개 vs 10개 동일 modifier** (Sub-decision U)
+12. **resolved + unresolved 혼재 시 unresolved 1+ → 0.8**
+13. PR11-C freshness modifier 결합:
+    confirmed + active strong 0.8 + unresolved gap 1+
+    → base × 1.0 × 0.6 × 0.8 = base × 0.48
+14. **PR5 `gap_resolution` 동작 변경 없음** ★ (입력 활용만)
+15. **PR11-C `compute_effective_confidence` 의 freshness_modifier 동작 변경 없음**
+16. **PR10-A refute / PR11-B refute_by_freshness 동작 변경 없음**
+17. PR11-A query 무변화
+18. PR9-A asc 무변화
+19. PR11-D `_STATUS_MODIFIER_*` 값 무변화
+20. effective ≤ base (no boost — Sub-decision N 정신)
+21. compute is read-only (gap / contradictions / lifecycle_history / base 무변화)
+22. determinism
+23. `_GAP_PENALTY_MODIFIER` private (ragcore + ragcore.types 미노출)
+24. 기존 589 회귀 없음 (전체 통과로 입증)
+
+### 28.13 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| N-dependent gap modifier (`f(N)` 형태) | Sub-decision U (binary, "최소 연결 PR" 정신) |
+| Gap 종류별 가중치 (`gap_type` / `severity` / `required_evidence_type`) | 단순화. PR12+ |
+| Gap freshness (오래된 gap 의 약한 페널티) | PR12+ 또는 결합 |
+| RuleStats modifier (`observed_precision` / `false_positive_rate`) | PR12+ |
+| Contradiction count modifier (active 개수 기반 추가 감쇠) | PR12+ |
+| Lifecycle history-based modifier | PR12+ |
+| `superseded` / `retracted` 추가 상태 | PR12-G 자리 |
+| Confidence boost (modifier > 1.0) | PR11-D Sub-decision N 일관 — 영구 OOS |
+| Caller-driven modifier / config injection | PR10-A / PR11-D 정신 |
+| LLM / semantic confidence | core 밖 |
+| Mutable confidence / setter | immutability |
+| Public `_GAP_PENALTY_MODIFIER` | engine 내부 private |
+| Wall-clock timestamp | PR10-A/B / PR11-A/B/C/D 일관 영구 OOS |
+| PR5 `gap_resolution` 정책 변경 | input 활용만 |
+
+### 28.14 Position in flow
+
+```text
+PR11-B 까지:
+  effective = base × status_modifier × freshness_modifier
+  → gap 정보는 effective 에 반영 안 됨
+  → caller 가 gap 상태를 보려면 gaps_for_claim 직접 호출 필요
+
+PR12-D:
+  effective = base × status × freshness × gap
+  → PR5 의 gap_resolution 의미가 effective 에 처음 연결
+  → unresolved gap 1+ 시 약한 페널티 (× 0.8)
+  → 모든 gap resolved / gap 0 개 시 영향 없음 (× 1.0)
+```
+
+구현 단계 (71/72차) — **테스트 먼저 잠금 → 구현** 순서:
+- 71차: tests (위 24 invariant) — PR11-C 본문에 gap 적용 안 됨 → gap-affected 시나리오 일부 fail
+- 72차: `_GAP_PENALTY_MODIFIER` private constant + `compute_effective_confidence` 본문 확장 (× gap_modifier 추가) — 71차 테스트 통과로 입증
