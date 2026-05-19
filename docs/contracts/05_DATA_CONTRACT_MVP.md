@@ -3089,3 +3089,232 @@ PR10-B:
 구현 단계 (51/52차) — **테스트 먼저 잠금 → 구현** 순서:
 - 51차: tests (위 16 invariant) — `AttributeError` + `from_status` 가 잘못된 값 등으로 fail
 - 52차: `ClaimLifecycleEvent` dataclass + `_lifecycle_seq` slot + `_claim_lifecycle_events` slot + `_record_claim_lifecycle_transition` helper + 5 API 변경 + `claim_lifecycle_history` 구현 — 51차 테스트 통과로 입증
+
+## 24. Effective confidence (MVP — status-only multiplier)
+
+> 상태: 54/55/56차 (PR11-D). PR1 의 `compute_effective_confidence` stub 첫
+> 활성화.
+> **gap / contradiction / freshness / RuleStats / lifecycle history 기반
+> modifier 는 본 PR 범위 밖** — PR11-A 또는 PR12+.
+
+### 24.1 PR11-D 의 한 줄 정의
+
+> **PR11-D 는 "정교한 신뢰도 계산기" 가 아니라, lifecycle status 가
+> effective_confidence 에 처음 반영되는 최소 연결 PR 이다.**
+
+PR1 의 prior/base/effective confidence 3 슬롯 분리가 처음으로 의미를 갖는다.
+이전까지 `effective` 슬롯은 stub 으로 비어 있었음.
+
+### 24.2 핵심 명제
+
+```text
+Effective confidence is status-adjusted, not evidence-recomputed.
+
+PR11-D does not re-evaluate evidence, gaps, contradictions, freshness, or
+rule maturity. It only applies the current claim lifecycle status as a
+bounded multiplier over base confidence.
+```
+
+한국어:
+
+```text
+Effective confidence 는 status 로 조정될 뿐, evidence 를 재계산하지 않는다.
+
+PR11-D 는 evidence / gap / contradiction / freshness / rule maturity 를 다시
+평가하지 않는다. base_confidence 위에 현재 lifecycle status 를 bounded
+multiplier 로 적용할 뿐이다.
+```
+
+### 24.3 공식 (§24 의 본체)
+
+```python
+effective_confidence(claim) = base_confidence × status_modifier(claim.status)
+```
+
+`status_modifier` 표:
+
+| status | modifier | 의미 |
+|---|---|---|
+| `CLAIM_STATUS_CANDIDATE` (0) | `1.0` | 그대로 — 아직 모름 |
+| `CLAIM_STATUS_CONFIRMED` (1) | `1.0` | 그대로 — boost 안 함 |
+| `CLAIM_STATUS_REFUTED` (2) | `0.0` | 확정 부정 |
+| `CLAIM_STATUS_DISPUTED` (3) | `0.5` | 감쇠 — 재판정 대기 |
+
+### 24.4 Sub-decision M — Modifier 의 input
+
+modifier 는 **`claim.status` 만 본다**. 다음 항목은 PR11-D 범위 **밖**:
+
+- `gaps_for_claim(c)` / `gap_resolution(g)`
+- `contradictions_for_claim(c)` / `active_contradictions_for_claim(c)`
+- `resolved_contradictions_for_claim(c)`
+- `claim_lifecycle_history(c)` (PR10-B seq / transition labels)
+- `evidence.strength` / 가중합
+- `RuleStats` (observed_precision / false_positive_rate)
+- `rule_version` / `rule_maturity` / freshness
+
+| 옵션 | 채택 | 이유 |
+|---|---|---|
+| (i) status only | ✓ | PR10-A 단순성 정신 일관, 다음 PR 자연 확장 |
+| (ii) status + gap binary | ✗ | gap 페널티 값 결정 부담 |
+| (iii) status + gap + contradiction | ✗ | 결정 폭발 |
+| Config-driven | ✗ | PR10-A 정신 위반 |
+
+(ii) / (iii) 같은 확장은 PR11-A (freshness 우세도) 또는 별도 PR 에서.
+
+### 24.5 Sub-decision N — Modifier range [0.0, 1.0]
+
+```text
+modifier ∈ [0.0, 1.0]
+→ effective_confidence ≤ base_confidence  (보장)
+→ no boost  (confirmed 가 base 를 초과하지 않음)
+```
+
+이유:
+- "confirmed = 근거 충족" 이지 "과신해도 됨" 이 아님
+- PR1 `ScoreValue` 의 [0.0, 1.0] 범위 강제와 정합 — `ScoreValue(value)` 에서
+  `value > 1.0` 이면 `ValueError`. modifier 가 1.0 초과면 base 가 1.0 인
+  케이스에서 effective 가 invariant 위반.
+- 미래에 "boost" 가 필요하면 별도 PR 결정점 (확신도 모델 변경)
+
+### 24.6 결정성 (Determinism)
+
+```text
+같은 (claim.base_confidence, claim.status) → 항상 같은 effective_confidence
+```
+
+PR11-D 는:
+- wall-clock 안 봄
+- gap / contradiction / history 안 봄
+- `_lifecycle_seq` 안 봄
+- random / external state 안 봄
+
+테스트 재현 100% 보장.
+
+### 24.7 API — 기존 stub 의 의미 채우기
+
+```python
+def compute_effective_confidence(self, claim_id: int) -> ScoreValue:
+    """Compute effective confidence as base × status_modifier.
+
+    PR11-D §24 — status-only multiplier MVP.
+
+    Returns:
+        ScoreValue (= base_confidence × status_modifier(claim.status)).
+
+    Raises:
+        KeyError: unknown claim_id.
+    """
+```
+
+PR1 stub 의 시그니처와 KeyError 동작은 **그대로 유지**. 본문만 status_modifier
+적용으로 채움.
+
+### 24.8 Status modifier 값들 — 결정 잠금
+
+```python
+# Engine 내부 private constants (PR10-A _REFUTATION_STRENGTH_THRESHOLD 정신)
+_STATUS_MODIFIER_CANDIDATE = 1.0
+_STATUS_MODIFIER_CONFIRMED = 1.0
+_STATUS_MODIFIER_DISPUTED  = 0.5
+_STATUS_MODIFIER_REFUTED   = 0.0
+```
+
+값 결정 근거:
+
+- **candidate = 1.0**: 아직 판단 안 됨. base_confidence 가 룰 firing 시점의
+  스냅샷이므로 그대로 노출.
+- **confirmed = 1.0**: 근거가 채워졌지만 boost 는 안 함 (Sub-decision N).
+  PR10-A 의 보수성 정신.
+- **disputed = 0.5**: confirmed 였다가 contradiction 으로 재검토. base 의
+  절반으로 명확히 감쇠해 caller 가 "주의" 신호로 인식 가능.
+- **refuted = 0.0**: 확정 부정. evidence 가 명시적으로 반박 (PR7) 또는
+  disputed 후 strong contradiction (PR10-A). effective_confidence 0 으로
+  완전 차단.
+
+값 자체는 **engine 내부 private**:
+- public export 안 함 (PR10-A `_REFUTATION_STRENGTH_THRESHOLD` 정신)
+- 미래 정책 변경 자유 확보 (PR11-A freshness 가 들어오면 modifier 분해 가능)
+- caller 가 외부 의존 못 하게 차단
+
+### 24.9 보존 (impact 없음)
+
+| | PR11-D 영향 |
+|---|---|
+| `Claim` / `Evidence` / `Gap` / `Relation` / `ScoreValue` dataclass | 없음 |
+| `Claim.base_confidence` 값 | 없음 (수정 안 함, 읽기만) |
+| `ClaimLifecycleEvent` / lifecycle history | 없음 |
+| `add_claim` / `add_evidence` / `add_gap` 의미 | 없음 |
+| `register_contradiction` / `register_contradiction_resolution` | 없음 |
+| 5 lifecycle API (confirm/refute/dispute/resolve_disputed/refute_disputed) | 없음 |
+| `_contradictions` / `_resolved_contradictions` / `_gap_resolutions` 인덱스 | 없음 |
+| `_lifecycle_seq` / `_claim_lifecycle_events` | 없음 (PR10-B audit) |
+| `_REFUTATION_STRENGTH_THRESHOLD` (PR10-A) | 없음 |
+| `CLAIM_STATUS_*` 상수 / `CLAIM_STATUS_MAP` / `_ALLOWED_CLAIM_STATUSES` | 없음 |
+| `fire_rule*` / `RuleStats` / `compute_effective_confidence` 시그니처 | 없음 (본문만 변경) |
+| public exports | 없음 (status_modifier 상수 private) |
+| 외부 dependency | 없음 |
+
+PR11-D 는 **stub 의 본문만 교체**. caller 코드 변화 0.
+
+### 24.10 Invariants (테스트로 잠금)
+
+1. `compute_effective_confidence` unknown claim_id → `KeyError`
+2. candidate Claim → `effective == base_confidence` (modifier 1.0)
+3. confirmed Claim → `effective == base_confidence` (modifier 1.0)
+4. **refuted Claim → `effective.value == 0.0`** ★ (확정 부정)
+5. **disputed Claim → `effective.value == base_confidence.value × 0.5`** ★ (감쇠)
+6. **return type is `ScoreValue`** (PR1 정합)
+7. 결정성: 같은 (base, status) 두 번 호출 → 같은 결과
+8. effective ≤ base (Sub-decision N — boost 없음)
+9. base = 0.5 + candidate → effective = 0.5
+10. base = 0.5 + confirmed → effective = 0.5
+11. base = 0.8 + disputed → effective = 0.4
+12. base = 1.0 + refuted → effective = 0.0
+13. base = 0.0 + any status → effective = 0.0 (0 × anything)
+14. compute 호출이 gap state / contradictions / history / lifecycle_seq /
+    base_confidence 무변화 (read-only)
+15. lifecycle transition 전후로 effective 값이 status 에 따라 변함
+    (예: candidate effective 0.7 → confirm → 0.7 → dispute → 0.35 → refute → 0.0)
+16. status modifier 상수 (`_STATUS_MODIFIER_*`) 가 public export 안 됨
+17. 기존 517 회귀 없음 (전체 통과로 입증)
+
+### 24.11 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| Gap 기반 modifier (unresolved gap 페널티) | PR11 후속 또는 PR12+ |
+| Contradiction 기반 modifier (active strength 가중) | PR11-A 또는 PR12+ |
+| Freshness 기반 modifier (PR10-B seq 활용) | PR11-A 자연 자리 |
+| RuleStats 기반 modifier (observed_precision / false_positive_rate) | scoring 정교화 별도 PR |
+| Lifecycle history 기반 modifier (transition 횟수 / path 가중) | history 활용 별도 PR |
+| Confidence boost (modifier > 1.0) | 확신도 모델 변경 — 별도 결정점 |
+| Caller-driven modifier 함수 (config injection) | PR10-A 정신 위반 |
+| LLM / semantic 기반 confidence | core 밖 |
+| Mutable confidence (setter 도입) | immutability 보존 |
+| Public `STATUS_MODIFIER_*` constants | Sub-decision M-impl |
+| Effective confidence 의 직렬화 / persistence | 별도 PR |
+| `base_confidence` 값 변경 (caller setter) | base 는 firing 시점 스냅샷 — 변경 금지 |
+| 결과의 caching / memoization | 결정성 보장이므로 호출자가 자체 캐시 가능 |
+
+### 24.12 Position in flow
+
+```text
+PR10-B 까지:
+  compute_effective_confidence(c) → base_confidence 그대로 (PR1 stub)
+  → status 의 의미가 scoring 에 반영 안 됨
+
+PR11-D:
+  compute_effective_confidence(c)
+    → base_confidence × status_modifier(claim.status)
+    → candidate / confirmed: base 그대로
+    → disputed: base × 0.5
+    → refuted: 0.0
+
+  caller 가 처음으로:
+    "이 claim 의 현재 status 가 신뢰도에 어떻게 반영되는가?"
+    질문에 의미 있는 답을 받을 수 있음.
+```
+
+구현 단계 (55/56차) — **테스트 먼저 잠금 → 구현** 순서:
+- 55차: tests (위 17 invariant) — 기존 stub 동작 (base 그대로) 으로 disputed/refuted 테스트 fail
+- 56차: `_STATUS_MODIFIER_*` 4 private constants + `compute_effective_confidence` 본문 교체 — 55차 테스트 통과로 입증
