@@ -3779,3 +3779,285 @@ PR11-C:
 구현 단계 (63/64차) — **테스트 먼저 잠금 → 구현** 순서:
 - 63차: tests (위 18 invariant) — PR11-D 본문 변경 전 일부는 이미 pass (active 0 / refuted), 일부는 fail (active 1+ 시 추가 감쇠)
 - 64차: `_FRESHNESS_PENALTY_WEIGHT` private constant + `compute_effective_confidence` 본문 확장 (× freshness_modifier 추가) — 63차 테스트 통과로 입증
+
+## 27. Freshness-aware disputed refutation (MVP — sibling API)
+
+> 상태: 66/67/68차 (PR11-B). PR10-A `refute_disputed_claim_if_ready` 의 sibling
+> API 추가. 기존 PR10-A 변경 0.
+> **PR10-A 정책 변경 / threshold 값 변경 / PR11-C effective scoring 변경 /
+> gap modifier / RuleStats / multi-evidence aggregation 모두 본 PR 범위 밖**.
+
+### 27.1 PR11-B 의 한 줄 정의
+
+> **PR11-B 는 PR10-A 의 refute 정책을 바꾸는 PR 이 아니라, freshness 정렬
+> 기준으로 refute 하는 sibling API 를 추가하는 PR 이다.**
+
+PR9-A `active_contradictions_for_claim` (asc) 과 PR11-A
+`active_contradictions_by_freshness` (desc) 가 같은 set 의 다른 정렬 view
+였듯, PR11-B 는 PR10-A 의 refute 와 같은 status target (REFUTED) 의 다른
+input view (FIRST by freshness 만) sibling.
+
+### 27.2 핵심 명제
+
+```text
+PR11-B introduces a sibling refute API that inspects the most recent active
+contradiction only, not all of them.
+
+PR10-A inspects ANY active contradiction.
+PR11-B inspects FIRST (by freshness) active contradiction only.
+
+Both produce CLAIM_STATUS_REFUTED. Both use the same threshold (0.8).
+The difference is which input set the policy reads — not threshold, not output.
+
+PR11-B does not change PR10-A semantics. Existing callers and tests of
+PR10-A remain valid.
+```
+
+한국어:
+
+```text
+PR11-B 는 sibling refute API 를 도입한다 — 모든 active 가 아니라 가장 최근
+active contradiction 하나만 본다.
+
+PR10-A: active 중 ANY 하나라도 strength >= 0.8 → refute
+PR11-B: active 중 FIRST (freshness desc) 의 strength >= 0.8 → refute
+
+두 API 모두 CLAIM_STATUS_REFUTED 를 생성. 같은 threshold (0.8). 차이는
+정책이 보는 input set 만 — threshold 도 아니고 output 도 아니다.
+
+PR11-B 는 PR10-A 의 의미를 변경하지 않는다. PR10-A 의 기존 caller / 테스트
+모두 그대로 유효.
+```
+
+### 27.3 lifecycle 위치 — 같은 status target, 다른 path
+
+```text
+PR10-A 까지:
+  disputed
+    └─ refuted  (PR10-A: any active strength >= 0.8)
+
+PR11-B 추가:
+  disputed
+    ├─ refuted  (PR10-A: any active strength >= 0.8)
+    └─ refuted  (PR11-B: first-by-freshness strength >= 0.8)  ← path 추가
+
+같은 target status, 다른 path. PR10-B audit 가 path 구분.
+```
+
+### 27.4 Sub-decision Q — Trigger 정의
+
+```python
+def refute_disputed_claim_if_ready_by_freshness(self, claim_id):
+    if claim.status != CLAIM_STATUS_DISPUTED:
+        return False
+    active = self.active_contradictions_by_freshness(claim_id)
+    if not active:
+        return False
+    most_recent = self._evidences[active[0]]
+    if most_recent.strength.value >= _REFUTATION_STRENGTH_THRESHOLD:
+        # refute
+```
+
+`active[0]` 만 본다. older active strong 은 무시. PR11-C 의 Sub-decision O
+정신 일관 (최신 1개만 사용).
+
+### 27.5 Sub-decision R — Threshold 재사용
+
+```python
+# 기존 PR10-A constant 재사용
+_REFUTATION_STRENGTH_THRESHOLD = 0.8
+```
+
+**새 상수 도입 안 함**. PR10-A 와 같은 의미축 (active contradiction strength).
+두 정책의 차이는 보는 set 만 (ANY vs FIRST). threshold 도 달라지면 의미
+분기 부담 큼.
+
+PR10-A `_REFUTATION_STRENGTH_THRESHOLD = 0.8` 그대로 활용.
+
+### 27.6 Sub-decision S — Transition label
+
+PR10-B 의 5 transition label 표에 신규 entry 추가:
+
+| API | `transition` 값 |
+|---|---|
+| PR10-A `refute_disputed_claim_if_ready` (변경 안 됨) | `"refute_disputed_if_ready"` |
+| **PR11-B `refute_disputed_claim_if_ready_by_freshness` (신규)** | **`"refute_disputed_by_freshness_if_ready"`** |
+
+PR10-B Sub-decision I (private string literal audit label) 정신 일관.
+caller 가 `claim_lifecycle_history` 에서 두 path 를 구분 가능:
+
+```python
+event.transition == "refute_disputed_if_ready"               # PR10-A
+event.transition == "refute_disputed_by_freshness_if_ready"  # PR11-B
+```
+
+### 27.7 결정표 — PR11-B 와 PR10-A 의 분리
+
+| Claim status | active 0 | active 1+ ANY >= 0.8 | active 1+ FIRST(by fresh) >= 0.8 |
+|---|---|---|---|
+| `disputed` | A: False / B: False | A: True / B: ? | A: True / B: True |
+| `disputed` (older strong, recent weak) | — | A: True / B: False ★ | — |
+| `disputed` (older weak, recent strong) | — | A: True / B: True | A: True / B: True |
+| `confirmed` / `candidate` / `refuted` | False / False | False / False | False / False |
+
+**핵심 분리 케이스 ★**: older active (strength >= 0.8) + recent active
+(strength < 0.8) → PR10-A True, PR11-B False. 둘이 다르게 답함.
+
+### 27.8 PR9-A / PR10-A / PR11-B mutual exclusivity
+
+```text
+disputed + active 0:
+  PR9-A resolve_disputed_claim_if_ready    → True (confirmed 복귀)
+  PR10-A refute_disputed_claim_if_ready    → False (active 없음)
+  PR11-B refute_disputed_claim_if_ready_by_freshness → False (active 없음)
+
+disputed + active 1+, ANY >= 0.8, FIRST < 0.8:
+  PR9-A → False (active 잔존)
+  PR10-A → True (REFUTED 전이)
+  PR11-B → False (FIRST < 0.8)
+
+disputed + active 1+, ANY < 0.8 (FIRST 도 < 0.8):
+  PR9-A → False
+  PR10-A → False
+  PR11-B → False
+  → disputed 유지
+
+disputed + active 1+, FIRST >= 0.8 (당연히 ANY 도 >= 0.8):
+  PR9-A → False
+  PR10-A → True
+  PR11-B → True
+  → 호출 순서로 어느 path 가 audit 에 기록되는지 결정
+```
+
+**같은 status target (REFUTED)** 이지만 **호출 순서가 audit path 를 결정**.
+caller 가 어느 API 를 먼저 호출하든 두 번째 호출은 status guard 로 False
+(`status != CANDIDATE` 아니고 `!= DISPUTED` 라서).
+
+### 27.9 호환성 — PR10-A 무변화
+
+PR11-B 의 신규 API 추가가 PR10-A 의 어떤 의미도 변경하지 않음:
+
+| | PR10-A 영향 |
+|---|---|
+| `refute_disputed_claim_if_ready` 시그니처 | 없음 |
+| `refute_disputed_claim_if_ready` 동작 | 없음 (ANY active 정책 그대로) |
+| `_REFUTATION_STRENGTH_THRESHOLD` 값 | 없음 (재사용) |
+| PR10-A invariants | 모두 유효 |
+| PR10-A 기존 caller | 코드 변경 0 |
+
+### 27.10 보존 (impact 없음)
+
+| | PR11-B 영향 |
+|---|---|
+| `Claim` / `Evidence` / `Gap` / `Relation` / `ScoreValue` / `ClaimLifecycleEvent` dataclass | 없음 |
+| `add_claim` / `add_evidence` / `add_gap` 의미 | 없음 |
+| 5 기존 lifecycle API (PR6/PR7/PR8/PR9-A/PR10-A) | 없음 |
+| `register_contradiction*` | 없음 |
+| PR9-A `active_contradictions_for_claim` (asc) | 없음 |
+| PR11-A `evidence_freshness` / `active_contradictions_by_freshness` | 없음 (input 으로만 사용) |
+| PR11-D + PR11-C `compute_effective_confidence` | 없음 (PR11-C 의 continuous attenuation 그대로) |
+| `_contradictions` / `_resolved_contradictions` / `_gap_resolutions` 인덱스 | 없음 |
+| `_REFUTATION_STRENGTH_THRESHOLD` (재사용) / `_STATUS_MODIFIER_*` / `_FRESHNESS_PENALTY_WEIGHT` | 없음 |
+| `CLAIM_STATUS_MAP` / `_ALLOWED_CLAIM_STATUSES` | 없음 (Sub-decision D 정합) |
+| `fire_rule*` / `RuleStats` | 없음 |
+| public exports | 없음 (새 dataclass / 상수 없음, 메서드만 추가) |
+| 외부 dependency | 없음 |
+
+PR11-B 는 **신규 API 1개만 추가**. 기존 동작 변경 0.
+
+### 27.11 lifecycle history 통합 — PR10-B audit 확장
+
+PR11-B 의 신규 API 가 True 반환 시 PR10-B 의 `_record_claim_lifecycle_transition`
+helper 자동 호출 — 시그니처 / 호출 패턴 모두 PR10-A 와 동일:
+
+```python
+# PR11-B 의 True path
+old_status = claim.status  # DISPUTED
+self._claims[claim_id] = replace(claim, status=CLAIM_STATUS_REFUTED)
+self._record_claim_lifecycle_transition(
+    claim_id, old_status, CLAIM_STATUS_REFUTED,
+    "refute_disputed_by_freshness_if_ready",  # Sub-decision S
+)
+return True
+```
+
+PR10-B 의 transition label 표가 5 → 6 으로 확장 (Sub-decision S):
+
+| transition label | API | path |
+|---|---|---|
+| `"confirm_if_ready"` | PR6 | candidate → confirmed |
+| `"refute_if_ready"` | PR7 | candidate → refuted |
+| `"dispute_if_ready"` | PR8 | confirmed → disputed |
+| `"resolve_disputed_if_ready"` | PR9-A | disputed → confirmed |
+| `"refute_disputed_if_ready"` | PR10-A | disputed → refuted (any active) |
+| **`"refute_disputed_by_freshness_if_ready"`** | **PR11-B** | **disputed → refuted (first by freshness)** |
+
+caller 가 lifecycle history 의 `transition` 으로 refute path 구분 가능.
+
+### 27.12 Invariants (테스트로 잠금)
+
+1. `refute_disputed_claim_if_ready_by_freshness` unknown claim_id → `KeyError`
+2. candidate / confirmed / refuted (status guard 3) → `False`
+3. disputed + active 0 → `False`
+4. disputed + 가장 최근 active strength < 0.8 → `False`
+5. **disputed + 가장 최근 active strength >= 0.8 → `True`, REFUTED ★**
+6. **Threshold boundary 0.8 정확 → `True`** (`>=` 비교)
+7. **Threshold 직하 0.799999 → `False`**
+8. **Sub-decision Q: older strong + recent weak → `False`** ★ (PR10-A 와 다름)
+9. Resolved contradiction 은 판정에서 제외 (PR9-A 차집합 정합)
+10. refuted 재호출 → `False` (idempotent)
+11. **PR10-B audit 통합**: True 반환 시 lifecycle event 기록,
+    `transition == "refute_disputed_by_freshness_if_ready"` ★
+12. **PR10-A `refute_disputed_claim_if_ready` 동작 무변화** ★ (호환성)
+13. **PR11-C `compute_effective_confidence` 동작 무변화** ★
+14. PR11-A `evidence_freshness` / `active_contradictions_by_freshness` 무변화
+15. PR9-A `active_contradictions_for_claim` asc 무변화
+16. PR11-D `_STATUS_MODIFIER_*` 값 무변화
+17. transition isolation (gap state / contradictions / resolved / base_confidence 무변화)
+18. **PR9-A / PR10-A / PR11-B mutual exclusivity** ★ (active 0 vs active 1+ 가드)
+19. `_REFUTATION_STRENGTH_THRESHOLD` 재사용 (새 상수 없음 — Sub-decision R)
+20. 새 transition label `"refute_disputed_by_freshness_if_ready"` private literal
+21. 기존 564 회귀 없음 (전체 통과로 입증)
+
+### 27.13 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| PR10-A `refute_disputed_claim_if_ready` 정책 변경 | sibling 결정 (Sub-decision: 호환 유지) |
+| Threshold 변경 / 새 threshold 도입 | Sub-decision R (재사용) |
+| 모든 active 가중합 / max / rank weighting | Sub-decision Q (FIRST 만) |
+| Older strong evidence 고려 | Sub-decision Q (FIRST 만) |
+| PR11-C `compute_effective_confidence` 변경 | PR11-C 의 continuous 와 PR11-B 의 binary 분리 |
+| Gap-based / count-based / RuleStats-based refute trigger | PR12+ |
+| LLM / semantic 기반 refute | core 밖 |
+| 자동 호출 (resolve / register 시 side effect) | 명시 호출 원칙 |
+| 새 status / 새 lifecycle 전이 | sibling refute 만 — 같은 REFUTED target |
+| Public `_REFUTATION_STRENGTH_THRESHOLD` | engine 내부 private 유지 |
+| Public `TRANSITION_*` constants | PR10-B Sub-decision I 정합 |
+| Wall-clock timestamp | PR10-A/B / PR11-A/C/D 일관 영구 OOS |
+
+### 27.14 Position in flow
+
+```text
+PR10-A 까지:
+  disputed + active 중 ANY >= 0.8 → refute_disputed_claim_if_ready True → REFUTED
+  freshness 정렬 정보는 사용 안 함
+
+PR11-A:
+  active_contradictions_by_freshness query 추가 (read-only)
+
+PR11-C:
+  effective = base × status × freshness_modifier
+  most_recent 의 strength 를 continuous attenuation 으로 활용
+
+PR11-B:
+  refute_disputed_claim_if_ready_by_freshness 추가 (sibling API)
+  most_recent 의 strength 를 binary refute trigger 로 활용
+  - PR10-A 호환 유지 (PR10-A 변경 0)
+  - PR11-C 의 continuous 와 PR11-B 의 binary 분리
+  - PR10-B audit 가 두 refute path 구분
+```
+
+구현 단계 (67/68차) — **테스트 먼저 잠금 → 구현** 순서:
+- 67차: tests (위 21 invariant) — PR11-B API 미구현 → `AttributeError` fail. 단, "PR10-A / PR11-C / PR11-A / PR9-A / PR11-D 무변화" 검증은 이미 pass (PR11-A 59차 / PR11-C 63차 패턴)
+- 68차: `refute_disputed_claim_if_ready_by_freshness` 메서드 구현 (PR10-B `_record_claim_lifecycle_transition` 호출 포함) — 67차 테스트 통과로 입증
