@@ -11,6 +11,7 @@ from dataclasses import replace
 from ragcore.types import (
     CLAIM_STATUS_CANDIDATE,
     CLAIM_STATUS_CONFIRMED,
+    CLAIM_STATUS_DISPUTED,
     CLAIM_STATUS_REFUTED,
     KIND_CLAIM,
     KIND_ENTITY,
@@ -422,6 +423,38 @@ class Engine:
         if not self._contradictions.get(claim_id):
             return False
         self._claims[claim_id] = replace(claim, status=CLAIM_STATUS_REFUTED)
+        return True
+
+    # ---- Disputed lifecycle (PR8 §20) -------------------------------------
+
+    def dispute_claim_if_ready(self, claim_id: int) -> bool:
+        """Transition confirmed → disputed if at least one contradiction is registered.
+
+        전이 조건 (§20.7):
+            - ``claim.status == CLAIM_STATUS_CONFIRMED``
+            - ``len(contradictions_for_claim(claim_id)) >= 1``
+
+        Returns:
+            True  — 이번 호출로 confirmed → disputed 전이.
+            False — 전이 없음 (조건 불충족 / 이미 disputed / candidate / refuted).
+
+        Raises:
+            KeyError: unknown claim_id.
+
+        Note:
+            Disputed 는 confirmed 위에 얹는 격리 상태 (§20.3). candidate /
+            refuted 에서 직접 진입 불가. confirmed → refuted 직접 전이 (PR7
+            금지) 의 대안 — contradiction 으로 confirmed 가 흔들릴 때 별도
+            상태로 격리.
+        """
+        if claim_id not in self._claims:
+            raise KeyError(f"unknown claim_id: {claim_id}")
+        claim = self._claims[claim_id]
+        if claim.status != CLAIM_STATUS_CONFIRMED:
+            return False
+        if not self._contradictions.get(claim_id):
+            return False
+        self._claims[claim_id] = replace(claim, status=CLAIM_STATUS_DISPUTED)
         return True
 
     # ---- Rule registry -----------------------------------------------------

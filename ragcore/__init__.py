@@ -25,6 +25,7 @@ from ragcore.rule_runtime import FiringTrace, fire_rule, fire_rule_with_trace
 from ragcore.types import (
     CLAIM_STATUS_CANDIDATE,
     CLAIM_STATUS_CONFIRMED,
+    CLAIM_STATUS_DISPUTED,
     CLAIM_STATUS_REFUTED,
     KIND_CLAIM,
     KIND_ENTITY,
@@ -49,6 +50,7 @@ from ragcore.types import (
 __all__ = [
     "CLAIM_STATUS_CANDIDATE",
     "CLAIM_STATUS_CONFIRMED",
+    "CLAIM_STATUS_DISPUTED",
     "CLAIM_STATUS_REFUTED",
     "Claim",
     "Combinator",
