@@ -20,6 +20,7 @@ from ragcore.types import (
     KIND_OBSERVATION,
     KIND_RELATION,
     Claim,
+    ClaimLifecycleEvent,
     Entity,
     Evidence,
     Gap,
@@ -57,6 +58,10 @@ class Engine:
         self._contradictions: dict[int, set[int]] = {}
         # PR9-A §21: claim_id -> set of resolved evidence_ids (subset of contradictions).
         self._resolved_contradictions: dict[int, set[int]] = {}
+        # PR10-B §23: lifecycle history (audit trail of status transitions only).
+        # per-engine monotonic counter (NOT timestamp, NOT per-claim).
+        self._lifecycle_seq: int = 0
+        self._claim_lifecycle_events: dict[int, list[ClaimLifecycleEvent]] = {}
 
     def _allocate_id(self, kind: str) -> int:
         next_id = self._next_id.get(kind, 0) + 1
@@ -360,7 +365,11 @@ class Engine:
             return False
         if not all(self.gap_resolution(g.id) is not None for g in gaps):
             return False
+        old_status = claim.status
         self._claims[claim_id] = replace(claim, status=CLAIM_STATUS_CONFIRMED)
+        self._record_claim_lifecycle_transition(
+            claim_id, old_status, CLAIM_STATUS_CONFIRMED, "confirm_if_ready",
+        )
         return True
 
     # ---- Claim refutation (PR7 §19) ---------------------------------------
@@ -429,7 +438,11 @@ class Engine:
             return False
         if not self._contradictions.get(claim_id):
             return False
+        old_status = claim.status
         self._claims[claim_id] = replace(claim, status=CLAIM_STATUS_REFUTED)
+        self._record_claim_lifecycle_transition(
+            claim_id, old_status, CLAIM_STATUS_REFUTED, "refute_if_ready",
+        )
         return True
 
     # ---- Disputed lifecycle (PR8 §20) -------------------------------------
@@ -461,7 +474,11 @@ class Engine:
             return False
         if not self._contradictions.get(claim_id):
             return False
+        old_status = claim.status
         self._claims[claim_id] = replace(claim, status=CLAIM_STATUS_DISPUTED)
+        self._record_claim_lifecycle_transition(
+            claim_id, old_status, CLAIM_STATUS_DISPUTED, "dispute_if_ready",
+        )
         return True
 
     # ---- Disputed resolution (PR9-A §21) ----------------------------------
@@ -556,7 +573,11 @@ class Engine:
             return False
         if self.active_contradictions_for_claim(claim_id):
             return False
+        old_status = claim.status
         self._claims[claim_id] = replace(claim, status=CLAIM_STATUS_CONFIRMED)
+        self._record_claim_lifecycle_transition(
+            claim_id, old_status, CLAIM_STATUS_CONFIRMED, "resolve_disputed_if_ready",
+        )
         return True
 
     # ---- Disputed refutation (PR10-A §22) ---------------------------------
@@ -594,11 +615,61 @@ class Engine:
         for evidence_id in self.active_contradictions_for_claim(claim_id):
             evidence = self._evidences[evidence_id]
             if evidence.strength.value >= _REFUTATION_STRENGTH_THRESHOLD:
+                old_status = claim.status
                 self._claims[claim_id] = replace(
                     claim, status=CLAIM_STATUS_REFUTED,
                 )
+                self._record_claim_lifecycle_transition(
+                    claim_id, old_status, CLAIM_STATUS_REFUTED,
+                    "refute_disputed_if_ready",
+                )
                 return True
         return False
+
+    # ---- Lifecycle history (PR10-B §23) -----------------------------------
+
+    def _record_claim_lifecycle_transition(
+        self,
+        claim_id: int,
+        from_status: int,
+        to_status: int,
+        transition: str,
+    ) -> None:
+        """Append a lifecycle event. Called by 5 transition APIs on actual transition.
+
+        Public 노출 안 됨 — caller 가 직접 history 를 mutate 할 수 없음 (§23.9
+        audit 무결성). 5 lifecycle API 의 ``True`` 반환 직전에만 호출되므로
+        no-op (False) 은 절대 기록되지 않음 (§23.5 Sub-decision J).
+        """
+        self._lifecycle_seq += 1
+        event = ClaimLifecycleEvent(
+            seq=self._lifecycle_seq,
+            claim_id=claim_id,
+            from_status=from_status,
+            to_status=to_status,
+            transition=transition,
+        )
+        self._claim_lifecycle_events.setdefault(claim_id, []).append(event)
+
+    def claim_lifecycle_history(
+        self, claim_id: int,
+    ) -> tuple[ClaimLifecycleEvent, ...]:
+        """Return lifecycle events for the claim in insertion order.
+
+        Returns:
+            ClaimLifecycleEvent 들의 tuple, 발생 순서 (= seq 오름차순).
+            Status 변경이 한 번도 없었으면 빈 tuple.
+
+        Raises:
+            KeyError: unknown claim_id.
+
+        Note:
+            seq 는 engine-local monotonic. 서로 다른 claim 의 history 를 합쳐서
+            정렬해도 의미가 있다 (cross-claim 순서 표현).
+        """
+        if claim_id not in self._claims:
+            raise KeyError(f"unknown claim_id: {claim_id}")
+        return tuple(self._claim_lifecycle_events.get(claim_id, ()))
 
     # ---- Rule registry -----------------------------------------------------
 

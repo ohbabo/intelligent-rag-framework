@@ -2781,3 +2781,311 @@ PR10-A:
 구현 단계 (47/48차) — **테스트 먼저 잠금 → 구현** 순서:
 - 47차: tests (위 13 invariant) — `AttributeError` 로 fail 하는 상태로 잠금
 - 48차: `_REFUTATION_STRENGTH_THRESHOLD` 상수 + `refute_disputed_claim_if_ready` 구현 — 47차 테스트 통과로 입증
+
+## 23. Claim lifecycle history (MVP)
+
+> 상태: 50/51/52차 (PR10-B). lifecycle status transition 의 engine-local
+> 기록.
+> **wall-clock timestamp / persistence / freshness / 자동 판단 / 직렬화 /
+> rollback / history 기반 결정은 본 PR 범위 밖** — 별도 PR.
+
+### 23.1 PR10-B 의 한 줄 정의
+
+> **PR10-B 는 PR6~PR10-A 가 잠근 5 status transition 들이 "어느 path 로 어느
+> 상태에 도달했는가" 의 audit 기록을 남기는 PR 이다. 판단 근거가 아니라
+> 추적 기록.**
+
+PR10-A 까지는 "지금 어느 상태인가" 만 답할 수 있었다. PR10-B 이후는 "어떻게
+이 상태가 됐는가" 를 같은 engine 안에서 답할 수 있다.
+
+### 23.2 핵심 명제
+
+```text
+Lifecycle history records status transitions, not claim creation.
+
+A lifecycle event exists only when an existing claim changes from one status
+to another. The event records engine-local order, not wall-clock time or
+freshness.
+```
+
+한국어:
+
+```text
+Lifecycle history 는 status transition 만 기록한다. claim 생성은 transition
+이 아니므로 기록되지 않는다.
+
+이벤트는 engine-local 순서만 표현한다. 시간 차이 / freshness 는 PR10-B 가
+표현하지 않는다.
+```
+
+### 23.3 Sub-decision H — Sequence id, not timestamp
+
+```python
+self._lifecycle_seq: int = 0  # per-engine monotonic counter
+```
+
+- **timestamp 안 씀** — wall-clock 의존성 없음, 결정성 100%
+- **per-engine monotonic** — 서로 다른 claim 사이에서도 "어느 전이가 먼저
+  일어났는가" 비교 가능
+- **순서만 표현** — 시간 간격 / freshness 의미 없음
+- **외부 clock 의존 없음** — 테스트 안정성 + 향후 직렬화 자유
+
+이 결정이 PR10-A 의 timestamp / freshness OOS 결정과 정합. freshness 정책은
+PR11+ 에서 별도로 도입 가능.
+
+### 23.4 Sub-decision I — Private string literal transition labels
+
+```python
+@dataclass(frozen=True)
+class ClaimLifecycleEvent:
+    seq: int
+    claim_id: int
+    from_status: int
+    to_status: int
+    transition: str   # audit label, not public constant
+```
+
+5 transition string 값:
+
+| API | `transition` 값 |
+|---|---|
+| `confirm_claim_if_ready` (PR6) | `"confirm_if_ready"` |
+| `refute_claim_if_ready` (PR7) | `"refute_if_ready"` |
+| `dispute_claim_if_ready` (PR8) | `"dispute_if_ready"` |
+| `resolve_disputed_claim_if_ready` (PR9-A) | `"resolve_disputed_if_ready"` |
+| `refute_disputed_claim_if_ready` (PR10-A) | `"refute_disputed_if_ready"` |
+
+| 옵션 | 채택 | 이유 |
+|---|---|---|
+| Public string constants (`TRANSITION_*`) | ✗ | 외부 의존 발생, 변경 자유 손실 |
+| Public string literals (계약상 노출만) | ✗ | 같은 문제 |
+| **Private literal (audit label)** | ✓ | implementation detail, 미래 변경 자유 |
+
+caller 비교 방식:
+
+```python
+event.transition == "confirm_if_ready"  # literal 비교 OK
+```
+
+PR1 의 mapping table 패턴 (string→uint16 packed) 영역이 아님. lifecycle event
+는 audit data 라 packed 안 됨.
+
+### 23.5 Sub-decision J — Record only on actual transition
+
+```text
+True 반환 (status 변경 발생) → history append
+False (no-op) → 기록 안 함
+```
+
+5 lifecycle API 가 `True` 를 반환할 때만 `_record_claim_lifecycle_transition`
+호출. 의미상 transition 자체가 일어나지 않으면 history 도 없음.
+
+이 결정의 결과:
+- 기존 API 시그니처 무변경 — caller 코드 무영향
+- side effect 만으로 기록 — PR10-B 가 PR6~PR10-A 와 100% 호환
+- false call 의 횟수는 추적 안 됨 (별도 audit 영역)
+
+### 23.6 Sub-decision K — Claim 생성은 transition 아님
+
+`add_claim` / `fire_rule` 통한 claim 생성은 history 에 기록되지 않음.
+
+이유:
+- "transition" 정의 = `from_status → to_status`. 생성은 `from_status` 없음.
+- 모든 Claim 은 candidate 로 시작 — "candidate 진입" 은 새 정보 0.
+- Claim 의 첫 history 이벤트는 **첫 status 변경 시점** (예: `confirm_if_ready`).
+
+미래에 "claim 생성도 audit" 요구가 있으면 별도 PR (PR3 firing trace 와 통합
+가능).
+
+### 23.7 Sub-decision L — Per-engine single counter
+
+```python
+self._lifecycle_seq: int = 0  # not per-claim
+```
+
+같은 engine 안의 모든 claim 의 transition 순서를 비교 가능. 서로 다른
+claim 의 전이도 seq 으로 정렬됨.
+
+per-claim counter 옵션을 거부한 이유:
+- 같은 engine 안에서 "어느 claim 의 전이가 먼저 일어났는가" 비교 불가
+- 미래에 cross-claim 분석 (예: "claim A 가 confirmed 된 후 claim B 가 disputed
+  된 적이 있는가") 의 기반 손실
+
+### 23.8 데이터 구조
+
+```python
+# ragcore/types.py
+@dataclass(frozen=True)
+class ClaimLifecycleEvent:
+    seq: int          # per-engine monotonic
+    claim_id: int
+    from_status: int  # CLAIM_STATUS_*
+    to_status: int    # CLAIM_STATUS_*
+    transition: str   # private audit label
+```
+
+Engine 내부:
+
+```python
+self._lifecycle_seq: int = 0
+self._claim_lifecycle_events: dict[int, list[ClaimLifecycleEvent]] = {}
+```
+
+### 23.9 API
+
+```python
+def claim_lifecycle_history(self, claim_id: int) -> tuple[ClaimLifecycleEvent, ...]:
+    """Return lifecycle events for the claim in insertion order.
+
+    Returns:
+        ClaimLifecycleEvent 들의 tuple, 발생 순서 (= seq 오름차순).
+        Status 변경이 한 번도 없었으면 빈 tuple.
+
+    Raises:
+        KeyError: unknown claim_id.
+
+    Note:
+        seq 는 engine-local monotonic. 서로 다른 claim 의 history 를 합쳐서
+        정렬해도 의미가 있다 (cross-claim 순서 표현).
+    """
+```
+
+Engine 내부 helper (public 아님):
+
+```python
+def _record_claim_lifecycle_transition(
+    self,
+    claim_id: int,
+    from_status: int,
+    to_status: int,
+    transition: str,
+) -> None:
+    """Append a lifecycle event. Called by 5 transition APIs on actual transition.
+
+    이 helper 는 public 노출 안 됨 — caller 가 직접 history 를 mutate 할 수 없음
+    (§23 OOS).
+    """
+    self._lifecycle_seq += 1
+    event = ClaimLifecycleEvent(
+        seq=self._lifecycle_seq,
+        claim_id=claim_id,
+        from_status=from_status,
+        to_status=to_status,
+        transition=transition,
+    )
+    self._claim_lifecycle_events.setdefault(claim_id, []).append(event)
+```
+
+### 23.10 PR6~PR10-A 5 API 의 변경 지점
+
+각 API 의 `True` 반환 직전에 `_record_claim_lifecycle_transition` 호출:
+
+```python
+# 예: confirm_claim_if_ready (PR6)
+self._claims[claim_id] = replace(claim, status=CLAIM_STATUS_CONFIRMED)
+self._record_claim_lifecycle_transition(
+    claim_id, claim.status, CLAIM_STATUS_CONFIRMED, "confirm_if_ready",
+)
+return True
+```
+
+5 API 의 변경 패턴 동일. **시그니처 무변경** — caller 코드 무영향.
+
+### 23.11 결정표
+
+| 시나리오 | history 기록? |
+|---|---|
+| `confirm_claim_if_ready` returns True (전이 발생) | **기록** |
+| `confirm_claim_if_ready` returns False (no-op) | 기록 안 함 |
+| `refute_claim_if_ready` returns True | **기록** |
+| `dispute_claim_if_ready` returns True | **기록** |
+| `resolve_disputed_claim_if_ready` returns True | **기록** |
+| `refute_disputed_claim_if_ready` returns True | **기록** |
+| 어느 API 든 returns False | 기록 안 함 |
+| `add_claim` 호출 | 기록 안 함 (생성) |
+| `fire_rule` 호출 (Claim 생성) | 기록 안 함 (생성) |
+| `register_contradiction` / `register_contradiction_resolution` | 기록 안 함 (transition 아님) |
+| `add_evidence` / `resolve_gaps_for_evidence` | 기록 안 함 |
+| `claim_lifecycle_history` 호출 자체 | 기록 안 함 (read-only) |
+
+### 23.12 보존 (impact 없음)
+
+| | PR10-B 영향 |
+|---|---|
+| `Claim` / `Evidence` / `Gap` / `Relation` / `ScoreValue` dataclass | 없음 |
+| `Entity` / `Observation` / `RuleDefinition` / `RuleStats` | 없음 |
+| 5 lifecycle API 의 **시그니처** | 없음 |
+| 5 lifecycle API 의 **return semantics** | 없음 |
+| `add_claim` / `add_evidence` / `add_gap` 의미 | 없음 |
+| `register_contradiction` / `register_contradiction_resolution` 의미 | 없음 |
+| `_contradictions` / `_resolved_contradictions` / `_gap_resolutions` 인덱스 | 없음 |
+| `CLAIM_STATUS_MAP` / `_ALLOWED_CLAIM_STATUSES` | 없음 (audit, 새 status 아님) |
+| `CLAIM_STATUS_*` 상수 | 없음 (재사용) |
+| `fire_rule*` / `RuleStats` / `compute_effective_confidence` | 없음 |
+| `base_confidence` / scoring | 없음 |
+| 외부 dependency | 없음 (외부 clock 의존 안 함, sequence id 만) |
+
+5 lifecycle API 는 **side effect 추가만**. caller 가 보기에 동작 변화 없음.
+
+### 23.13 Invariants (테스트로 잠금)
+
+1. `claim_lifecycle_history` unknown claim_id → `KeyError`
+2. `add_claim` 직후 history 는 빈 tuple
+3. `confirm_claim_if_ready` 성공 → history 에 event 1, `from=CANDIDATE`, `to=CONFIRMED`, `transition="confirm_if_ready"`
+4. `refute_claim_if_ready` 성공 → event, `transition="refute_if_ready"`
+5. `dispute_claim_if_ready` 성공 → event, `transition="dispute_if_ready"`
+6. `resolve_disputed_claim_if_ready` 성공 → event, `transition="resolve_disputed_if_ready"`
+7. `refute_disputed_claim_if_ready` 성공 → event, `transition="refute_disputed_if_ready"`
+8. 5 API 중 **`False` 반환 시 history 무변화** (no-op 기록 안 함)
+9. `add_claim` / `fire_rule` 단독 호출은 history 무변화
+10. `register_contradiction` / `add_evidence` / `resolve_gaps_for_evidence`
+    단독 호출은 history 무변화
+11. 여러 transition 발생 시 seq 가 strictly increasing
+12. **`seq` 는 per-engine monotonic** — 다른 claim 의 transition 도 같은
+    counter 공유 (claim_a seq=1, claim_b seq=2 같은 패턴)
+13. 같은 claim 의 history 는 발생 순서대로 (insertion order)
+14. `from_status` / `to_status` 가 실제 전이와 일치
+15. 다중 transition (예: candidate → confirmed → disputed → refuted) full
+    path 기록
+16. 기존 500 회귀 없음 (전체 통과로 입증)
+
+### 23.14 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| Wall-clock timestamp | freshness 정책과 같이 갈 결정 — PR11+ |
+| Persistence / 직렬화 | 별도 PR (전체 engine state 직렬화 결정과 같이) |
+| Event sourcing / undo / rollback | lifecycle 의 단방향성 보장 — 별도 PR |
+| Freshness scoring (event 시간 거리 기반) | timestamp 없음 |
+| History 기반 자동 lifecycle 결정 (예: 최근 5 번 disputed → refute) | side effect 의 side effect — 명시성 위반 |
+| Trace 의 public mutation API | caller 직접 mutate 금지 (audit 무결성) |
+| Pretty-printer / 시각화 | 별도 도구 PR |
+| 기존 5 API 의 signature 변경 | 호환성 (Sub-decision J 정신) |
+| `add_claim` / `fire_rule` / 비-transition API 의 audit | Sub-decision K, 별도 PR |
+| Trace 의 삭제 / archive | PR9-A audit 보존 정신 |
+| Cross-engine seq 비교 | per-engine monotonic — 의미 없음 |
+| Public transition constants (`TRANSITION_*`) | Sub-decision I |
+
+### 23.15 Position in flow
+
+```text
+PR10-A 까지:
+  status 변경 5 종 → 단순히 status 만 바뀜
+  caller 는 현재 status 만 볼 수 있음 (어떻게 도달했는지 모름)
+
+PR10-B:
+  status 변경 5 종 → status 바뀜 + lifecycle event append
+  claim_lifecycle_history(c) → tuple[ClaimLifecycleEvent, ...]
+    각 event: seq / claim_id / from_status / to_status / transition
+
+  예시:
+    add_claim → status=CANDIDATE, history=[]
+    confirm_claim_if_ready → True, history=[event(seq=1, CAND→CONF)]
+    dispute_claim_if_ready  → True, history=[..., event(seq=2, CONF→DISP)]
+    register_contradiction_resolution → bool (history 무변화 — transition 아님)
+    refute_disputed_claim_if_ready  → True, history=[..., event(seq=3, DISP→REF)]
+```
+
+구현 단계 (51/52차) — **테스트 먼저 잠금 → 구현** 순서:
+- 51차: tests (위 16 invariant) — `AttributeError` + `from_status` 가 잘못된 값 등으로 fail
+- 52차: `ClaimLifecycleEvent` dataclass + `_lifecycle_seq` slot + `_claim_lifecycle_events` slot + `_record_claim_lifecycle_transition` helper + 5 API 변경 + `claim_lifecycle_history` 구현 — 51차 테스트 통과로 입증
