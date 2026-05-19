@@ -2528,3 +2528,256 @@ PR9-A:
 구현 단계 (43/44차) — **테스트 먼저 잠금 → 구현** 순서:
 - 43차: tests (위 14 invariant 중 1~13) — `AttributeError` 로 fail 하는 상태로 잠금
 - 44차: `_resolved_contradictions` slot + 4 메서드 구현 — 43차 테스트 통과로 입증
+
+## 22. Disputed refutation (MVP)
+
+> 상태: 46/47/48차 (PR10-A). `disputed → refuted` 단일 전이.
+> **freshness / RuleStats / 가중합 / 다중 evidence 종합 / scoring 변경 / lifecycle history 는 본 PR 범위 밖** — PR10-B 또는 PR11+.
+
+### 22.1 PR10-A 의 한 줄 정의
+
+> **PR10-A 는 PR8/PR9-A 가 격리해둔 disputed 의 부정 종결 경로를 정의한다.
+> 단, "우세도" 를 똑똑하게 만들지 않고 evidence strength 단일 축으로만 시작한다.**
+
+PR9-A 가 disputed 의 **긍정 종결** (`disputed → confirmed`) 을 잠갔다면, PR10-A
+는 **부정 종결** (`disputed → refuted`) 을 잠근다. lifecycle 의 사면이 닫힌다.
+
+### 22.2 핵심 명제 (Sub-decision F)
+
+```text
+Refutation of a disputed claim is contradiction-strength-driven only.
+
+PR10-A does not consult freshness, rule maturity, evidence count, or weighted
+aggregation. A disputed claim becomes refuted when any single active
+contradiction evidence has strength >= REFUTATION_STRENGTH_THRESHOLD.
+```
+
+한국어:
+
+```text
+disputed Claim 의 refute 판정은 contradiction strength 단일 축으로만 한다.
+
+PR10-A 는 freshness / rule maturity / evidence 개수 / 가중합 등을 보지 않는다.
+active contradiction evidence 중 단 하나라도 strength 가 threshold 이상이면
+refuted 로 전이한다.
+```
+
+이 단순성이 PR10-A 의 안전망. **"우세도" 를 똑똑하게 만들려는 시도가 PR10-A
+의 가장 큰 위험.** 복잡한 정책은 PR11+ 로.
+
+### 22.3 lifecycle 위치
+
+```text
+PR9-A 까지:
+  candidate
+    ├─ confirmed  (PR6) ─── disputed  (PR8)
+    │      ↑                       │
+    │      └────── PR9-A ──────────┘
+    └─ refuted    (PR7)
+
+PR10-A 추가:
+  candidate
+    ├─ confirmed  (PR6) ─── disputed  (PR8)
+    │      ↑                       ├─ confirmed  (PR9-A)
+    │      └────── PR9-A ──────────┤
+    └─ refuted    (PR7)            └─ refuted    (PR10-A) ← 신규
+```
+
+`disputed → refuted` 가 lifecycle 의 부정 종결 경로. 단방향 — `refuted →
+disputed` / `refuted → candidate` 같은 복구는 PR10-A 범위 밖.
+
+### 22.4 PR7 refuted 와 PR10-A refuted — 같은 status, 다른 path
+
+| 출처 | 진입 status | trigger | API |
+|---|---|---|---|
+| **PR7** | `candidate` | contradiction 등록 (개수만 봄) | `refute_claim_if_ready` |
+| **PR10-A** | `disputed` | active contradiction strength >= threshold | `refute_disputed_claim_if_ready` |
+
+둘 다 결과는 `status = CLAIM_STATUS_REFUTED` (2). 같은 상수.
+
+- 어떤 path 로 refuted 가 됐는지 (candidate 출신 / disputed 출신) 의 구분은
+  status 만으로는 알 수 없다.
+- 이 구분이 필요해지면 lifecycle history (PR10-B 또는 별도 PR) 가 그 역할.
+- PR10-A 는 history 영역을 건드리지 않음.
+
+### 22.5 Strength threshold — Sub-decision G
+
+```python
+# Engine 내부 private constant
+_REFUTATION_STRENGTH_THRESHOLD = 0.8
+```
+
+- **Public export 안 함** (`ragcore.__init__` 변경 없음)
+- **Private constant** (`_` 접두) — 외부 의존 차단, 미래 정책 변경 자유 확보
+- `ScoreValue` 의 비교는 `.value` 로 (Sub-decision F-impl):
+  ```python
+  if evidence.strength.value >= _REFUTATION_STRENGTH_THRESHOLD:
+      ...
+  ```
+  `ScoreValue` 가 `__ge__` 미정의 (`order=False` dataclass) 라 `.value` 접근이
+  유일한 안전한 방법. PR1 의 `ScoreValue` 시그니처를 건드리지 않는다.
+
+| 옵션 | 채택 | 이유 |
+|---|---|---|
+| Public constant | ✗ | 미래 정책 변경 자유 확보 |
+| Config 주입 | ✗ | PR10-A 단순성 보호 |
+| Hardcode private | ✓ | MVP 안전 + 변경 시 단일 위치 |
+| `ScoreValue.__ge__` 추가 | ✗ | PR1 시그니처 변경 회피 |
+
+threshold 값 0.8 의 근거: "거의 확실한 반박" 의 보수적 기준. PR11+ 에서
+freshness/aggregation 들어오면 자연스럽게 조정 또는 대체.
+
+### 22.6 API
+
+```python
+def refute_disputed_claim_if_ready(self, claim_id: int) -> bool:
+    """Transition disputed → refuted if any active contradiction is strong enough.
+
+    전이 조건 (§22.7):
+        - ``claim.status == CLAIM_STATUS_DISPUTED``
+        - ``len(active_contradictions_for_claim(claim_id)) >= 1``
+        - active contradiction 중 **단 하나라도** evidence.strength.value >=
+          ``_REFUTATION_STRENGTH_THRESHOLD`` (= 0.8)
+
+    Returns:
+        True  — 이번 호출로 disputed → refuted 전이.
+        False — 전이 없음 (status 불일치 / active 없음 / strength 부족 / no-op).
+
+    Raises:
+        KeyError: unknown claim_id.
+
+    Notes:
+        - PR9-A 의 ``resolve_disputed_claim_if_ready`` 와는 **별도 API**.
+          PR9-A 는 "모든 contradiction 해소" 가 trigger, PR10-A 는 "active 중
+          하나라도 강함" 이 trigger — 의미가 비대칭이라 sibling API 가 깨끗.
+        - Resolved contradiction 은 refute 판정에서 **제외** (active 만 본다).
+          §22.7 결정표 참조.
+    """
+```
+
+### 22.7 결정표
+
+| Claim status | active 수 | active 중 strength >= 0.8 있음? | 결과 status | 반환 |
+|---|---|---|---|---|
+| `disputed` | 0 | — | `disputed` (no-op) | `False` |
+| `disputed` | 1+ | yes | **`refuted`** | **`True`** |
+| `disputed` | 1+ | no (모두 < 0.8) | `disputed` (유지) | `False` |
+| `candidate` | any | any | `candidate` | `False` |
+| `confirmed` | any | any | `confirmed` | `False` |
+| `refuted` | any | any | `refuted` (no-op) | `False` |
+
+**Resolved contradiction 은 판정 입력에서 제외**:
+
+```python
+active = contradictions_for_claim(c) - resolved_contradictions_for_claim(c)
+# refute 판정은 이 active 의 strength 만 본다.
+# resolved contradiction 의 strength 가 0.95 라도 무관 (이미 해소됨).
+```
+
+이게 PR9-A 의 차집합 의미와 자연스럽게 정합. resolved 가 강하다는 이유로
+refuted 가 되면 PR9-A 의 "해소" 의미가 무너진다.
+
+### 22.8 PR7/PR9-A/PR10-A relationship
+
+PR9-A 의 `resolve_disputed_claim_if_ready` 와 PR10-A 의 `refute_disputed_claim_if_ready`
+는 **상호 배타적인 trigger** 를 가진다:
+
+```text
+resolve trigger: len(active) == 0   (모든 contradiction 해소)
+refute  trigger: any(strength >= 0.8 in active)
+```
+
+두 trigger 가 동시 만족할 수 없다 (active 0 이면 resolve, active 1+ 이면
+refute 후보). 호출 순서에 의존하지 않음.
+
+PR7 의 `refute_claim_if_ready` (candidate origin) 는 PR10-A 와 status guard
+만 다르다 (`CANDIDATE` vs `DISPUTED`). 한 시점에 한 status 라서 동시 trigger
+불가.
+
+### 22.9 Idempotency
+
+```python
+engine.refute_disputed_claim_if_ready(c)  # → True  (disputed → refuted)
+engine.refute_disputed_claim_if_ready(c)  # → False (이미 refuted, no-op)
+engine.get_claim(c).status                 # → CLAIM_STATUS_REFUTED 유지
+```
+
+PR4 dedup + PR5 first-keep + PR6/PR7/PR8/PR9 idempotent 와 일관.
+
+### 22.10 보존 (impact 없음)
+
+| | PR10-A 영향 |
+|---|---|
+| `Claim` / `Evidence` / `Gap` / `Relation` / `ScoreValue` dataclass | 없음 |
+| `add_claim` / `add_evidence` / `add_gap` 의미 | 없음 |
+| `resolve_gaps_for_evidence` / `gap_resolution` 의미 | 없음 |
+| `confirm_claim_if_ready` 의미 | 없음 |
+| `refute_claim_if_ready` 의미 | 없음 (PR7 candidate origin 그대로) |
+| `dispute_claim_if_ready` 의미 | 없음 |
+| `resolve_disputed_claim_if_ready` 의미 | 없음 (PR9-A 그대로) |
+| `register_contradiction` / `register_contradiction_resolution` | 없음 |
+| `contradictions_for_claim` / `resolved_contradictions_for_claim` / `active_contradictions_for_claim` | 없음 |
+| `_contradictions` / `_resolved_contradictions` 인덱스 | 없음 (PR10-A 가 transition 만 추가) |
+| `base_confidence` / scoring | 없음 |
+| `CLAIM_STATUS_*` 상수 | 없음 (REFUTED 재사용) |
+| `CLAIM_STATUS_MAP` / `_ALLOWED_CLAIM_STATUSES` | 없음 (Sub-decision D 정합) |
+| `fire_rule*` / `RuleStats` | 없음 |
+| public exports | 없음 (threshold private) |
+
+### 22.11 Invariants (테스트로 잠금)
+
+1. `refute_disputed_claim_if_ready` unknown claim_id → `KeyError`
+2. candidate / confirmed / refuted 는 transition 안 함 (status guard 3 cases)
+3. disputed + active 0 → `False`, disputed 유지
+4. **disputed + active 1+ 모두 strength < 0.8 → `False`, disputed 유지** (Sub-decision F)
+5. **disputed + active 중 단 하나 이상 strength >= 0.8 → `True`, status=REFUTED ★** (PR10-A 핵심)
+6. **Threshold 경계 정확히 0.8 → refute** (`>=` 비교)
+7. **Threshold 직하 0.799999 → refute 안 함** (`>=` 비교)
+8. **Resolved contradiction 의 strength 가 0.95 라도 refute 안 함** (active 만 본다) ★
+9. refuted 재호출 idempotent (no-op False, status 유지)
+10. refute 전이가 gap state / contradictions / resolved / base_confidence 무변화
+11. PR9-A `resolve_disputed_claim_if_ready` 와 동시 trigger 불가 — active 0 이면
+    refute False (active 없음 가드), active 1+ 이면 resolve False (active 잔존
+    가드). 호출 순서 무관.
+12. **PR7 `refute_claim_if_ready` 의 의미 무변화** — candidate 만, contradiction
+    개수만 (strength 무관). PR10-A 의 threshold 정책이 PR7 영역 침범 안 함.
+13. `_REFUTATION_STRENGTH_THRESHOLD` 가 public export 안 됨 (Sub-decision G)
+14. 기존 482 회귀 없음 (전체 통과로 입증)
+
+### 22.12 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| Freshness / timestamp 기반 우세도 | timestamp 정의 필요 — PR11+ |
+| RuleStats 기반 우세도 | rule maturity 의 lifecycle 의미 결정 — PR11+ |
+| 다중 evidence 가중합 / average / max-of-N | "우세도" 종합 정책 결정 — PR11+ |
+| Threshold 의 public export / config 주입 | 미래 정책 자유 확보 |
+| `disputed → candidate` 강등 | 별도 결정점 |
+| `refuted → 어떤 상태` 복구 | 별도 결정점 |
+| LLM / 의미 추론으로 우세도 판정 | core 밖 |
+| `confidence` (`base_confidence` / `effective`) 재계산 | scoring 변경 별도 PR |
+| Lifecycle history / `refuted_at` timestamp | PR10-B 또는 직렬화 PR |
+| Auto-refute (resolve/register side effect) | 명시성 원칙 (§17.7 / §20.11 정신) |
+| `superseded` / `retracted` 추가 상태 | PR11+ |
+| `ScoreValue` 비교 메서드 (`__ge__` 등) 추가 | PR1 시그니처 변경 회피 |
+| PR7 candidate-origin refuted 와 PR10 disputed-origin refuted 의 구분 | lifecycle history 영역 |
+
+### 22.13 Position in flow
+
+```text
+PR9-A 까지:
+  disputed + active 1+ → resolve_disputed_claim_if_ready False (active 잔존)
+  disputed + active 0  → resolve_disputed_claim_if_ready True (confirmed 복귀)
+
+PR10-A:
+  disputed + active 0
+    → resolve True (PR9-A), refute False (active 없음 가드)
+  disputed + active 1+ + max(strength) >= 0.8
+    → resolve False (active 잔존), refute True (PR10-A: REFUTED 전이)
+  disputed + active 1+ + max(strength) < 0.8
+    → resolve False, refute False — disputed 유지 (재판정 대기)
+```
+
+구현 단계 (47/48차) — **테스트 먼저 잠금 → 구현** 순서:
+- 47차: tests (위 13 invariant) — `AttributeError` 로 fail 하는 상태로 잠금
+- 48차: `_REFUTATION_STRENGTH_THRESHOLD` 상수 + `refute_disputed_claim_if_ready` 구현 — 47차 테스트 통과로 입증
