@@ -36,6 +36,22 @@ from ragcore.types import (
 # 미래 정책 (freshness / RuleStats / 가중합) 도입 시 자연스럽게 조정/대체.
 _REFUTATION_STRENGTH_THRESHOLD = 0.8
 
+# PR11-D §24.8: status-only effective confidence multipliers.
+# Engine 내부 private — public export 안 함.
+# 미래 정책 (gap / contradiction / freshness / RuleStats) 도입 시
+# modifier 분해 가능 (예: status × gap × contradiction).
+_STATUS_MODIFIER_CANDIDATE = 1.0
+_STATUS_MODIFIER_CONFIRMED = 1.0
+_STATUS_MODIFIER_DISPUTED = 0.5
+_STATUS_MODIFIER_REFUTED = 0.0
+
+_STATUS_TO_MODIFIER: dict[int, float] = {
+    CLAIM_STATUS_CANDIDATE: _STATUS_MODIFIER_CANDIDATE,
+    CLAIM_STATUS_CONFIRMED: _STATUS_MODIFIER_CONFIRMED,
+    CLAIM_STATUS_DISPUTED: _STATUS_MODIFIER_DISPUTED,
+    CLAIM_STATUS_REFUTED: _STATUS_MODIFIER_REFUTED,
+}
+
 
 class Engine:
     def __init__(self) -> None:
@@ -707,16 +723,31 @@ class Engine:
         return self._rule_stats[key]
 
     def compute_effective_confidence(self, claim_id: int) -> ScoreValue:
-        """Current effective confidence for a claim.
+        """Effective confidence as base × status_modifier (PR11-D §24).
 
-        **MVP stub**: returns `base_confidence` unchanged. Phase 2+에서
-        evidence_strength 와 RuleStats(observed_precision / false_positive_rate)
-        를 조합한다. 이 자리는 의도된 stub이므로 무심코 "고치지" 말 것 —
-        scoring 로직은 별도 PR에서 명시적으로 들어온다.
+        PR11-D MVP — status-only multiplier:
+            effective = base_confidence × status_modifier(claim.status)
+
+        modifier ∈ [0.0, 1.0]:
+            candidate / confirmed → 1.0 (그대로)
+            disputed → 0.5 (감쇠 — 재판정 대기)
+            refuted → 0.0 (확정 부정)
+
+        PR11-D 는 evidence / gap / contradiction / freshness / RuleStats /
+        lifecycle history 를 **보지 않는다** (§24.4 Sub-decision M). 정교한
+        scoring 은 PR11-A 또는 PR12+ 에서 modifier 분해로 확장.
+
+        Returns:
+            ScoreValue (effective ≤ base, no boost — §24.5 Sub-decision N).
+
+        Raises:
+            KeyError: unknown claim_id.
         """
         if claim_id not in self._claims:
             raise KeyError(f"unknown claim_id: {claim_id}")
-        return self._claims[claim_id].base_confidence
+        claim = self._claims[claim_id]
+        modifier = _STATUS_TO_MODIFIER[claim.status]
+        return ScoreValue(claim.base_confidence.value * modifier)
 
     def update_rule_stats(
         self,
