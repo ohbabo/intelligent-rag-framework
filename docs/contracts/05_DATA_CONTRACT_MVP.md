@@ -2251,3 +2251,280 @@ PR8:
 구현 단계 (39/40차) — **테스트 먼저 잠금 → 구현** 순서:
 - 39차: tests (위 14개 invariant 중 1~13) — `AttributeError` + 컴파일 거부로 fail
 - 40차: `CLAIM_STATUS_DISPUTED` 상수 + export + `Engine.dispute_claim_if_ready` 구현 — 39차 테스트 통과로 입증
+
+## 21. Disputed resolution (MVP)
+
+> 상태: 42/43/44차 (PR9-A). `disputed → confirmed` 복귀 단일 전이.
+> **`disputed → refuted` / evidence 우세도 / lifecycle history 는 본 PR 범위 밖** — PR10+.
+
+### 21.1 PR9-A 의 한 줄 정의
+
+> **PR9-A 는 "상태를 더 늘리는 PR" 이 아니라, PR8 이 격리해둔 `disputed` 라는
+> 재판정 대기 상태를 어떤 판단 규칙으로 다시 닫을 것인가를 정하는 PR 이다.**
+
+PR8 이 confirmed 위에 격리 레이어 (`disputed`) 를 얹었다면, PR9-A 는 그 격리에
+**나가는 길** 을 정의한다.
+
+### 21.2 핵심 명제
+
+```text
+Resolving a contradiction is relationship-bound.
+
+A contradiction resolution is valid only when the evidence is already registered
+as an explicit contradiction for the given claim. Existing IDs are not sufficient.
+The pair itself must be a known contradiction relation.
+```
+
+한국어:
+
+```text
+contradiction 해소는 관계 기반이다.
+
+evidence_id 와 claim_id 가 둘 다 존재한다는 것만으로 해소 등록이 정당해지지
+않는다. (claim_id, evidence_id) 쌍 자체가 이미 등록된 contradiction 관계여야
+한다.
+```
+
+이 명제가 Sub-decision E (`ValueError` on mismatched pair) 의 근거.
+
+### 21.3 lifecycle 위치
+
+```text
+PR8 까지:
+  candidate
+    ├─ confirmed  (PR6) ─── disputed  (PR8)
+    └─ refuted    (PR7)
+
+PR9-A 추가:
+  candidate
+    ├─ confirmed  (PR6) ─── disputed  (PR8)
+    │                          └─ confirmed  (PR9-A) ← 모든 contradiction 해소
+    └─ refuted    (PR7)
+```
+
+`disputed → confirmed` 는 lifecycle 의 **격리 해소** 경로. `disputed →
+refuted` 는 evidence 우세도 / independence_class / freshness 같은 별도
+정책이 필요하므로 PR10+ 로 분리.
+
+### 21.4 저장 위치 — 분리된 두 인덱스
+
+```python
+# PR7 §19 (보존)
+self._contradictions: dict[int, set[int]]            # claim_id → contradicting ev_ids
+
+# PR9 §21 (신규)
+self._resolved_contradictions: dict[int, set[int]]   # claim_id → resolved ev_ids
+```
+
+두 인덱스 분리의 의미:
+- `_contradictions` 는 **등록된 사실** (변경 안 됨, audit 의미 보존)
+- `_resolved_contradictions` 는 **해소된 사실** (새로 추가만, 되돌리기 없음)
+- 두 set 의 차집합이 **active contradictions** — 현재 살아있는 반박 근거
+
+PR4 `_gap_dedup_index` + `_claim_gap_refs` 처럼 두 인덱스가 같이 의미를 형성.
+
+### 21.5 active contradiction 의 정의
+
+```python
+def active_contradictions_for_claim(self, claim_id):
+    contras = self._contradictions.get(claim_id, set())
+    resolved = self._resolved_contradictions.get(claim_id, set())
+    return tuple(sorted(contras - resolved))
+```
+
+disputed 해소 판정의 truth-source:
+
+```python
+disputed → confirmed  ⇔  len(active_contradictions_for_claim(claim_id)) == 0
+```
+
+### 21.6 API
+
+```python
+def register_contradiction_resolution(
+    self, claim_id: int, evidence_id: int,
+) -> bool:
+    """Register that this evidence is no longer an active contradiction for this claim.
+
+    Returns:
+        True  — 새로 resolved 로 등록됨.
+        False — (claim_id, evidence_id) 가 이미 resolved 상태 (idempotent no-op).
+
+    Raises:
+        KeyError:  unknown claim_id or unknown evidence_id.
+        ValueError: (claim_id, evidence_id) 가 _contradictions[claim_id] 에 등록돼
+                    있지 않음 — relationship-bound 명제 (§21.2) 위반.
+
+    Notes:
+        - PR5 first-keep 정신과 일관: 한 번 resolved 면 영구. unresolved 로
+          되돌리기는 PR9-A 범위 밖.
+        - _contradictions 의 원본 entry 는 **삭제하지 않는다** (audit 보존).
+    """
+
+def resolved_contradictions_for_claim(self, claim_id: int) -> tuple[int, ...]:
+    """Return resolved evidence_ids for the claim.
+
+    Returns:
+        evidence_id 오름차순 tuple. 없으면 빈 tuple.
+
+    Raises:
+        KeyError: unknown claim_id.
+    """
+
+def active_contradictions_for_claim(self, claim_id: int) -> tuple[int, ...]:
+    """Return contradicting evidence_ids that are still active (not resolved).
+
+    = ``contradictions_for_claim(c) - resolved_contradictions_for_claim(c)``
+
+    Returns:
+        evidence_id 오름차순 tuple. status 무관 (모든 status 에서 호출 가능).
+
+    Raises:
+        KeyError: unknown claim_id.
+    """
+
+def resolve_disputed_claim_if_ready(self, claim_id: int) -> bool:
+    """Transition disputed → confirmed if every contradiction is resolved.
+
+    전이 조건:
+        - ``claim.status == CLAIM_STATUS_DISPUTED``
+        - ``len(active_contradictions_for_claim(claim_id)) == 0``
+
+    Returns:
+        True  — 이번 호출로 disputed → confirmed 전이.
+        False — 전이 없음 (status 불일치 / active contradiction 잔존 /
+                이미 confirmed/candidate/refuted).
+
+    Raises:
+        KeyError: unknown claim_id.
+
+    Note:
+        API 이름이 ``resolve_disputed_claim_if_ready`` 인 이유: PR9-A 는
+        disputed → confirmed 만 다루지만, 미래 PR10+ 에서 ``disputed → refuted``
+        가 같은 API 의 확장으로 들어올 수 있는 자리를 남겨둔 것.
+    """
+```
+
+### 21.7 PR6/PR7/PR8/PR9 API 패턴 정합
+
+| API | 진입 status | 결과 status | Trigger |
+|---|---|---|---|
+| `confirm_claim_if_ready` | candidate | confirmed | 모든 gap resolved |
+| `refute_claim_if_ready` | candidate | refuted | ≥1 contradiction |
+| `dispute_claim_if_ready` | confirmed | disputed | ≥1 contradiction |
+| **`resolve_disputed_claim_if_ready`** | **disputed** | **confirmed** | **모든 contradiction resolved** |
+
+PR9-A 가 PR6 의 정확한 미러 (gap resolved → confirmed 와 같은 "모든 X 해소
+→ confirmed" 패턴). 다만 disputed 출신.
+
+### 21.8 결정표
+
+**`register_contradiction_resolution`**:
+
+| (claim, evidence) 조건 | 결과 | 반환 |
+|---|---|---|
+| unknown claim_id | — | `KeyError` |
+| unknown evidence_id | — | `KeyError` |
+| 둘 다 존재, but pair 가 contradiction 미등록 | — | **`ValueError`** (§21.2 명제 위반) |
+| pair 가 contradiction 등록됨, resolved 미등록 | 추가 | `True` |
+| 이미 resolved | 무변화 | `False` |
+
+`register_contradiction_resolution` 은 **target claim 의 status 와 무관** (PR7
+의 `register_contradiction` 와 동일 정신: 데이터 등록과 lifecycle 결정 분리).
+
+**`resolve_disputed_claim_if_ready`**:
+
+| Claim status | active contradictions 수 | 결과 status | 반환 |
+|---|---|---|---|
+| `disputed` | 0 | **`confirmed`** | **`True`** |
+| `disputed` | 1+ | `disputed` (no-op) | `False` |
+| `candidate` | any | `candidate` (no-op) | `False` |
+| `confirmed` | any | `confirmed` (no-op) | `False` |
+| `refuted` | any | `refuted` (no-op) | `False` |
+
+### 21.9 Idempotency + first-keep
+
+```python
+engine.register_contradiction_resolution(c, e)  # → True  (첫 등록)
+engine.register_contradiction_resolution(c, e)  # → False (이미 resolved, no-op)
+
+engine.resolve_disputed_claim_if_ready(c)  # → True  (전이)
+engine.resolve_disputed_claim_if_ready(c)  # → False (이미 confirmed, no-op)
+```
+
+PR4 dedup + PR5 first-keep + PR6/PR7/PR8 idempotent 와 일관.
+
+### 21.10 보존 (impact 없음)
+
+| | PR9-A 영향 |
+|---|---|
+| `Claim` / `Evidence` / `Gap` / `Relation` dataclass | 없음 |
+| `add_claim` / `add_evidence` / `add_gap` 의미 | 없음 |
+| `resolve_gaps_for_evidence` / `gap_resolution` 의미 | 없음 |
+| `confirm_claim_if_ready` 의미 | 없음 |
+| `refute_claim_if_ready` 의미 | 없음 |
+| `dispute_claim_if_ready` 의미 | 없음 |
+| `register_contradiction` 의미 | 없음 |
+| `contradictions_for_claim` 의미 | 없음 (resolved 도 포함) |
+| `_contradictions` 인덱스 | 없음 (resolved 추가가 원본 삭제 안 함) |
+| `base_confidence` / scoring | 없음 |
+| `CLAIM_STATUS_MAP` / `_ALLOWED_CLAIM_STATUSES` | 없음 (Sub-decision D 보존) |
+| `fire_rule*` / `RuleStats` | 없음 |
+
+### 21.11 Invariants (테스트로 잠금)
+
+1. `register_contradiction_resolution` unknown `claim_id` → `KeyError`
+2. unknown `evidence_id` → `KeyError`
+3. **(claim, evidence) 가 contradiction 미등록 → `ValueError`** (Sub-decision E)
+4. 같은 (claim, evidence) 두 번째 호출 → `False` (idempotent)
+5. resolved 후에도 `contradictions_for_claim` 에 포함 (audit 보존)
+6. `active_contradictions_for_claim` 은 resolved 제외 (차집합)
+7. `resolved_contradictions_for_claim` / `active_contradictions_for_claim` asc order
+8. disputed + active contradiction 1+ → `resolve_disputed_claim_if_ready` False, disputed 유지
+9. **disputed + 모든 contradiction resolved → True, status=CONFIRMED**
+10. candidate / confirmed / refuted 는 `resolve_disputed_claim_if_ready` 통해 변경 X
+11. `resolve_disputed_claim_if_ready` unknown claim_id → `KeyError`
+12. resolve 전이가 `_contradictions` / `_resolved_contradictions` / gap state /
+    base_confidence 무변화 (status 만 바뀜)
+13. `dispute_claim_if_ready` 는 PR8 계약 그대로 (resolved contradiction 있어도
+    active 가 1+ 면 dispute 가능, active 0 이면 dispute False)
+14. 기존 464 회귀 없음 (전체 통과로 입증)
+
+### 21.12 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| `disputed → refuted` 전이 | evidence 우세도 / independence / freshness 정책 필요 — PR10+ (같은 API 확장 가능) |
+| Resolved → unresolved 되돌리기 | PR5 first-keep 정신 일관 — 별도 결정점 |
+| Evidence 우세도 (priority / strength weighted) 자동 판정 | scoring 변경 별도 PR |
+| `disputed → confirmed` 의 자동 trigger (resolved 등록 시 side effect) | 명시성 원칙 (§17.7 / §20.11 정신) |
+| Lifecycle trace / history (resolve 이벤트 기록) | PR9-B 또는 별도 직렬화 PR |
+| `disputed_resolved_at` timestamp | 직렬화 PR |
+| `confirmed → refuted` / `confirmed → candidate` 강등 | 별도 결정점 |
+| `_contradictions` entry 의 삭제 (resolved 시 제거) | audit 의미 보존 — 금지 |
+| `superseded` / `retracted` 같은 추가 상태 | PR10+ |
+| `register_contradiction_resolution` 의 status guard (disputed 만 허용?) | 데이터 등록 / lifecycle 결정 분리 (PR7 §19.6 일관) |
+
+### 21.13 Position in flow
+
+```text
+PR8 까지:
+  candidate + contradiction → refute_if_ready → refuted
+  confirmed + contradiction → dispute_if_ready → disputed (격리)
+  disputed                  → 격리 상태, 나가는 길 없음 (PR9 후보)
+
+PR9-A:
+  disputed + active contradiction 1+
+    → resolve_disputed_claim_if_ready False (disputed 유지)
+  disputed + 모든 contradiction resolved (active 0)
+    → resolve_disputed_claim_if_ready True (disputed → confirmed 복귀)
+
+  register_contradiction_resolution(c, e):
+    - status 무관 호출 가능 (데이터 등록)
+    - relationship-bound (§21.2): pair 가 contradiction 등록돼야 함
+    - idempotent first-keep
+```
+
+구현 단계 (43/44차) — **테스트 먼저 잠금 → 구현** 순서:
+- 43차: tests (위 14 invariant 중 1~13) — `AttributeError` 로 fail 하는 상태로 잠금
+- 44차: `_resolved_contradictions` slot + 4 메서드 구현 — 43차 테스트 통과로 입증
