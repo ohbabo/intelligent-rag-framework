@@ -58,6 +58,14 @@ _STATUS_TO_MODIFIER: dict[int, float] = {
 # 0.5 의 의미: "가장 최근 active contradiction 의 strength 가 1.0 이면 modifier 0.5"
 _FRESHNESS_PENALTY_WEIGHT = 0.5
 
+# PR12-D §28: gap modifier — binary, weak penalty for unresolved gaps.
+# effective = base × status × freshness × gap_modifier
+# unresolved gap 1+ → 0.8, 그 외 (gap 0 / 모두 resolved) → 1.0
+# Engine 내부 private — public export 안 함.
+# 의미: "정보 부족" 의 약한 신호. lifecycle / contradiction 보다 약함.
+# (PR11-D status=0.5 / PR11-C max attenuation=0.5 vs PR12-D 0.8 → 명확히 약함)
+_GAP_PENALTY_MODIFIER = 0.8
+
 
 class Engine:
     def __init__(self) -> None:
@@ -827,10 +835,13 @@ class Engine:
         return self._rule_stats[key]
 
     def compute_effective_confidence(self, claim_id: int) -> ScoreValue:
-        """Effective confidence as base × status × freshness (PR11-D §24 + PR11-C §26).
+        """Effective confidence as base × status × freshness × gap.
 
-        Composition (PR11-D + PR11-C):
-            effective = base × status_modifier(claim.status) × freshness_modifier(claim_id)
+        Composition (PR11-D §24 + PR11-C §26 + PR12-D §28):
+            effective = base
+                      × status_modifier(claim.status)         # PR11-D
+                      × freshness_modifier(claim_id)           # PR11-C
+                      × gap_modifier(claim_id)                 # PR12-D
 
         status_modifier (PR11-D §24.3, unchanged):
             candidate / confirmed → 1.0
@@ -842,9 +853,16 @@ class Engine:
             if not active: → 1.0
             else: → 1.0 - most_recent.strength.value × _FRESHNESS_PENALTY_WEIGHT
 
-        의미 분리 (PR10-A vs PR11-C, §26.6):
-            - PR10-A refute_disputed_claim_if_ready: binary trigger (strength >= 0.8)
-            - PR11-C 본 메서드: continuous attenuation (multiplicative modifier)
+        gap_modifier (PR12-D §28.3, Sub-decision T + U — binary, weak):
+            gaps = gaps_for_claim(claim_id)
+            if not gaps: → 1.0
+            elif all gap_resolution(g.id) is not None: → 1.0
+            else: → _GAP_PENALTY_MODIFIER (0.8)
+
+        의미 분리:
+            - PR10-A binary refute trigger / PR11-B sibling: status 전이
+            - PR11-C continuous freshness attenuation: scoring 감쇠 (× 0.5 max)
+            - PR12-D binary gap attenuation: scoring 감쇠 (× 0.8, 약한 신호)
 
         Returns:
             ScoreValue (effective ≤ base, no boost — §24.5 Sub-decision N).
@@ -867,8 +885,19 @@ class Engine:
                 - most_recent_evidence.strength.value * _FRESHNESS_PENALTY_WEIGHT
             )
 
+        gaps = self.gaps_for_claim(claim_id)
+        if not gaps:
+            gap_modifier = 1.0
+        elif all(self.gap_resolution(g.id) is not None for g in gaps):
+            gap_modifier = 1.0
+        else:
+            gap_modifier = _GAP_PENALTY_MODIFIER
+
         return ScoreValue(
-            claim.base_confidence.value * status_modifier * freshness_modifier
+            claim.base_confidence.value
+            * status_modifier
+            * freshness_modifier
+            * gap_modifier
         )
 
     def update_rule_stats(
