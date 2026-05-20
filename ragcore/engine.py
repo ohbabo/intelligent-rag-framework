@@ -75,6 +75,17 @@ _GAP_PENALTY_MODIFIER = 0.8
 # 0.8 (PR12-D gap_modifier 와 같은 약한 보조 신호 정신 일관).
 _COUNT_PENALTY_MODIFIER = 0.8
 
+# PR20-F §32: rule_stats modifier — weak maturity signal (NOT quality verdict).
+# effective = base × status × freshness × gap × count × rule_stats
+# firing_count < 2 → 0.9, 그 외 → 1.0 (binary, no boost).
+# Engine 내부 private — public export 안 함.
+# 의미: 룰이 엔진 안에서 충분히 관측되었는지 약하게 반영. outcome ratio /
+# precision / FPR / timestamp 는 OOS (별도 PR).
+# 0.9 (status / freshness / gap / count 보다 가장 약함 — RuleStats 는 "증거
+# 부족" 이나 "반박" 이 아니라 단순 "관측 이력 부족" 신호).
+_RULE_STATS_PENALTY_MODIFIER = 0.9
+_RULE_STATS_MIN_FIRING_COUNT = 2
+
 # PR18-K §30: snapshot schema version + migration framework.
 # Engine 내부 private — public export 안 함.
 # 미래 schema 변경 시 두 상수만 업데이트 + migration step 추가.
@@ -849,15 +860,35 @@ class Engine:
             )
         return self._rule_stats[key]
 
-    def compute_effective_confidence(self, claim_id: int) -> ScoreValue:
-        """Effective confidence as base × status × freshness × gap × count.
+    def _rule_stats_modifier_for_claim(self, claim: Claim) -> float:
+        """PR20-F §32 — weak maturity signal (NOT rule quality verdict).
 
-        Composition (PR11-D §24 + PR11-C §26 + PR12-D §28 + PR19-E §31):
+        Sub-decision V/W/X/Y:
+            - V: firing_count 만 본다 (outcome ratio / precision / FPR / timestamp OOS)
+            - W: binary threshold = _RULE_STATS_MIN_FIRING_COUNT (= 2)
+            - X: no boost (modifier ∈ {0.9, 1.0})
+            - Y: sentinel (created_by_rule == 0) / lookup miss → 1.0 (호환 보존)
+        """
+        if claim.created_by_rule == 0:
+            return 1.0
+        key = (claim.created_by_rule, claim.created_by_rule_version)
+        stats = self._rule_stats.get(key)
+        if stats is None:
+            return 1.0
+        if stats.firing_count < _RULE_STATS_MIN_FIRING_COUNT:
+            return _RULE_STATS_PENALTY_MODIFIER
+        return 1.0
+
+    def compute_effective_confidence(self, claim_id: int) -> ScoreValue:
+        """Effective confidence as base × status × freshness × gap × count × rule_stats.
+
+        Composition (PR11-D §24 + PR11-C §26 + PR12-D §28 + PR19-E §31 + PR20-F §32):
             effective = base
                       × status_modifier(claim.status)         # PR11-D
                       × freshness_modifier(claim_id)           # PR11-C
                       × gap_modifier(claim_id)                 # PR12-D
                       × count_modifier(claim_id)               # PR19-E
+                      × rule_stats_modifier(claim)             # PR20-F
 
         status_modifier (PR11-D §24.3, unchanged):
             candidate / confirmed → 1.0
@@ -880,12 +911,19 @@ class Engine:
             if active_count >= 2: → _COUNT_PENALTY_MODIFIER (0.8)
             else: → 1.0
 
-        의미 분리 (PR11-C vs PR19-E):
+        rule_stats_modifier (PR20-F §32.8, Sub-decision V + W + X + Y — weak maturity):
+            if claim.created_by_rule == 0: → 1.0
+            elif (rule_id, rule_version) miss: → 1.0
+            elif firing_count < 2: → _RULE_STATS_PENALTY_MODIFIER (0.9)
+            else: → 1.0
+
+        의미 분리:
             PR11-C: most recent active contradiction strength (1 개 시 단독)
             PR19-E: active contradiction count pressure (2 개 이상 시 추가)
+            PR20-F: rule maturity (claim-global → rule-global 신호, 다른 4 modifier 와 독립)
 
         Returns:
-            ScoreValue (effective ≤ base, no boost — §24.5 Sub-decision N).
+            ScoreValue (effective ≤ base, no boost — §24.5 Sub-decision N / §32.6 Sub-decision X).
 
         Raises:
             KeyError: unknown claim_id.
@@ -918,12 +956,15 @@ class Engine:
             _COUNT_PENALTY_MODIFIER if active_count >= 2 else 1.0
         )
 
+        rule_stats_modifier = self._rule_stats_modifier_for_claim(claim)
+
         return ScoreValue(
             claim.base_confidence.value
             * status_modifier
             * freshness_modifier
             * gap_modifier
             * count_modifier
+            * rule_stats_modifier
         )
 
     def update_rule_stats(
