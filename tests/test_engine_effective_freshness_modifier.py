@@ -165,16 +165,21 @@ class TestMostRecentOnly:
     """§26.12 invariant 8 — Sub-decision O: 최신 1개만 (의도 fail)."""
 
     def test_only_most_recent_active_strength_affects_modifier(self) -> None:
-        """older strong + most_recent weak → modifier 는 weak 기준.
+        """older strong + most_recent weak → freshness 는 weak (recent) 기준.
+
+        PR11-C invariant: older strong 이 freshness_modifier 에 영향 없음 (recent only).
 
         active = [older(strength=1.0), recent(strength=0.2)]
         active_contradictions_by_freshness → (recent, older)  desc
         most_recent = recent (strength=0.2)
-        freshness_modifier = 1.0 - 0.2 × 0.5 = 0.9
-        → effective = 1.0 × 1.0 × 0.9 = 0.9
+        freshness_modifier = 1.0 - 0.2 × 0.5 = 0.9 (PR11-C: recent only)
+        count_modifier = 0.8 (PR19-E: active >= 2)
+        → effective = 1.0 × 1.0 × 0.9 × 1.0 (no gap) × 0.8 = 0.72
 
-        (만약 older 가 영향 줬다면 freshness_modifier = 1.0 - 1.0 × 0.5 = 0.5,
-         effective = 0.5 가 됐을 것)
+        (만약 older 가 freshness 에 영향 줬다면:
+            freshness = 1.0 - 1.0 × 0.5 = 0.5
+            effective = 1.0 × 1.0 × 0.5 × 1.0 × 0.8 = 0.4
+         → 0.72 ≠ 0.4 이므로 older 영향 없음 검증됨)
         """
         engine = Engine()
         _, claim_id = _candidate_claim(engine, base_confidence=1.0)
@@ -188,9 +193,10 @@ class TestMostRecentOnly:
 
         result = engine.compute_effective_confidence(claim_id)
 
-        # most_recent = ev_recent (id=2), strength=0.2 → modifier = 0.9
-        # effective = 1.0 × 1.0 × 0.9 = 0.9
-        assert result.value == pytest.approx(0.9)
+        # PR11-C 의 freshness_modifier = 0.9 (recent only invariant 보존)
+        # PR19-E 의 count_modifier = 0.8 (active >= 2 추가 감쇠)
+        # 1.0 × 1.0 (conf) × 0.9 × 1.0 (no gap) × 0.8 = 0.72
+        assert result.value == pytest.approx(0.72)
 
 
 class TestResolvedExcluded:
