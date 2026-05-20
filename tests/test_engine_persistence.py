@@ -276,9 +276,13 @@ class TestRoundtripIdentity:
         assert restored.get_rule(42, 1) == original.get_rule(42, 1)
         assert restored.get_rule_stats(42, 1) == original.get_rule_stats(42, 1)
 
-    # invariant 17 — effective with all 4 modifiers
+    # invariant 17 — effective with all modifiers (round-trip identity)
     def test_roundtrip_effective_with_all_modifiers(self) -> None:
-        """status × freshness × gap modifier 결합이 정확히 복원."""
+        """status × freshness × gap modifier 결합이 정확히 복원.
+
+        PR23-M §35.5 (AP): 1 unresolved → tier 1 → 0.9 (PR12-D binary 0.8 정제).
+        의미 (round-trip identity) 보존, gap 강도만 갱신.
+        """
         original = Engine()
         _, c = _candidate_claim(original, base_confidence=1.0)
         # contradiction (freshness modifier 적용)
@@ -295,15 +299,15 @@ class TestRoundtripIdentity:
         )
 
         original_eff = original.compute_effective_confidence(c)
-        # 1.0 × 1.0 × (1 - 0.8 × 0.5) × 0.8 = 0.48
-        assert original_eff.value == pytest.approx(0.48)
+        # 1.0 × 1.0 × (1 - 0.8 × 0.5) × 0.9 (1 unresolved tier) = 0.54
+        assert original_eff.value == pytest.approx(0.54)
 
         snapshot = original.to_snapshot()
         restored = Engine.from_snapshot(snapshot)
 
         restored_eff = restored.compute_effective_confidence(c)
         assert restored_eff == original_eff
-        assert restored_eff.value == pytest.approx(0.48)
+        assert restored_eff.value == pytest.approx(0.54)
 
 
 class TestRestoredEngineCanContinue:
@@ -422,7 +426,11 @@ class TestPriorAPIUnchanged:
     """§29.11 invariant 21 — PR1~PR12-D 의미 무변화 (이미 pass)."""
 
     def test_compute_effective_confidence_unchanged(self) -> None:
-        """4-modifier composition (PR11-D + PR11-C + PR12-D) 정확히 적용."""
+        """modifier composition (PR11-D + PR11-C + PR12-D + PR23-M) 정확히 적용.
+
+        PR23-M §35.5 (AP): 1 unresolved → tier 1 → 0.9 (PR12-D binary 0.8 정제).
+        의미 (composition 보존) 그대로, gap 강도만 갱신.
+        """
         engine = Engine()
         _, c = _candidate_claim(engine, base_confidence=1.0)
         ev_contra = _evidence(engine, c, strength=0.8)
@@ -434,8 +442,8 @@ class TestPriorAPIUnchanged:
         engine._claims[c] = replace(
             engine._claims[c], status=CLAIM_STATUS_CONFIRMED,
         )
-        # 1.0 × 1.0 × 0.6 × 0.8 = 0.48
-        assert engine.compute_effective_confidence(c).value == pytest.approx(0.48)
+        # 1.0 × 1.0 × 0.6 × 0.9 (1 unresolved tier) = 0.54
+        assert engine.compute_effective_confidence(c).value == pytest.approx(0.54)
 
     def test_lifecycle_apis_unchanged(self) -> None:
         """5 lifecycle API + PR11-B sibling 모두 정상 동작."""

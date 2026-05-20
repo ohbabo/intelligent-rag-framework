@@ -241,8 +241,11 @@ class TestCountModifierComposition:
     """§31.12 invariant 9 ★ — 5-modifier 결합."""
 
     def test_disputed_with_active_two_and_unresolved_gap(self) -> None:
-        """disputed + active 2 (최신 0.8) + unresolved gap:
-        → base × 0.5 × 0.6 × 0.8 × 0.8 = base × 0.192.
+        """disputed + active 2 (최신 0.8) + unresolved gap 1 개:
+        → base × 0.5 × 0.6 × 0.9 × 0.8 = base × 0.216.
+
+        PR23-M §35.5 (AP): 1 unresolved → tier 1 → 0.9 (PR12-D binary 0.8 정제).
+        의미 (status × freshness × gap × count 결합) 보존, gap 강도만 갱신.
         """
         engine = Engine()
         _, claim_id = _candidate_claim(engine, base_confidence=1.0)
@@ -257,8 +260,8 @@ class TestCountModifierComposition:
 
         result = engine.compute_effective_confidence(claim_id)
 
-        # 1.0 × 0.5 × 0.6 × 0.8 × 0.8 = 0.192
-        assert result.value == pytest.approx(0.192)
+        # 1.0 × 0.5 × 0.6 × 0.9 (1 unresolved tier) × 0.8 = 0.216
+        assert result.value == pytest.approx(0.216)
 
 
 class TestCountModifierPriorBehaviorUnchanged:
@@ -278,16 +281,20 @@ class TestCountModifierPriorBehaviorUnchanged:
         # 1.0 × 1.0 × 0.5 × 1.0 × 1.0 = 0.5
         assert result.value == pytest.approx(0.5)
 
-    # invariant 12 — PR12-D gap_modifier 동작 무변화
+    # invariant 12 — PR12-D gap_modifier 동작 보존 (PR23-M tier 강도 갱신)
     def test_pr12d_gap_modifier_unchanged(self) -> None:
-        """active 0 + unresolved gap → base × 0.8 (PR12-D 만). count=1.0."""
+        """active 0 + unresolved gap 1 개 → base × 0.9 (PR12-D + PR23-M). count=1.0.
+
+        PR23-M §35.5 (AP): 1 unresolved → tier 1 → 0.9. PR12-D 의 "unresolved →
+        attenuation" 의미 보존, 강도만 binary 0.8 → tier 0.9 로 정제.
+        """
         engine = Engine()
         _, claim_id = _candidate_claim(engine, base_confidence=1.0)
         _add_unresolved_gap(engine, claim_id)
         # active 0
         result = engine.compute_effective_confidence(claim_id)
-        # 1.0 × 1.0 × 1.0 × 0.8 × 1.0 = 0.8
-        assert result.value == pytest.approx(0.8)
+        # 1.0 × 1.0 × 1.0 × 0.9 (1 unresolved tier) × 1.0 = 0.9
+        assert result.value == pytest.approx(0.9)
 
     # invariant 13 — PR10-A refute 무변화
     def test_pr10a_refute_disputed_unchanged(self) -> None:

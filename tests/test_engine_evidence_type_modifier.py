@@ -393,16 +393,21 @@ class TestEvidenceTypeComposition:
         # 1.0 × 1.0 × 0.6 × 1.0 × 1.0 × 1.0 × 0.9 = 0.54
         assert result.value == pytest.approx(0.54)
 
-    # invariant 18 — gap + hint-only → gap × 0.9 ★
+    # invariant 18 — gap × hint-only → gap (PR23-M tier) × 0.9 ★
     def test_unresolved_gap_and_hint_only(self) -> None:
+        """unresolved gap 1 개 + hint-only direct → 1.0 × 0.9 × 0.9 = 0.81.
+
+        PR23-M §35.5 (AP): 1 unresolved → tier 1 → 0.9 (PR12-D binary 0.8 정제).
+        의미 (gap × evidence_type 결합) 보존, gap 강도만 갱신.
+        """
         engine = Engine()
         _safe_register_hint(engine, [42])
         _, claim_id = _claim_with_rule(engine, base_confidence=1.0)
         _evidence(engine, claim_id, evidence_type=42)
         _unresolved_gap(engine, claim_id)
         result = engine.compute_effective_confidence(claim_id)
-        # 1.0 × 1.0 × 1.0 × 0.8 × 1.0 × 1.0 × 0.9 = 0.72
-        assert result.value == pytest.approx(0.72)
+        # 1.0 × 1.0 × 1.0 × 0.9 (1 unresolved tier) × 1.0 × 1.0 × 0.9 = 0.81
+        assert result.value == pytest.approx(0.81)
 
     # invariant 19 — count + hint-only → count × 0.9 ★
     def test_active_two_and_hint_only(self) -> None:
@@ -436,13 +441,16 @@ class TestEvidenceTypeComposition:
 
     # invariant 21 — full 7-modifier composition ★
     def test_full_seven_modifier_composition(self) -> None:
-        """disputed + active 2 (most strength 0.8) + unresolved gap + firing 1
+        """disputed + active 2 (most strength 0.8) + unresolved gap 1 개 + firing 1
         + hint-only direct evidence.
 
+        PR23-M §35.5 (AP): 1 unresolved → tier 1 → 0.9 (PR12-D binary 0.8 정제).
+        의미 (7-modifier 결합) 보존, gap 강도만 갱신.
+
         base × status × freshness × gap × count × rule_stats × evidence_type
-        = 1.0 × 0.5 × (1.0 - 0.8 × 0.5) × 0.8 × 0.8 × 0.9 × 0.9
-        = 1.0 × 0.5 × 0.6 × 0.8 × 0.8 × 0.9 × 0.9
-        = 0.15552
+        = 1.0 × 0.5 × (1.0 - 0.8 × 0.5) × 0.9 × 0.8 × 0.9 × 0.9
+        = 1.0 × 0.5 × 0.6 × 0.9 × 0.8 × 0.9 × 0.9
+        = 0.17496
         """
         engine = Engine()
         _register_rule(engine, rule_id=1, rule_version=1)
@@ -461,7 +469,7 @@ class TestEvidenceTypeComposition:
             engine._claims[claim_id], status=CLAIM_STATUS_DISPUTED,
         )
         result = engine.compute_effective_confidence(claim_id)
-        assert result.value == pytest.approx(0.15552)
+        assert result.value == pytest.approx(0.17496)
 
 
 # ---- 5. Snapshot schema v2 + migration (Sub-decision AG/AH) ----------------
@@ -613,14 +621,19 @@ class TestEvidenceTypeNoStateMutationAndRegression:
         # 1.0 × 1.0 × 0.6 × 1.0 × 1.0 × 1.0 × 1.0 (empty hint) = 0.6
         assert result.value == pytest.approx(0.6)
 
-    # invariant 33 — PR12-D gap modifier preserved (empty hint)
+    # invariant 33 — PR12-D gap modifier 의미 보존 (PR23-M tier 강도 갱신, empty hint)
     def test_pr12d_gap_modifier_preserved_without_hint(self) -> None:
+        """unresolved gap 1 개, empty hint → 1.0 × 0.9 × 1.0 = 0.9.
+
+        PR23-M §35.5 (AP): 1 unresolved → tier 1 → 0.9. PR12-D 의 "unresolved →
+        attenuation" 의미 보존, 강도만 binary 0.8 → tier 0.9 로 정제.
+        """
         engine = Engine()
         _, claim_id = _claim_with_rule(engine, base_confidence=1.0)
         _unresolved_gap(engine, claim_id)
         result = engine.compute_effective_confidence(claim_id)
-        # gap=0.8, evidence_type=1.0 → 0.8
-        assert result.value == pytest.approx(0.8)
+        # gap=0.9 (1 unresolved tier), evidence_type=1.0 → 0.9
+        assert result.value == pytest.approx(0.9)
 
     # invariant 34 — PR19-E count modifier preserved (empty hint)
     def test_pr19e_count_modifier_preserved_without_hint(self) -> None:

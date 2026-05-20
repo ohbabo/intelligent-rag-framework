@@ -60,13 +60,21 @@ _STATUS_TO_MODIFIER: dict[int, float] = {
 # 0.5 의 의미: "가장 최근 active contradiction 의 strength 가 1.0 이면 modifier 0.5"
 _FRESHNESS_PENALTY_WEIGHT = 0.5
 
-# PR12-D §28: gap modifier — binary, weak penalty for unresolved gaps.
-# effective = base × status × freshness × gap_modifier
-# unresolved gap 1+ → 0.8, 그 외 (gap 0 / 모두 resolved) → 1.0
+# PR12-D §28 + PR23-M §35: gap modifier — count-tier (was binary 0.8).
+# effective = base × status × freshness × gap × count × rule_stats × evidence_type
+# unresolved gap count → tier:
+#   0 → 1.0 (gap 없음 또는 모두 resolved, PR12-D Sub-decision T 정신 보존)
+#   1 → 0.9 (가장 약한 정보 부족)
+#   2 → 0.8 (PR12-D binary 와 동일 지점)
+#   3+ → 0.7 (누적 불확실성, hard floor)
 # Engine 내부 private — public export 안 함.
 # 의미: "정보 부족" 의 약한 신호. lifecycle / contradiction 보다 약함.
-# (PR11-D status=0.5 / PR11-C max attenuation=0.5 vs PR12-D 0.8 → 명확히 약함)
-_GAP_PENALTY_MODIFIER = 0.8
+# (PR11-D status disputed=0.5 보다 항상 약함 — 0.7 floor > 0.5)
+# Sub-decision AS: 구 _GAP_PENALTY_MODIFIER 제거, 4 개 tier 상수로 교체.
+_GAP_TIER_ZERO_UNRESOLVED_MODIFIER = 1.0
+_GAP_TIER_ONE_UNRESOLVED_MODIFIER = 0.9
+_GAP_TIER_TWO_UNRESOLVED_MODIFIER = 0.8
+_GAP_TIER_THREE_OR_MORE_UNRESOLVED_MODIFIER = 0.7
 
 # PR19-E §31: count modifier — active contradiction 개수 기반 보조 감쇠.
 # effective = base × status × freshness × gap × count
@@ -875,6 +883,29 @@ class Engine:
             )
         return self._rule_stats[key]
 
+    def _gap_modifier_for_claim(self, claim_id: int) -> float:
+        """PR12-D §28 + PR23-M §35 — count-tier weak attenuation.
+
+        Sub-decision AO/AP/AQ/AR/AS:
+            - AO: severity source = unresolved gap count only (no new taxonomy)
+            - AP: tier table 0→1.0 / 1→0.9 / 2→0.8 / 3+→0.7
+            - AQ: information shortage remains weak (never 0.0)
+            - AR: formula shape unchanged (gap 항 내부 계산만 변경)
+            - AS: 4 개 private tier 상수 사용
+        """
+        unresolved_gap_count = sum(
+            1
+            for gap_id in self._claim_gap_refs.get(claim_id, ())
+            if gap_id not in self._gap_resolutions
+        )
+        if unresolved_gap_count == 0:
+            return _GAP_TIER_ZERO_UNRESOLVED_MODIFIER
+        if unresolved_gap_count == 1:
+            return _GAP_TIER_ONE_UNRESOLVED_MODIFIER
+        if unresolved_gap_count == 2:
+            return _GAP_TIER_TWO_UNRESOLVED_MODIFIER
+        return _GAP_TIER_THREE_OR_MORE_UNRESOLVED_MODIFIER
+
     def _rule_stats_modifier_for_claim(self, claim: Claim) -> float:
         """PR20-F §32 — weak maturity signal (NOT rule quality verdict).
 
@@ -985,11 +1016,12 @@ class Engine:
             if not active: → 1.0
             else: → 1.0 - most_recent.strength.value × _FRESHNESS_PENALTY_WEIGHT
 
-        gap_modifier (PR12-D §28.3, Sub-decision T + U — binary, weak):
-            gaps = gaps_for_claim(claim_id)
-            if not gaps: → 1.0
-            elif all gap_resolution(g.id) is not None: → 1.0
-            else: → _GAP_PENALTY_MODIFIER (0.8)
+        gap_modifier (PR12-D §28.3 + PR23-M §35.5, Sub-decision AP — count-tier):
+            unresolved_count = #{gap in _claim_gap_refs[claim_id] : not in _gap_resolutions}
+            0   → _GAP_TIER_ZERO_UNRESOLVED_MODIFIER (1.0)
+            1   → _GAP_TIER_ONE_UNRESOLVED_MODIFIER (0.9)
+            2   → _GAP_TIER_TWO_UNRESOLVED_MODIFIER (0.8)
+            3+  → _GAP_TIER_THREE_OR_MORE_UNRESOLVED_MODIFIER (0.7)
 
         count_modifier (PR19-E §31.3, Sub-decision E-2 + E-4 — binary supplemental):
             active_count = len(active_contradictions_for_claim(claim_id))
@@ -1038,13 +1070,7 @@ class Engine:
                 - most_recent_evidence.strength.value * _FRESHNESS_PENALTY_WEIGHT
             )
 
-        gaps = self.gaps_for_claim(claim_id)
-        if not gaps:
-            gap_modifier = 1.0
-        elif all(self.gap_resolution(g.id) is not None for g in gaps):
-            gap_modifier = 1.0
-        else:
-            gap_modifier = _GAP_PENALTY_MODIFIER
+        gap_modifier = self._gap_modifier_for_claim(claim_id)
 
         active_count = len(self.active_contradictions_for_claim(claim_id))
         count_modifier = (

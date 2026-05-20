@@ -345,7 +345,11 @@ class TestRuleStatsCompositionWithExistingModifiers:
 
     # invariant 15 ★ — gap × rule_stats
     def test_unresolved_gap_and_firing_one(self) -> None:
-        """unresolved gap + firing 1 → 1.0 × 1.0 × 1.0 × 0.8 × 1.0 × 0.9 = 0.72."""
+        """unresolved gap 1 개 + firing 1 → 1.0 × 1.0 × 1.0 × 0.9 × 1.0 × 0.9 = 0.81.
+
+        PR23-M §35.5 (AP): 1 unresolved → tier 1 → 0.9 (PR12-D binary 0.8 정제).
+        의미 (gap × rule_stats 결합) 보존, gap 강도만 갱신.
+        """
         engine = Engine()
         _register_rule(engine, rule_id=1, rule_version=1)
         _bump_firing(engine, rule_id=1, rule_version=1, delta=1)
@@ -354,7 +358,7 @@ class TestRuleStatsCompositionWithExistingModifiers:
         )
         _unresolved_gap(engine, claim_id)
         result = engine.compute_effective_confidence(claim_id)
-        assert result.value == pytest.approx(0.72)
+        assert result.value == pytest.approx(0.81)
 
     # invariant 16 ★ — count × rule_stats (independence)
     def test_active_two_and_firing_one(self) -> None:
@@ -375,12 +379,15 @@ class TestRuleStatsCompositionWithExistingModifiers:
 
     # invariant 17 ★ — full 6-modifier composition
     def test_full_six_modifier_composition(self) -> None:
-        """disputed + active 2 (most recent strength 0.8) + unresolved gap + firing 1.
+        """disputed + active 2 (most recent strength 0.8) + unresolved gap 1 개 + firing 1.
+
+        PR23-M §35.5 (AP): 1 unresolved → tier 1 → 0.9 (PR12-D binary 0.8 정제).
+        의미 (6-modifier 결합) 보존, gap 강도만 갱신.
 
         base × status × freshness × gap × count × rule_stats
-        = 1.0 × 0.5 × (1.0 - 0.8 × 0.5) × 0.8 × 0.8 × 0.9
-        = 1.0 × 0.5 × 0.6 × 0.8 × 0.8 × 0.9
-        = 0.1728
+        = 1.0 × 0.5 × (1.0 - 0.8 × 0.5) × 0.9 × 0.8 × 0.9
+        = 1.0 × 0.5 × 0.6 × 0.9 × 0.8 × 0.9
+        = 0.1944
         """
         engine = Engine()
         _register_rule(engine, rule_id=1, rule_version=1)
@@ -397,7 +404,7 @@ class TestRuleStatsCompositionWithExistingModifiers:
             engine._claims[claim_id], status=CLAIM_STATUS_DISPUTED,
         )
         result = engine.compute_effective_confidence(claim_id)
-        assert result.value == pytest.approx(0.1728)
+        assert result.value == pytest.approx(0.1944)
 
 
 # ---- 5. No state mutation (Sub-decision Z) ---------------------------------
@@ -484,17 +491,21 @@ class TestRuleStatsRegressionBoundaries:
         # PR11-C: 1.0 × 1.0 × 0.6 × 1.0 × 1.0 × 1.0 (lookup miss) = 0.6
         assert result.value == pytest.approx(0.6)
 
-    # invariant 23 — PR12-D gap modifier 무변화
+    # invariant 23 — PR12-D gap modifier 의미 보존 (PR23-M tier 강도 갱신)
     def test_pr12d_gap_modifier_meaning_preserved(self) -> None:
-        """unresolved gap, candidate, rule_stats=1.0 → base × 0.8 (PR12-D 그대로)."""
+        """unresolved gap 1 개, candidate, rule_stats=1.0 → base × 0.9 (PR12-D + PR23-M).
+
+        PR23-M §35.5 (AP): 1 unresolved → tier 1 → 0.9. PR12-D 의 "unresolved →
+        attenuation" 의미 보존, 강도만 binary 0.8 → tier 0.9 로 정제.
+        """
         engine = Engine()
         _, claim_id = _claim_with_rule(
             engine, rule_id=42, rule_version=1, base_confidence=1.0,
         )
         _unresolved_gap(engine, claim_id)
         result = engine.compute_effective_confidence(claim_id)
-        # PR12-D: 1.0 × 1.0 × 1.0 × 0.8 × 1.0 × 1.0 = 0.8
-        assert result.value == pytest.approx(0.8)
+        # PR12-D + PR23-M: 1.0 × 1.0 × 1.0 × 0.9 (1 unresolved tier) × 1.0 × 1.0 = 0.9
+        assert result.value == pytest.approx(0.9)
 
     # invariant 24 — PR19-E count modifier 무변화
     def test_pr19e_count_modifier_meaning_preserved(self) -> None:
