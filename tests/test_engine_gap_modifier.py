@@ -149,18 +149,26 @@ class TestEffectiveConfidenceGapModifier:
 
     # invariant 7 ★
     def test_candidate_with_unresolved_gap_attenuates(self) -> None:
-        """candidate + unresolved 1+ → base × 1.0 × 1.0 × 0.8 = base × 0.8."""
+        """candidate + unresolved 1 개 → base × 1.0 × 1.0 × 0.9 = base × 0.9.
+
+        PR23-M §35.5 (AP): 1 unresolved → tier 1 → 0.9.
+        의미는 PR12-D 와 동일 ("unresolved → attenuation"), 강도만 binary 0.8
+        → tier 0.9 로 정제됨.
+        """
         engine = Engine()
         _, claim_id = _candidate_claim(engine, base_confidence=1.0)
         _add_unresolved_gap(engine, claim_id)
 
         result = engine.compute_effective_confidence(claim_id)
 
-        assert result.value == pytest.approx(0.8)
+        assert result.value == pytest.approx(0.9)
 
     # invariant 8 ★
     def test_confirmed_with_unresolved_gap_attenuates(self) -> None:
-        """confirmed + unresolved 1+ → base × 1.0 × 1.0 × 0.8 = base × 0.8."""
+        """confirmed + unresolved 1 개 → base × 1.0 × 1.0 × 0.9 = base × 0.9.
+
+        PR23-M §35.5 (AP): 1 unresolved tier.
+        """
         engine = Engine()
         _, claim_id = _candidate_claim(engine, base_confidence=1.0)
         _add_unresolved_gap(engine, claim_id)
@@ -170,11 +178,15 @@ class TestEffectiveConfidenceGapModifier:
 
         result = engine.compute_effective_confidence(claim_id)
 
-        assert result.value == pytest.approx(0.8)
+        assert result.value == pytest.approx(0.9)
 
     # invariant 9 ★
     def test_disputed_with_unresolved_gap_compounds(self) -> None:
-        """disputed + unresolved 1+ → base × 0.5 × 1.0 × 0.8 = base × 0.4."""
+        """disputed + unresolved 1 개 → base × 0.5 × 1.0 × 0.9 = base × 0.45.
+
+        PR23-M §35.5 (AP): 1 unresolved tier. 의미는 PR12-D 와 동일,
+        강도만 0.8 → 0.9 로 정제 (0.5 × 0.9 = 0.45).
+        """
         engine = Engine()
         _, claim_id = _candidate_claim(engine, base_confidence=1.0)
         _add_unresolved_gap(engine, claim_id)
@@ -184,7 +196,7 @@ class TestEffectiveConfidenceGapModifier:
 
         result = engine.compute_effective_confidence(claim_id)
 
-        assert result.value == pytest.approx(0.4)
+        assert result.value == pytest.approx(0.45)
 
     # invariant 10
     def test_refuted_with_unresolved_gap_returns_zero(self) -> None:
@@ -217,8 +229,16 @@ class TestGapModifierResolutionSemantics:
         assert result.value == pytest.approx(0.7)
 
     # invariant 11 ★ — N 무관
-    def test_one_or_many_unresolved_same_modifier(self) -> None:
-        """unresolved 1개와 N개의 modifier 동일 (Sub-decision U binary)."""
+    def test_one_vs_many_unresolved_apply_different_tiers(self) -> None:
+        """PR12-D Sub-decision U (binary) → PR23-M Sub-decision AP (count tier).
+
+        PR12-D 에서는 1 개와 N 개가 같은 modifier (0.8) 였으나, PR23-M 후로
+        다른 tier 가 적용된다:
+            1 개   → tier 1 → 0.9
+            10 개  → tier 3+ → 0.7
+        의미: "unresolved 가 있으면 약화" 라는 PR12-D 의 의미는 보존,
+        다만 개수에 따라 강도가 분화된다 (Sub-decision AP).
+        """
         engine_one = Engine()
         _, claim_one = _candidate_claim(engine_one, base_confidence=1.0)
         _add_unresolved_gap(engine_one, claim_one, required_evidence_type=99)
@@ -235,14 +255,19 @@ class TestGapModifierResolutionSemantics:
             )
         result_many = engine_many.compute_effective_confidence(claim_many)
 
-        # 둘 다 base × 0.8 (N 무관)
-        assert result_one.value == pytest.approx(0.8)
-        assert result_many.value == pytest.approx(0.8)
-        assert result_one == result_many
+        # PR23-M tier 분화: 1 → 0.9, 10 → 0.7
+        assert result_one.value == pytest.approx(0.9)
+        assert result_many.value == pytest.approx(0.7)
+        # 둘이 다름을 명시 (PR12-D binary 의 자연 만료)
+        assert result_one.value != result_many.value
 
     # invariant 12 ★ — 혼재
     def test_resolved_and_unresolved_mixed_attenuates(self) -> None:
-        """resolved + unresolved 혼재 → unresolved 1+ 이므로 ×0.8."""
+        """resolved + unresolved 1 개 혼재 → unresolved count = 1 → tier 0.9.
+
+        PR23-M §35.5 (AP): resolved 는 count 에서 제외 (PR12-D Sub-decision T
+        정신 보존), 1 unresolved → tier 1 → 0.9.
+        """
         engine = Engine()
         _, claim_id = _candidate_claim(engine, base_confidence=1.0)
         _add_resolved_gap(engine, claim_id, evidence_type=100)
@@ -250,16 +275,19 @@ class TestGapModifierResolutionSemantics:
 
         result = engine.compute_effective_confidence(claim_id)
 
-        # gap_modifier = 0.8 (unresolved 1+)
-        assert result.value == pytest.approx(0.8)
+        # gap_modifier = 0.9 (unresolved 1 개, resolved 는 count 외)
+        assert result.value == pytest.approx(0.9)
 
 
 class TestGapModifierWithFreshness:
     """§28.12 invariant 13 ★ — PR11-C freshness × PR12-D gap 결합."""
 
     def test_confirmed_with_freshness_and_gap_compounds(self) -> None:
-        """confirmed + active strong 0.8 + unresolved 1+
-            → base × 1.0 × 0.6 × 0.8 = base × 0.48.
+        """confirmed + active strong 0.8 + unresolved 1 개
+            → base × 1.0 × 0.6 × 0.9 = base × 0.54.
+
+        PR23-M §35.5 (AP): 1 unresolved → tier 1 → 0.9 (PR12-D binary 0.8 정제).
+        의미는 PR11-C freshness × PR12-D gap 결합 그대로, gap 강도만 갱신.
         """
         engine = Engine()
         _, claim_id = _candidate_claim(engine, base_confidence=1.0)
@@ -276,9 +304,9 @@ class TestGapModifierWithFreshness:
 
         result = engine.compute_effective_confidence(claim_id)
 
-        # 1.0 × 1.0 (confirmed) × (1.0 - 0.8 × 0.5) × 0.8
-        # = 1.0 × 1.0 × 0.6 × 0.8 = 0.48
-        assert result.value == pytest.approx(0.48)
+        # 1.0 × 1.0 (confirmed) × (1.0 - 0.8 × 0.5) × 0.9 (1 unresolved tier)
+        # = 1.0 × 1.0 × 0.6 × 0.9 = 0.54
+        assert result.value == pytest.approx(0.54)
 
 
 class TestPriorPolicyUnchanged:
