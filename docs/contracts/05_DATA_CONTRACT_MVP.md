@@ -5709,3 +5709,363 @@ PR21-L:
 구현 단계 (91/92차) — **테스트 먼저 잠금 → 구현** 순서:
 - 91차: tests (위 40 invariant) — 일부 fail (evidence_type 미반영, schema v2 미존재, register_hint API 미존재), 다수 pass (PR20-F 까지의 동작 보존)
 - 92차: `_EVIDENCE_TYPE_PENALTY_MODIFIER` private constant + `_hint_evidence_types` engine state + `register_hint_evidence_types` public method + `_evidence_type_modifier_for_claim` 보조 메서드 + `compute_effective_confidence` 본문 확장 (× evidence_type_modifier 추가) + `_CURRENT_SNAPSHOT_SCHEMA_VERSION = 2` bump + `_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS = frozenset({1, 2})` + `_migrate_snapshot_v1_to_v2` step + `to_snapshot` / `from_snapshot` 의 hint_evidence_types 직렬화 — 91차 테스트 통과로 입증
+
+## 34. Evidence_type registration — strict validation (MVP — no implicit cast)
+
+> 상태: 94/95/96차 (PR22-S). PR21-L 가 OOS 로 남긴 `int(t)` cast 영역 마무리.
+> **공식 변경 없음** (여전히 `effective = base × status × freshness × gap × count × rule_stats × evidence_type`).
+> **state shape 변경 없음** (`_hint_evidence_types: set[int]` 그대로).
+> **snapshot schema bump 없음** (여전히 v2).
+> 오직 `register_hint_evidence_types` 입력 계약만 강화.
+> **Built-in HINT enum 도입 / Evidence.type 정수 의미 framework 소유 / 양수만
+> 허용 같은 도메인 제약 / evidence_type modifier 공식 변경 / schema v3 bump /
+> Q/R 자연 후속 OOS** — 별도 PR.
+
+### 34.1 PR22-S 의 한 줄 정의
+
+> **PR22-S 는 evidence type taxonomy 를 만드는 PR 이 아니다.
+> PR22-S 는 `register_hint_evidence_types` API 의 입력 계약을 엄격하게
+> 만드는 PR 이다. caller 가 "이 type id 는 hint 다" 라고 명시적 int 로
+> 전달해야 한다 — implicit cast / partial mutation / non-iterable 모두
+> 거부.**
+
+PR21-L Sub-decision AF 정신은 그대로:
+
+```text
+framework 는 어떤 type id 가 HINT 인지 결정하지 않는다.
+caller 가 등록한 int id 만 받는다.
+다만 등록 API 는 int 아닌 값을 조용히 cast 하지 않는다.
+```
+
+### 34.2 핵심 명제 (§34.2)
+
+> **Strict validation protects the registration boundary, not the meaning of
+> Evidence.type.**
+> **No implicit casting. No partial mutation. No taxonomy ownership.**
+
+한국어:
+
+```text
+strict validation 은 등록 경계를 보호하는 것이지,
+Evidence.type 정수값의 의미를 framework 가 해석하는 것이 아니다.
+
+암묵적 형 변환 없음. 부분 mutation 없음. taxonomy 소유 없음.
+```
+
+대조:
+
+```text
+PR21-L: caller registration 을 신뢰한다 (보호막 + caller 가 등록한 set 만 사용)
+PR22-S: 그 registration 경계를 조용한 cast 없이 깨끗하게 만든다
+```
+
+### 34.3 변경 영역 — `register_hint_evidence_types` 본문만
+
+```python
+# Before (PR21-L MVP — implicit cast 통과)
+def register_hint_evidence_types(self, types: Iterable[int]) -> None:
+    self._hint_evidence_types.update(int(t) for t in types)
+
+# After (PR22-S — strict validation, all-or-nothing)
+def register_hint_evidence_types(self, types: Iterable[int]) -> None:
+    if not isinstance(types, Iterable):
+        raise TypeError(...)
+    validated: set[int] = set()
+    for value in types:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(...)
+        validated.add(value)
+    self._hint_evidence_types.update(validated)
+```
+
+**변경 폭**: `register_hint_evidence_types` 본문 한 메서드만. helper /
+modifier / snapshot / state shape 변경 0.
+
+### 34.4 Sub-decision AI — No implicit casting
+
+`register_hint_evidence_types` 는 `int(t)` cast 를 하지 않는다.
+
+이전 거부 사례 (PR21-L 에서는 통과):
+
+```python
+register_hint_evidence_types(["1"])  # str
+register_hint_evidence_types([1.0])  # float
+register_hint_evidence_types([b"1"]) # bytes
+```
+
+이유:
+
+`Evidence.type` 은 caller-defined int. 따라서 registration 도 caller 가
+명시적 int 를 전달해야 한다. cast 는 caller 의 의도를 framework 가 추측하는
+행위 — Sub-decision AF (framework 가 의미를 소유하지 않음) 정신과 어긋남.
+
+### 34.5 Sub-decision AJ — Only `int` (bool 거부)
+
+허용:
+
+```text
+- int (양수, 0, 음수 무관)
+```
+
+거부 (TypeError):
+
+```text
+- bool (Python 에서 int subclass 이지만 명시적 int 계약을 흐림)
+- str
+- float
+- bytes
+- None
+- 그 외 모든 타입
+```
+
+검사 순서가 중요:
+
+```python
+if isinstance(value, bool) or not isinstance(value, int):
+    raise TypeError(...)
+```
+
+`bool` 검사를 **먼저** 해야 함. Python 에서 `isinstance(True, int)` 는 True
+이므로 단순 `isinstance(value, int)` 만으로는 bool 을 못 거른다.
+
+이유:
+
+`True`/`False` 를 hint type id 로 받는 것은 명시적 int 계약을 흐린다.
+`register_hint_evidence_types([True])` 가 통과하면 caller 가 의도하지 않은
+`1` 등록이 발생 — implicit cast 와 동급 문제.
+
+### 34.6 Sub-decision AK — 값 범위 제한 없음
+
+허용:
+
+```text
+음수 (-1, -100, ...)
+0
+큰 정수 (sys.maxsize 까지)
+```
+
+이유:
+
+`Evidence.type` 은 opaque caller-defined int. framework 가 "0 은 안 된다",
+"양수만 된다", "최대값 제한" 같은 도메인 제약을 넣는 순간 다시 type 의미를
+소유하기 시작한다 — Sub-decision AF 위반.
+
+→ **PR22-S 는 타입 검증만 한다. 값 의미 검증은 하지 않는다.**
+
+### 34.7 Sub-decision AL — All-or-nothing update
+
+```text
+입력 iterable 중 invalid 값이 하나라도 있으면 → TypeError
+  AND self._hint_evidence_types 는 mutation 발생 안 함 (partial update 금지)
+```
+
+나쁜 예 (PR22-S 가 막아야 함):
+
+```python
+engine.register_hint_evidence_types([1, "2", 3])
+# 1 등록, "2" 에서 TypeError, 3 미등록
+# → partial mutation (1 만 등록됨) → 호출자 입장에서 예측 불가
+```
+
+올바른 동작:
+
+```python
+engine.register_hint_evidence_types([1, "2", 3])
+# TypeError raised
+# self._hint_evidence_types unchanged (mutation 0)
+```
+
+구현 패턴 (temp set 검증):
+
+```python
+validated: set[int] = set()
+for value in types:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(...)
+    validated.add(value)
+# 모든 검증 통과 후에만 union
+self._hint_evidence_types.update(validated)
+```
+
+### 34.8 Sub-decision AM — Non-iterable input → TypeError
+
+```python
+engine.register_hint_evidence_types(1)         # TypeError
+engine.register_hint_evidence_types(None)      # TypeError
+engine.register_hint_evidence_types("123")     # TypeError (str 은 iterable이지만 별도 거부)
+```
+
+`API signature 는 `Iterable[int]`. 단일 int 를 `[1]` 처럼 자동 wrap 하지
+않는다. caller 가 list/tuple/set 등 명시적 iterable 을 전달해야 한다.
+
+특수 케이스 — **`str` 은 iterable 이지만 TypeError**:
+
+```python
+engine.register_hint_evidence_types("123")
+# 만약 그냥 iter() 돌리면 '1', '2', '3' 세 char 가 들어가 Sub-decision AJ
+# (bool/non-int 거부) 에서 다 reject 되긴 하지만, intent 가 명백히 잘못이므로
+# 명시적 거부가 더 깨끗.
+```
+
+구현: AJ 의 isinstance int 검사로 자연 거부됨 (char 들이 str). 추가 명시적
+str 거부는 가독성 보조 (선택적).
+
+### 34.9 Sub-decision AN — Snapshot schema bump 없음
+
+```text
+_CURRENT_SNAPSHOT_SCHEMA_VERSION = 2  (그대로)
+_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS = frozenset({1, 2})  (그대로)
+```
+
+이유:
+
+PR22-S 는 engine **state shape 를 바꾸지 않는다**:
+- `_hint_evidence_types: set[int]` 그대로
+- snapshot 직렬화 `sorted list` 그대로
+- v1 → v2 migration 그대로
+
+오직 `register_hint_evidence_types` 의 input validation 만 바뀐다. snapshot
+호환성에 영향 없음 → schema bump 불필요 (PR18-K 정신: 의미 있는 변화 때만 bump).
+
+### 34.10 공식 변경 없음
+
+```text
+effective = base × status × freshness × gap × count × rule_stats × evidence_type
+                                                                        ↑
+                                                                  PR22-S 변경 없음
+```
+
+PR22-S 는:
+- `_evidence_type_modifier_for_claim` helper 변경 없음
+- modifier 강도 변경 없음 (0.9 / 1.0 그대로)
+- composition 변경 없음
+
+오직 등록 시점의 input 계약만 강화.
+
+### 34.11 Empty iterable 처리 (PR21-L 호환 보존)
+
+```python
+engine.register_hint_evidence_types([])  # no-op (PR21-L 호환)
+engine.register_hint_evidence_types(())  # no-op
+engine.register_hint_evidence_types(set())  # no-op
+```
+
+빈 iterable 은 valid input. 등록 자체가 발생하지 않을 뿐 TypeError 아님.
+
+### 34.12 결정성 (Determinism)
+
+같은 input 에 대해 같은 결과:
+- 유효 input → 같은 set state
+- 무효 input → 같은 TypeError
+
+`set.update` / `dict.get` / `isinstance` 모두 deterministic.
+
+### 34.13 Invariants (테스트로 잠금)
+
+PR22-S 95차 test-first 가 잠그는 invariants:
+
+#### 허용 input (Sub-decision AJ 양성 케이스)
+1. `[1, 2, 3]` (list[int]) → 등록 성공
+2. `(1, 2, 3)` (tuple[int]) → 등록 성공
+3. `{1, 2, 3}` (set[int]) → 등록 성공
+4. `frozenset({1, 2, 3})` → 등록 성공
+5. `iter([1, 2, 3])` (generator) → 등록 성공
+6. `[0]` (zero) → 등록 성공 (Sub-decision AK)
+7. `[-1, -100]` (negative) → 등록 성공 (Sub-decision AK)
+8. `[10**18]` (very large) → 등록 성공 (Sub-decision AK)
+9. `[]` (empty) → no-op, no error
+
+#### 거부 input — implicit cast 차단 (Sub-decision AI)
+10. `["1"]` (str) → TypeError, hint set unchanged
+11. `[1.0]` (float) → TypeError
+12. `[b"1"]` (bytes) → TypeError
+13. `[None]` → TypeError
+
+#### 거부 input — bool 차단 (Sub-decision AJ)
+14. `[True]` → TypeError
+15. `[False]` → TypeError
+16. `[True, False]` → TypeError
+
+#### Non-iterable input (Sub-decision AM)
+17. `1` (raw int) → TypeError
+18. `None` → TypeError
+19. `register_hint_evidence_types("123")` (str, edge) → TypeError
+
+#### All-or-nothing (Sub-decision AL)
+20. `[1, "2", 3]` → TypeError, hint set **unchanged** (1 not registered)
+21. `[1, 2, True]` → TypeError, hint set unchanged
+22. `[1, 2, 3, 1.0]` → TypeError, hint set unchanged
+23. **여러 번 호출 시 첫 invalid call 이전 등록은 보존**:
+    `register([1])` → success, `register([2, "x"])` → TypeError,
+    이후 hint set == {1} (첫 등록은 보존, 두 번째 호출은 전체 reject)
+
+#### Idempotent / accumulation (PR21-L 호환 보존)
+24. `register([1])`, `register([1])` → hint set == {1}
+25. `register([1])`, `register([2])` → hint set == {1, 2}
+26. `register([1, 1, 1])` → hint set == {1}
+
+#### Snapshot 영향 없음 (Sub-decision AN)
+27. `to_snapshot()["schema_version"] == 2` 유지
+28. `to_snapshot()["hint_evidence_types"] == []` (등록 0 후) 유지
+29. round-trip 후 hint set 보존 유지
+
+#### 공식 영향 없음
+30. modifier 값 변경 없음: hint 등록 후 effective 계산 결과는 PR21-L 과 동일
+31. `_EVIDENCE_TYPE_PENALTY_MODIFIER == 0.9` 유지
+32. 7-modifier composition 의미 보존
+
+#### 회귀 보존 (PR21-L 의 모든 호환 케이스)
+33. empty registration → evidence_type_modifier = 1.0 (PR21-L Sub-decision AE)
+34. direct evidence 0 + hint 등록 → 1.0 (PR21-L AB)
+35. all-hint direct evidence → 0.9 (PR21-L AC)
+36. mixed → 1.0 (PR21-L AC)
+37. no boost (PR21-L AD)
+
+#### Private / state-shape 보존
+38. `_hint_evidence_types` 타입 변경 없음 (여전히 `set[int]`)
+39. PR21-L `_EVIDENCE_TYPE_PENALTY_MODIFIER` private 유지
+40. 기존 742 회귀 없음 (전체 통과로 입증)
+
+### 34.14 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| Built-in `EVIDENCE_TYPE_HINT` enum 도입 | Sub-decision AF 영구 |
+| `Evidence.type` 값 의미 해석 / 도메인 제약 | Sub-decision AK — taxonomy 소유 금지 |
+| Positive-only / 0 금지 / 범위 제한 | Sub-decision AK — opaque int 유지 |
+| `evidence_type_modifier` 공식 / 강도 변경 | 본 PR 범위 밖 |
+| Snapshot schema v3 bump | Sub-decision AN — state shape 무변화 |
+| Snapshot 직렬화 형식 변경 | Sub-decision AN |
+| `unregister_hint_evidence_types` 명시적 삭제 API | MVP — caller restart 로 충분 |
+| `clear_hint_evidence_types` | 동일 |
+| Per-claim hint set override | engine-global 만 |
+| Relation graph traversal | PR21-L Sub-decision AA 영구 |
+| Contradiction evidence 재사용 | PR21-L AA |
+| OBSERVED / DIRECT boost | PR21-L AD 영구 |
+| Type별 weight table (hint-tiering) | binary MVP 유지 |
+| RuleStats outcome ratio (Q/R 트랙) | 별도 PR |
+| `types.py` / `__init__.py` / `rule_output.py` 변경 | Sub-decision D 영구 |
+| Strict validation 을 `Evidence.type` 등록 path 가 아닌 다른 path 로 확대 | 본 PR 범위 밖 |
+
+### 34.15 Position in flow
+
+```text
+PR21-L 까지:
+  register_hint_evidence_types(types) → int(t) implicit cast → set.update
+  → "1", True, 1.0 등 silently 등록 가능
+
+PR22-S:
+  register_hint_evidence_types(types):
+    1. types 가 iterable 인가? → 아니면 TypeError (Sub-decision AM)
+    2. 각 값에 대해 isinstance(value, bool) or not isinstance(value, int) → TypeError (AI/AJ)
+    3. 모두 통과해야 hint set update (Sub-decision AL — all-or-nothing)
+  → 공식 / state / snapshot 영향 없음, 입력 경계만 강화
+
+  PR21-L AC/AE 와 PR22-S 의 역할 분리:
+    PR21-L: 등록된 hint set 이 어떻게 modifier 를 만드는지 (modifier 의미)
+    PR22-S: hint set 에 무엇이 들어갈 수 있는지 (registration boundary)
+```
+
+구현 단계 (95/96차) — **테스트 먼저 잠금 → 구현** 순서:
+- 95차: tests (위 40 invariant) — 일부 fail (validation 미적용, 모든 거부 케이스가 현재는 silent cast / 통과), 다수 pass (PR21-L 의 호환 케이스 / snapshot / modifier 의미 보존)
+- 96차: `register_hint_evidence_types` 본문 강화 (bool 우선 검사 + non-int reject + temp set 으로 all-or-nothing + non-iterable TypeError) — 95차 테스트 통과로 입증
