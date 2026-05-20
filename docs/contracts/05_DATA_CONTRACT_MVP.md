@@ -6787,3 +6787,402 @@ PR24-N:
 구현 단계 (103/104차) — **테스트 먼저 잠금 → 구현** 순서:
 - 103차: tests (위 47 invariant) — 일부 fail (continuous expected 값들 / `_COUNT_STRENGTH_PENALTY_WEIGHT` 미존재 / `_count_modifier_for_claim` helper 미존재), 다수 pass (PR1~PR23-M 의 다른 modifier / state / snapshot / lifecycle / public namespace 보존)
 - 104차: `_COUNT_STRENGTH_PENALTY_WEIGHT` 신규 private 상수 + `_count_modifier_for_claim` helper 신규 + `compute_effective_confidence` 의 count 항 helper 호출로 교체 + 구 `_COUNT_PENALTY_MODIFIER` 제거 + §36.10 자연 만료 테스트 16+ 개 expected 갱신 (binary 0.8 → continuous values, strength 0/0 케이스는 0.8 → 1.0 의미 변화 명시) — 103차 테스트 통과로 입증
+
+## 37. Evidence type registration — deregistration API (MVP — unregister / clear)
+
+> 상태: 106/107/108/109차 (PR25-T). PR21-L + PR22-S 의 hint evidence type
+> 등록 영역 마무리 — caller 가 등록한 set 을 명시적으로 제거 / 초기화할 수
+> 있는 API 2 개 추가.
+> **공식 변경 없음** (여전히
+> `effective = base × status × freshness × gap × count × rule_stats × evidence_type`).
+> **`evidence_type_modifier` 본문 변경 없음** — `_hint_evidence_types` set 의
+> 외부 조작 API 만 확장.
+> **state shape / snapshot schema / Evidence dataclass / lifecycle 전이 /
+> refute 정책 / built-in HINT enum 도입 / per-claim hint set / hint tiering /
+> Evidence.type taxonomy 모두 본 PR 범위 밖** — 별도 PR.
+
+### 37.1 PR25-T 의 한 줄 정의
+
+> **PR25-T 는 evidence_type modifier 의 의미를 바꾸는 PR 이 아니다.**
+> **caller 가 등록한 hint evidence type set 을 명시적으로 제거 / 초기화할 수**
+> **있게 하는 API 완결 PR 이다.**
+
+PR21-L Sub-decision AF 정신 그대로:
+
+```text
+framework 는 어떤 type id 가 HINT 인지 결정하지 않는다.
+caller 가 등록한 int id 만 받는다.
+PR22-S 는 등록 input 의 strict validation 을 강제했다.
+PR25-T 는 그 등록을 명시적으로 되돌릴 수 있게 한다.
+```
+
+PR23-M / PR24-N 이 modifier 강도 정제 PR 이었던 것과 달리, PR25-T 는 **API
+완결 PR**. modifier 의미 / 강도 / 공식 모두 변경 없음.
+
+### 37.2 핵심 명제 (§37.2)
+
+```text
+Deregistration is the inverse of registration, not a redefinition.
+The framework still does not own Evidence.type semantics —
+caller decides what to put in or take out.
+```
+
+한국어:
+
+```text
+Deregistration 은 registration 의 역연산이지, 의미의 재정의가 아니다.
+framework 는 여전히 Evidence.type 정수의 의미를 소유하지 않는다 —
+caller 가 hint set 에 무엇을 넣고 뺄지 결정한다.
+```
+
+대조:
+
+```text
+PR21-L: register(types) — caller-registered hint set 도입, modifier 정의
+PR22-S: register strict validation — implicit cast / partial mutation 차단
+PR25-T: unregister(types) + clear() — set 조작 API 완결, validation 공유
+```
+
+### 37.3 공식 / state 변경 영역
+
+```text
+effective = base × status × freshness × gap × count × rule_stats × evidence_type
+                                                                        ↑
+                                                                   변경 없음
+```
+
+PR25-T 가 바꾸는 것:
+- `Engine` 에 메서드 2 개 추가 (`unregister_hint_evidence_types`, `clear_hint_evidence_types`)
+- PR22-S 의 strict validation 본문을 private helper 로 추출 (구조 정리, 의미 동일)
+
+PR25-T 가 안 바꾸는 것:
+- `_evidence_type_modifier_for_claim` helper 본문 — 변경 0
+- `_EVIDENCE_TYPE_PENALTY_MODIFIER == 0.9` — 변경 0
+- `_hint_evidence_types: set[int]` 타입 — 변경 0
+- `compute_effective_confidence` — 변경 0
+- snapshot 직렬화 형식 (`hint_evidence_types: sorted list`) — 변경 0
+- `register_hint_evidence_types` 외부 동작 — 변경 0 (내부 본문만 helper 호출로 교체)
+
+### 37.4 API surface
+
+```python
+# 기존 (PR21-L + PR22-S, 동작 변경 없음)
+def register_hint_evidence_types(self, types: Iterable[int]) -> None: ...
+
+# 신규 (PR25-T)
+def unregister_hint_evidence_types(self, types: Iterable[int]) -> None: ...
+def clear_hint_evidence_types(self) -> None: ...
+```
+
+### 37.5 Sub-decision BC — API surface = unregister + clear
+
+추가하는 API 는 정확히 2 개:
+
+- `unregister_hint_evidence_types(types)` — 특정 type id 들을 hint set 에서 제거 (set difference)
+- `clear_hint_evidence_types()` — hint set 을 비움 (set.clear)
+
+배제:
+- `replace_hint_evidence_types(types)` — register + clear 조합으로 표현 가능
+- `unregister_hint_evidence_type_one(type_id)` — `unregister([type_id])` 로 표현 가능
+- `is_registered_hint_evidence_type(type_id)` — 외부 query API 는 별도 PR
+- `list_hint_evidence_types()` — snapshot 으로 이미 접근 가능, 별도 PR
+
+이유: 최소 API 표면. caller 가 register / unregister / clear 3 가지 동사로 set 조작 완결.
+
+### 37.6 Sub-decision BD — Unregister validation = register 와 동일 strict
+
+`unregister_hint_evidence_types` 는 PR22-S Sub-decision AI~AM 와 **동일한**
+strict validation 을 강제한다:
+
+- no implicit casting (Sub-decision AI)
+- int only, bool 거부 (Sub-decision AJ)
+- 값 범위 제한 없음 (Sub-decision AK)
+- all-or-nothing (Sub-decision AL)
+- non-iterable + str/bytes 컨테이너 거부 (Sub-decision AM)
+
+이유: register 가 차단한 silent cast / partial mutation 은 unregister 에서도
+동일하게 차단되어야 함. validation 의 의미는 등록/해제 양방향에 동일.
+
+구현 차원에서는 PR22-S 본문을 private helper 로 추출:
+
+```python
+def _validate_hint_evidence_type_values(self, types: Iterable[int]) -> set[int]:
+    if isinstance(types, (str, bytes)):
+        raise TypeError(...)
+    validated: set[int] = set()
+    for value in types:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(...)
+        validated.add(value)
+    return validated
+```
+
+→ register / unregister 가 같은 helper 호출. Sub-decision BD 가 코드 차원에서 보장됨.
+
+### 37.7 Sub-decision BE — Unregister missing type = no-op
+
+```text
+register([1, 2]) 후 unregister([3]) → hint set 그대로 {1, 2}
+unregister([99]) on empty set → empty 그대로
+unregister([1, 99]) when only 1 registered → {} (1 만 제거, 99 는 no-op)
+```
+
+set difference 의 자연 의미. `KeyError` 없음 — caller 가 "이 type 이 등록되어
+있는지" 모르고 호출해도 안전.
+
+### 37.8 Sub-decision BF — Unregister all-or-nothing
+
+PR22-S Sub-decision AL 정신 동일하게, validation 실패 시 hint set mutation 0:
+
+```text
+register([1, 2]) 후 unregister([3, "4"]) → TypeError, hint set 그대로 {1, 2}
+register([7]) 후 unregister([1, True]) → TypeError, hint set 그대로 {7}
+```
+
+구현 — `_validate_hint_evidence_type_values` 가 검증 완료 후에만 validated set
+반환. `difference_update` 는 그 검증된 set 으로만 실행.
+
+### 37.9 Sub-decision BG — Clear 는 항상 no-op safe
+
+```python
+def clear_hint_evidence_types(self) -> None:
+    self._hint_evidence_types.clear()
+```
+
+특징:
+- input 없음 → validation 불필요
+- 빈 set 에서도 no-op (`set.clear()` 가 빈 set 에 호출되어도 정상)
+- 반복 호출 가능 — `clear()` 후 `clear()` 도 no-op
+- TypeError 없음, 절대 raise 안 함
+
+### 37.10 Sub-decision BH — Snapshot schema bump 없음
+
+```text
+_CURRENT_SNAPSHOT_SCHEMA_VERSION = 2  (그대로)
+_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS = frozenset({1, 2})  (그대로)
+```
+
+PR25-T 는 engine state shape 를 바꾸지 않는다:
+- `_hint_evidence_types: set[int]` 그대로
+- snapshot 직렬화 `sorted list` 그대로
+- v1 → v2 migration step 그대로 (PR21-L 도입분)
+
+unregister / clear 호출 후 snapshot 은 갱신된 hint set 을 반영하지만, snapshot
+shape 자체는 변경 없음.
+
+### 37.11 Sub-decision BI — evidence_type modifier 공식 변경 없음
+
+```python
+def _evidence_type_modifier_for_claim(self, claim_id: int) -> float:
+    if not self._hint_evidence_types:
+        return 1.0
+    ...
+```
+
+PR21-L Sub-decision AE 의 zero-config default (empty hint → 1.0) 는 `clear()`
+호출 후에도 자연 적용. unregister / clear 가 `_hint_evidence_types` 를 비우면
+다음 `compute_effective_confidence` 호출 시 modifier 자동으로 1.0.
+
+→ modifier 본문 변경 0. 즉시 반영은 state 변화 결과로 자연 발생.
+
+### 37.12 Sub-decision BJ — register 외부 동작 변경 없음
+
+`register_hint_evidence_types` 의 **외부 관찰 가능한 동작** 은 변경 없음:
+- 같은 input → 같은 hint set 상태
+- 같은 invalid input → 같은 TypeError
+- snapshot 직렬화 형식 동일
+- PR22-S 의 strict validation 의미 그대로
+
+**내부 구현만** helper 호출로 교체:
+
+```python
+# Before (PR22-S, 본문 직접)
+def register_hint_evidence_types(self, types: Iterable[int]) -> None:
+    if isinstance(types, (str, bytes)):
+        raise TypeError(...)
+    validated: set[int] = set()
+    for value in types:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(...)
+        validated.add(value)
+    self._hint_evidence_types.update(validated)
+
+# After (PR25-T, helper 호출)
+def register_hint_evidence_types(self, types: Iterable[int]) -> None:
+    self._hint_evidence_types.update(
+        self._validate_hint_evidence_type_values(types)
+    )
+```
+
+PR22-S 가 잠근 38 invariants 는 모두 그대로 통과. 회귀 0.
+
+### 37.13 결정 로직 (pseudocode)
+
+```python
+def _validate_hint_evidence_type_values(self, types: Iterable[int]) -> set[int]:
+    """PR22-S §34 strict validation, shared by register / unregister."""
+    if isinstance(types, (str, bytes)):
+        raise TypeError(
+            "hint evidence types must be an iterable of int values, "
+            f"not {type(types).__name__}"
+        )
+    validated: set[int] = set()
+    for value in types:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(
+                "hint evidence type values must be int values, "
+                f"not {type(value).__name__}"
+            )
+        validated.add(value)
+    return validated
+
+def register_hint_evidence_types(self, types: Iterable[int]) -> None:
+    """PR21-L + PR22-S — caller-registered hint evidence type set 추가."""
+    self._hint_evidence_types.update(
+        self._validate_hint_evidence_type_values(types)
+    )
+
+def unregister_hint_evidence_types(self, types: Iterable[int]) -> None:
+    """PR25-T §37 — hint evidence type set 에서 제거 (set difference)."""
+    self._hint_evidence_types.difference_update(
+        self._validate_hint_evidence_type_values(types)
+    )
+
+def clear_hint_evidence_types(self) -> None:
+    """PR25-T §37 — hint evidence type set 초기화."""
+    self._hint_evidence_types.clear()
+```
+
+### 37.14 결정성 (Determinism)
+
+- `set.difference_update` 결정성 보장 (set 연산)
+- `set.clear` 결정성 보장
+- validation helper 는 deterministic (input 동일 → output 동일 또는 TypeError 동일)
+- snapshot 직렬화는 PR21-L `sorted(self._hint_evidence_types)` 그대로
+
+### 37.15 Invariants (테스트로 잠금)
+
+PR25-T 107차 test-first 가 잠그는 invariants (사용자 제시 23 항):
+
+#### Unregister 기본 동작 (Sub-decision BE)
+1. `register([1])` + `unregister([1])` → empty set
+2. `register([1, 2])` + `unregister([1])` → `{2}`
+3. `register([1, 2])` + `unregister([1, 2])` → empty
+4. `register([1, 2])` + `unregister([3])` → `{1, 2}` (no-op, missing type)
+5. `register([1, 2])` + `unregister([])` → `{1, 2}` (empty iterable no-op)
+6. `register([1])` + `unregister([1, 1, 1])` → empty (idempotent duplicate)
+
+#### Unregister strict validation (Sub-decision BD)
+7. `unregister(["1"])` → TypeError
+8. `unregister([1.0])` → TypeError
+9. `unregister([b"1"])` → TypeError
+10. `unregister([None])` → TypeError
+11. `unregister([True])` → TypeError
+12. `unregister([False])` → TypeError
+13. `unregister("12")` (str container) → TypeError
+14. `unregister(b"12")` (bytes container) → TypeError
+15. `unregister(1)` (non-iterable raw int) → TypeError
+16. `unregister(None)` (non-iterable) → TypeError
+
+#### Unregister all-or-nothing (Sub-decision BF)
+17. pre-existing `{1, 2}` + `unregister([1, "x"])` → TypeError, set 그대로 `{1, 2}`
+18. pre-existing `{1, 2}` + `unregister([1, True])` → TypeError, set 그대로 `{1, 2}`
+19. empty + `unregister([1, "x"])` → TypeError, empty 그대로
+20. generator yields `1, None, 3` → TypeError, set 그대로 (partial mutation 차단)
+
+#### Clear 동작 (Sub-decision BG)
+21. `register([1, 2])` + `clear()` → empty set
+22. `clear()` on empty set → no-op, empty 유지
+23. `clear()` + `clear()` → no-op
+24. `clear()` 호출에 args 없음 (signature 검증)
+
+#### Modifier 즉시 반영 (Sub-decision BI 의미)
+25. `register([42])` + direct evidence type 42 → modifier 0.9
+26. + `unregister([42])` → modifier 1.0 (즉시 반영)
+27. `register([42])` + direct evidence type 42 → modifier 0.9
+28. + `clear()` → modifier 1.0 (즉시 반영)
+
+#### Snapshot (Sub-decision BH)
+29. `to_snapshot()["schema_version"] == 2` 유지
+30. snapshot keys 집합 변경 없음
+31. `register([3, 1, 2])` + `unregister([2])` → snapshot `hint_evidence_types == [1, 3]` (sorted)
+32. round-trip 후 unregister 적용된 set 보존
+33. `clear()` 후 snapshot `hint_evidence_types == []`
+
+#### Register 외부 동작 보존 (Sub-decision BJ)
+34. PR22-S 의 모든 strict validation 케이스 register 에서도 동일 동작
+35. register / unregister validation 메시지 분리 가능 (helper 공유여도 separate raise)
+36. register idempotent (PR21-L) 유지
+
+#### Composition / formula 보존 (Sub-decision BI)
+37. effective formula shape 변경 없음
+38. `_EVIDENCE_TYPE_PENALTY_MODIFIER == 0.9` 유지
+39. `_evidence_type_modifier_for_claim` 호출 결과 (state 동일 시) 동일
+
+#### Public namespace (Sub-decision D 영구 보존)
+40. `types.py` 변경 없음
+41. `__init__.py` 변경 없음 (Engine 메서드 추가 만으로 public 접근 가능)
+42. `rule_output.py` 변경 없음
+43. 신규 public constants 0
+44. built-in HINT enum 부재 (Sub-decision AF 영구)
+
+#### Regression boundaries
+45. PR21-L empty registration → modifier 1.0 (Sub-decision AE 보존)
+46. PR21-L `Evidence.claim_id == claim_id` direct supporting evidence 정의 보존
+47. PR22-S strict validation 의미 register / unregister 양쪽 보존
+48. PR23-M gap modifier 의미 보존
+49. PR24-N count modifier 의미 보존
+50. PR10-A refute / PR11-B refute_by_freshness / PR9-A asc 동작 무변화
+51. PR17 round-trip identity 보존
+52. 기존 871 회귀 없음 (전체 통과로 입증)
+
+### 37.16 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| Built-in `EVIDENCE_TYPE_HINT` enum | Sub-decision AF 영구 |
+| `Evidence.type` 값 의미 해석 / 도메인 제약 | Sub-decision AF — taxonomy 소유 회피 |
+| `evidence_type_modifier` 공식 / 강도 변경 | Sub-decision BI — 본 PR 범위 밖 |
+| Snapshot schema v3 bump | Sub-decision BH — state shape 무변화 |
+| Snapshot 직렬화 형식 변경 | Sub-decision BH |
+| `replace_hint_evidence_types(types)` | register + clear 조합으로 표현 가능 |
+| `is_registered_hint_evidence_type(type_id)` query API | 별도 PR (read-only query 영역) |
+| `list_hint_evidence_types()` getter | snapshot 으로 이미 접근 가능 |
+| Per-claim hint set override | engine-global 만 |
+| Hint-tiering (weak / strong hint 분리) | 별도 PR |
+| Hint set 변경 audit / lifecycle event | 별도 PR — lifecycle 영역 |
+| `rule_output.py` 변경 | Sub-decision D 영구 |
+| `types.py` / `__init__.py` 변경 | Sub-decision D 영구 |
+| Validation 강화 (예: positive-only) | Sub-decision AK 정신 보존 |
+| RuleStats outcome ratio (Q/R 트랙) | 별도 PR |
+
+### 37.17 Position in flow
+
+```text
+PR21-L: register_hint_evidence_types(types) 도입
+         - caller-registered hint set 의 modifier 활용
+         - Sub-decision AE: empty registration → 1.0
+         - Sub-decision AC: all-hint → 0.9
+
+PR22-S: register strict validation
+         - implicit cast 차단 (AI/AJ/AK)
+         - partial mutation 차단 (AL)
+         - str/bytes container 거부 (AM)
+
+PR25-T: unregister + clear API 완결
+         - register 의 역연산 (Sub-decision BC/BE)
+         - 동일 strict validation 공유 (Sub-decision BD, helper 추출)
+         - all-or-nothing 보장 (Sub-decision BF)
+         - clear 는 항상 안전 (Sub-decision BG)
+         - state / snapshot / modifier 본문 변경 0 (Sub-decision BH/BI/BJ)
+
+  PR21-L / PR22-S / PR25-T 의 역할 분리:
+    PR21-L: 등록된 hint set 의 modifier 의미 (register 도입)
+    PR22-S: 등록 input 의 strict validation
+    PR25-T: 등록의 역연산 (unregister) + 초기화 (clear)
+    → 3 PR 누적으로 hint evidence type set 의 caller-facing API 완결
+```
+
+구현 단계 (107/108차) — **테스트 먼저 잠금 → 구현** 순서:
+- 107차: tests (위 52 invariant) — 일부 fail (unregister / clear API 미존재 AttributeError + modifier 즉시 반영 케이스), 다수 pass (PR21-L / PR22-S / PR23-M / PR24-N / snapshot schema / public namespace / lifecycle 보존)
+- 108차: `_validate_hint_evidence_type_values` private helper 추출 (PR22-S register 본문 이전) + `unregister_hint_evidence_types` 신규 (helper 공유 + `set.difference_update`) + `clear_hint_evidence_types` 신규 (`set.clear`) + 기존 `register_hint_evidence_types` 본문을 helper 호출로 교체 (외부 동작 변경 없음) — 107차 테스트 통과로 입증
