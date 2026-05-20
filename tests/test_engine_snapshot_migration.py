@@ -38,9 +38,11 @@ from ragcore import Engine
 class TestSnapshotMigrationConstants:
     """§30.13 invariants 1, 2 — schema version constants."""
 
-    def test_current_snapshot_schema_version_is_one(self) -> None:
+    def test_current_snapshot_schema_version_is_two(self) -> None:
+        """PR21-L §33 Sub-decision AH: bumped 1 → 2 to accommodate
+        new ``hint_evidence_types`` engine state."""
         val = getattr(engine_module, "_CURRENT_SNAPSHOT_SCHEMA_VERSION", None)
-        assert val == 1
+        assert val == 2
 
     def test_supported_snapshot_schema_versions_contains_one(self) -> None:
         val = getattr(engine_module, "_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS", None)
@@ -72,10 +74,10 @@ class TestSnapshotMigrationValidation:
         with pytest.raises(ValueError):
             Engine.from_snapshot({"schema_version": 99})
 
-    def test_version_2_currently_unsupported_raises_value_error(self) -> None:
-        """현재 PR18-K MVP 는 v1 만 supported — v2 는 미래 자리."""
+    def test_version_3_unsupported_raises_value_error(self) -> None:
+        """PR21-L 이후 v1/v2 는 supported. 미래 v3 자리는 여전히 unsupported."""
         with pytest.raises(ValueError):
-            Engine.from_snapshot({"schema_version": 2})
+            Engine.from_snapshot({"schema_version": 3})
 
 
 class TestSnapshotMigrationIdentity:
@@ -196,11 +198,11 @@ class TestSnapshotMigrationPrivacy:
 class TestPriorPersistenceBehaviorUnchanged:
     """§30.13 invariants 12, 13 — PR17 동작 보존 (이미 pass)."""
 
-    def test_to_snapshot_outputs_schema_version_1(self) -> None:
-        """PR17 to_snapshot 동작 그대로 — schema_version=1."""
+    def test_to_snapshot_outputs_schema_version_2(self) -> None:
+        """PR21-L §33 Sub-decision AH 후 — schema_version=2."""
         engine = Engine()
         snap = engine.to_snapshot()
-        assert snap["schema_version"] == 1
+        assert snap["schema_version"] == 2
 
     def test_pr17_round_trip_identity_preserved(self) -> None:
         """PR17 의 가장 강한 invariant — round-trip identity 가 PR18-K 후에도 유지."""

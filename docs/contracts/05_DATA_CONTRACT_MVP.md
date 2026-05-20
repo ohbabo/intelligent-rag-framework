@@ -5329,3 +5329,383 @@ PR20-F:
 구현 단계 (87/88차) — **테스트 먼저 잠금 → 구현** 순서:
 - 87차: tests (위 24 invariant) — 일부 fail (rule_stats 미반영 상태), 다수 pass (PR19-E 까지의 동작 보존)
 - 88차: `_RULE_STATS_PENALTY_MODIFIER` / `_RULE_STATS_MIN_FIRING_COUNT` private constants + `_rule_stats_modifier_for_claim` 보조 메서드 + `compute_effective_confidence` 본문 확장 (× rule_stats_modifier 추가) — 87차 테스트 통과로 입증
+
+## 33. Effective confidence — evidence_type modifier (MVP — caller-registered, weak source-quality)
+
+> 상태: 90/91/92차 (PR21-L). 6-modifier composition 에 evidence_type 추가.
+> `effective = base × status × freshness × gap × count × rule_stats × evidence_type`.
+> **Built-in HINT / OBSERVED / DIRECT enum 도입 / Evidence.type 정수 의미
+> framework 소유 / OBSERVED boost / contradiction evidence 재사용 / relation
+> graph traversal / evidence strength 재계산 / outcome ratio / rule firing
+> 정책 변경 모두 본 PR 범위 밖** — 별도 PR.
+
+### 33.1 PR21-L 의 한 줄 정의
+
+> **PR21-L 은 "어떤 evidence 가 좋은 evidence 인가" 를 framework 가 판결하는
+> PR 이 아니다. PR21-L 은 caller 가 "이 evidence type 은 보조 신호다" 라고
+> 등록한 type 집합에 한해서, 그 type 만 가진 Claim 을 약하게 감쇠하는 PR 이다.**
+
+PR11-D §24.5 modifier 분해 자리의 **여섯 번째 modifier**. PR11-C / PR12-D /
+PR19-E / PR20-F 옆의 동등한 자리. **Claim 판단 (lifecycle / status / refute) /
+RuleStats outcome / evidence strength 의미 는 한 줄도 바뀌지 않는다.**
+
+### 33.2 핵심 명제 (§33.2)
+
+> **Evidence type modifier is a weak source-quality signal, not a truth verdict.**
+> **Evidence type modifier uses caller-registered type classes — the framework
+> does not assign semantic meaning to `Evidence.type` integers.**
+
+한국어:
+
+```text
+Evidence type modifier 는 증거의 출처/성격을 약하게 반영하는 신호이지,
+그 Claim 의 참/거짓을 판결하는 장치가 아니다.
+
+Evidence.type 의 정수값 자체에는 framework 가 의미를 부여하지 않는다.
+caller 가 등록한 evidence type 집합만 modifier 계산에 사용한다.
+```
+
+대조:
+
+```text
+Evidence type modifier ≠ "이 evidence 는 옳다 / 그르다"
+Evidence type modifier ≠ "이 evidence 가 강하다 / 약하다" (← PR11-C strength 자리)
+Evidence type modifier = "이 Claim 의 직접 evidence 가 모두 caller 가 'hint'
+                          로 등록한 type 인가?"
+```
+
+### 33.3 공식 — 6-modifier → 7-modifier composition
+
+```python
+effective = (
+    base_confidence
+    * status_modifier            # PR11-D
+    * freshness_modifier         # PR11-C
+    * gap_modifier               # PR12-D
+    * count_modifier             # PR19-E
+    * rule_stats_modifier        # PR20-F
+    * evidence_type_modifier     # PR21-L  ← 본 PR
+)
+```
+
+7 개의 modifier 는 모두 **곱셈** 으로 결합. 모두 `[0.0, 1.0]` 범위. **boost
+(modifier > 1.0) 영구 OOS** — `effective ≤ base` 보존.
+
+### 33.4 Sub-decision AA — Direct evidence only
+
+`evidence_type_modifier` 는 **`Evidence.claim_id == claim_id`** 인 direct
+evidence 만 본다.
+
+배제:
+- relation graph traversal (PR-Relation 자리)
+- contradiction evidence 재사용 (PR11-C / PR19-E 가 이미 본다)
+- resolved contradiction evidence (PR9-A `_contradiction_resolutions`)
+- gap 매칭 evidence (PR5 `_gap_resolutions` 가 본다, 의미 다름)
+
+이유:
+
+direct evidence (`Evidence.claim_id == claim_id`) 가 **PR21-L 의 유일한
+관측 단위**. 그 외의 source 는 freshness / count / gap modifier 와 의미가
+겹치거나 새로운 traversal 정책이 필요하다.
+
+### 33.5 Sub-decision AB — Direct evidence 없으면 1.0
+
+```text
+Claim 에 직접 연결된 evidence 가 0 개 → evidence_type_modifier = 1.0
+```
+
+이유:
+
+기존 Claim 을 "evidence 없음" 때문에 갑자기 0.9 로 감쇠하면 PR1~PR20-F 다수
+테스트 및 caller 코드가 회귀한다. **PR21-L 의 default behavior 는 비-disruptive.**
+
+### 33.6 Sub-decision AC — All-hint → 0.9
+
+```text
+direct evidence 가 1 개 이상 존재하고,
+그 direct evidence 의 type 이 전부 caller-registered hint set 에 포함되면
+  → evidence_type_modifier = _EVIDENCE_TYPE_PENALTY_MODIFIER (= 0.9)
+그 외 (하나라도 hint set 밖 type → "non-hint 가 섞임")
+  → evidence_type_modifier = 1.0
+```
+
+추천 상수:
+
+```python
+_EVIDENCE_TYPE_PENALTY_MODIFIER = 0.9
+```
+
+이유:
+
+caller 가 명시적으로 "이 type 은 보조 신호다" 라고 등록한 경우에만 감쇠.
+hint type 과 다른 type 이 **섞여 있으면** 감쇠하지 않음 ("non-hint 가 하나라도
+있으면 충분히 받친 Claim"). 0.9 는 PR20-F rule_stats 와 동일 강도 — modifier
+강도 정리:
+
+```text
+status        : 강함 — refuted=0.0, disputed=0.5
+freshness     : 중간 — 최대 50% 감쇠
+gap           : 약함 — 0.8
+count         : 약함 — 0.8
+rule_stats    : 매우 약함 — 0.9
+evidence_type : 매우 약함 — 0.9   ← 본 PR
+```
+
+### 33.7 Sub-decision AD — Boost 금지
+
+```text
+evidence_type_modifier ∈ {0.9, 1.0}
+"좋은 evidence type (예: OBSERVED 계열)" 이 있어도 modifier 는 1.0 을 넘지 않는다.
+```
+
+이유:
+
+PR11-D Sub-decision N / PR19-E Sub-decision E / PR20-F Sub-decision X 정신
+일관. PR21-L 은 attenuation 만 한다.
+
+### 33.8 Sub-decision AE — Empty registration → 항상 1.0
+
+```text
+caller 가 hint evidence type 을 등록하지 않으면 (`_hint_evidence_types == frozenset()`)
+  → 모든 Claim 에 대해 evidence_type_modifier = 1.0
+```
+
+이유:
+
+**PR21-L 의 zero-config default 는 완전 무영향.** 기존 PR1~PR20-F caller 가
+register API 를 호출하지 않으면 PR21-L 동작 = 보호막. `_hint_evidence_types` 가
+비어 있는 상태는 "framework 가 어떤 type 도 hint 로 알지 못함" 을 의미하므로
+"전부 hint" 라는 조건이 성립하지 않는다 (vacuous truth 의 함정 회피).
+
+### 33.9 Sub-decision AF — Framework 가 Evidence.type 의미를 소유하지 않음
+
+```text
+Evidence.type 의 정수 의미는 caller 가 정의한다.
+framework 는 어떤 integer 가 "HINT" 인지 알지 못한다.
+HINT 는 built-in enum 이 아니라, caller 가 register API 로 알려준
+type id 집합에 대한 engine-local classification 일 뿐이다.
+```
+
+영구 제약:
+- `types.py` 에 `EVIDENCE_TYPE_*` enum 추가 금지 (Sub-decision D 영구 보존)
+- `__init__.py` 에 evidence type 카테고리 export 금지
+- magic threshold (예: `type < 100` = HINT) 금지
+
+이유:
+
+PR21-L 은 evidence_type 의 의미를 framework 가 소유하는 순간 generic
+framework 성격이 깨진다. RAG framework 는 caller 의 domain 의미를 모르는
+판단 엔진. 등록은 caller 의 책임.
+
+### 33.10 Sub-decision AG — Snapshot round-trip 보존
+
+```text
+_hint_evidence_types 는 engine state 이므로 to_snapshot() / from_snapshot()
+round-trip 후 동일하게 복원된다.
+
+snapshot dict 키: "hint_evidence_types"
+값 형태: sorted list[int] (deterministic — set iteration 비결정성 회피)
+```
+
+PR17 round-trip identity invariant 와 동일 정신. PR21-L 은 새 engine
+state 를 도입하므로 snapshot 보존이 필수.
+
+### 33.11 Sub-decision AH — schema_version 1 → 2 bump + migration step
+
+```python
+_CURRENT_SNAPSHOT_SCHEMA_VERSION = 2
+_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS = frozenset({1, 2})
+```
+
+PR18-K 가 만든 v1 → v2 migration step 자리에 PR21-L 이 정확히 들어간다:
+
+```python
+# v1 → v2: add "hint_evidence_types": [] default
+def _migrate_snapshot_v1_to_v2(snapshot: dict) -> dict:
+    out = dict(snapshot)
+    out["hint_evidence_types"] = []
+    out["schema_version"] = 2
+    return out
+```
+
+이유:
+
+PR21-L 이 새 engine state 를 snapshot 에 추가하므로 PR18-K 정신 (compatibility
+preservation, not re-judgment) 에 따라 정직하게 v2 bump. 기존 v1 snapshot 은
+migration 으로 자동 처리 — 사용자 코드 무수정 호환.
+
+### 33.12 Caller-facing API surface
+
+신규 public method 한 개:
+
+```python
+def register_hint_evidence_types(self, types: Iterable[int]) -> None:
+    """Register evidence type integers that the caller considers "hint-like".
+
+    Idempotent: 같은 type 을 두 번 등록해도 set 의미 그대로.
+    누적: 이전 등록은 보존 (replace 가 아님). 명시적 삭제 API 는 OOS.
+    PR21-L MVP 의 유일한 public 추가 API.
+    """
+```
+
+특징:
+- `__init__.py` export 대상 — Engine method 이므로 `from ragcore import Engine` 으로 접근
+- Built-in HINT enum 도입 아님 (Sub-decision AF)
+- idempotent + 누적 — 단순 set union 의미
+- public API 추가는 1 개 (`register_hint_evidence_types`) — Sub-decision D
+  ("types.py / __init__.py / rule_output.py 변경 0") 정신을 정확히 보존
+  (types.py / __init__.py / rule_output.py 파일 자체 변경 0)
+
+### 33.13 결정 로직 (pseudocode)
+
+```python
+def _evidence_type_modifier_for_claim(self, claim_id: int) -> float:
+    if not self._hint_evidence_types:
+        return 1.0
+    direct = [
+        ev for ev in self._evidences.values() if ev.claim_id == claim_id
+    ]
+    if not direct:
+        return 1.0
+    if all(ev.type in self._hint_evidence_types for ev in direct):
+        return _EVIDENCE_TYPE_PENALTY_MODIFIER
+    return 1.0
+```
+
+특징:
+- `_hint_evidence_types` empty → fast-path 1.0 (Sub-decision AE)
+- `direct == []` → 1.0 (Sub-decision AB)
+- private helper (engine 내부) — public API 미노출
+- read-only — engine state mutate 없음
+- 결정성 — `all()` short-circuit / `in` lookup 모두 deterministic
+
+### 33.14 결정성 (Determinism)
+
+같은 engine state 에 대해 `compute_effective_confidence(claim_id)` 는
+호출 순서/시간과 무관하게 같은 값. `_hint_evidence_types` 는 frozenset 이므로
+membership test 결정성 보장. snapshot 에서 sorted list 로 직렬화 → round-trip
+결정성 보장.
+
+### 33.15 Invariants (테스트로 잠금)
+
+PR21-L 91차 test-first 가 잠그는 invariants:
+
+#### Empty registration (Sub-decision AE)
+1. `_hint_evidence_types == frozenset()` → 모든 Claim 에 modifier = 1.0
+2. 빈 등록 상태에서 direct evidence 있어도 modifier = 1.0
+3. 빈 등록 상태에서 direct evidence 없어도 modifier = 1.0
+
+#### No direct evidence (Sub-decision AB)
+4. hint 등록 후 direct evidence 0 개 → modifier = 1.0
+
+#### All-hint → penalty (Sub-decision AC)
+5. type=1 등록, direct evidence 1 개 (type=1) → modifier = 0.9
+6. type=1 등록, direct evidence 2 개 (둘 다 type=1) → modifier = 0.9
+
+#### Mixed → no penalty (Sub-decision AC)
+7. type=1 등록, direct evidence 2 개 (type=1, type=2) → modifier = 1.0
+8. type=1 등록, direct evidence 1 개 (type=2) → modifier = 1.0
+
+#### No boost (Sub-decision AD)
+9. type=1 등록, direct evidence 100 개 (전부 type=1) → modifier = 0.9 (1.0 초과 금지)
+
+#### API contract (Sub-decision AF + AE)
+10. `register_hint_evidence_types((1, 2))` 호출 후 type 1/2 hint 인식
+11. `register_hint_evidence_types(())` 빈 호출 → no-op (empty 유지)
+12. `register_hint_evidence_types((1,))` + `register_hint_evidence_types((2,))` 누적
+13. `register_hint_evidence_types((1, 1, 1))` idempotent (중복 무시)
+
+#### Composition (status / freshness / gap / count / rule_stats × evidence_type)
+14. refuted + hint-only direct → 0.0 (status dominate)
+15. candidate + hint-only direct → base × 0.9
+16. disputed + hint-only direct → base × 0.5 × 0.9 = base × 0.45
+17. confirmed + active 1 (contradiction, strength 0.8) + hint-only direct
+    → base × 0.6 × 0.9 = base × 0.54
+18. candidate + unresolved gap + hint-only direct → base × 0.8 × 0.9
+19. candidate + active 2 (contradictions) + hint-only direct → base × 0.8 × 0.9
+20. candidate + firing 1 + hint-only direct → base × 0.9 × 0.9 = base × 0.81
+21. 7-modifier full composition (disputed + active 2 + gap + firing 1 + hint-only)
+    → base × 0.5 × 0.6 × 0.8 × 0.8 × 0.9 × 0.9 = base × 0.15552
+
+#### No state mutation
+22. `to_snapshot()` identical before/after compute
+23. `_hint_evidence_types` unchanged after compute
+24. `_lifecycle_seq` unchanged after compute
+
+#### Snapshot round-trip (Sub-decision AG)
+25. `register_hint_evidence_types((1, 2))` → `to_snapshot()` → `from_snapshot()`
+    → restored engine 의 `_hint_evidence_types == frozenset({1, 2})`
+26. `to_snapshot()["hint_evidence_types"] == [1, 2]` (sorted list, deterministic)
+27. `to_snapshot()["schema_version"] == 2`
+
+#### Schema migration (Sub-decision AH)
+28. v1 snapshot (hint_evidence_types 키 없음) → `from_snapshot` → 빈 frozenset
+29. v1 snapshot 의 다른 필드는 그대로 복원 (migration 은 hint 추가만)
+30. `_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS == frozenset({1, 2})`
+31. 알 수 없는 v3 snapshot → ValueError
+
+#### Regression boundaries (PR11-C / PR12-D / PR19-E / PR20-F 의미 보존)
+32. PR11-C freshness modifier 의미 변경 없음 (hint 미등록 / 빈 set 기준)
+33. PR12-D gap modifier 의미 변경 없음
+34. PR19-E count modifier 의미 변경 없음
+35. PR20-F rule_stats modifier 의미 변경 없음
+36. **PR10-A refute / PR11-B refute_by_freshness 동작 무변화**
+37. **PR9-A `active_contradictions_for_claim` asc 동작 무변화**
+
+#### Private constants
+38. `_EVIDENCE_TYPE_PENALTY_MODIFIER` private (ragcore + ragcore.types 미노출)
+39. `_hint_evidence_types` engine attribute private
+40. 기존 694 회귀 없음 (전체 통과로 입증)
+
+### 33.16 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| Built-in HINT / OBSERVED / DIRECT enum | Sub-decision AF — framework 가 Evidence.type 의미 소유 금지 |
+| `types.py` 에 evidence type 카테고리 추가 | Sub-decision D 영구 보존 |
+| `Evidence.type` 정수 magic threshold (예: < 100 = HINT) | Sub-decision AF — caller registration 만 |
+| OBSERVED / DIRECT 계열 boost (modifier > 1.0) | Sub-decision AD 영구 OOS |
+| `firing_count`-dependent / `strength`-dependent 함수 | binary 정신 |
+| Threshold 값 조정 (단일 hint set → multi-class hint tiering) | Sub-decision AC — MVP 잠금, 별도 PR |
+| Relation graph traversal (간접 evidence 포함) | Sub-decision AA — 별도 PR |
+| Contradiction evidence 재사용 | Sub-decision AA — PR11-C / PR19-E 가 본다 |
+| Resolved contradiction evidence 고려 | Sub-decision AA |
+| `Evidence.strength` 재계산 | Sub-decision AA — PR11-C 의 영역 |
+| RuleStats outcome ratio (PR20-F Q / R 트랙) | 별도 PR |
+| `lifecycle` 전이 / `refute` 정책 변경 | 본 PR 범위 밖 |
+| `rule_output.py` 변경 | Sub-decision D 영구 보존 |
+| `register_hint_evidence_types` 명시적 삭제 API | MVP OOS — caller restart 로 충분 |
+| `unregister_hint_evidence_types` | 동일 |
+| YAML rule schema 변경 | 본 PR 범위 밖 |
+| Built-in "weak evidence" type 카테고리 (low_quality 등) | Sub-decision AF |
+| Per-claim hint set override | MVP OOS — engine-global 만 |
+
+### 33.17 Position in flow
+
+```text
+PR20-F 까지:
+  effective = base × status × freshness × gap × count × rule_stats
+  → evidence source-quality dimension 은 effective 에 반영 안 됨
+
+PR21-L:
+  effective = base × status × freshness × gap × count × rule_stats × evidence_type
+  evidence_type_modifier:
+    if not self._hint_evidence_types:                  → 1.0  (empty registration)
+    elif no direct evidence:                           → 1.0  (Sub-decision AB)
+    elif all direct evidence.type in hint set:         → 0.9  (Sub-decision AC)
+    else:                                              → 1.0  (mixed / non-hint)
+
+  Snapshot:
+    schema_version: 1 → 2 (PR21-L)
+    new field: hint_evidence_types (sorted list[int])
+    migration v1 → v2: add empty list default
+
+  PR20-F (rule_stats) 와 PR21-L (evidence_type) 의 역할 분리:
+    rule_stats     = "이 Claim 을 만든 룰이 엔진 안에서 몇 번 firing 됐는가" (rule-global)
+    evidence_type  = "이 Claim 의 direct evidence 가 caller-등록 hint set 전용인가" (claim-local)
+    → 서로 독립 차원, 곱셈 결합
+```
+
+구현 단계 (91/92차) — **테스트 먼저 잠금 → 구현** 순서:
+- 91차: tests (위 40 invariant) — 일부 fail (evidence_type 미반영, schema v2 미존재, register_hint API 미존재), 다수 pass (PR20-F 까지의 동작 보존)
+- 92차: `_EVIDENCE_TYPE_PENALTY_MODIFIER` private constant + `_hint_evidence_types` engine state + `register_hint_evidence_types` public method + `_evidence_type_modifier_for_claim` 보조 메서드 + `compute_effective_confidence` 본문 확장 (× evidence_type_modifier 추가) + `_CURRENT_SNAPSHOT_SCHEMA_VERSION = 2` bump + `_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS = frozenset({1, 2})` + `_migrate_snapshot_v1_to_v2` step + `to_snapshot` / `from_snapshot` 의 hint_evidence_types 직렬화 — 91차 테스트 통과로 입증
