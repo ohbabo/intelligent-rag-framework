@@ -338,8 +338,12 @@ class TestGapSeverityComposition:
         # 1.0 × 1.0 × 0.6 × 0.9 × 1.0 × 1.0 × 1.0 = 0.54
         assert result == pytest.approx(0.54)
 
-    # invariant 20 — candidate + 2 unresolved + active 2 → base × 0.8 × 0.8 = 0.64
+    # invariant 20 — candidate + 2 unresolved + active 2 strength 0/0 (PR24-N 자연 만료)
     def test_candidate_with_two_gaps_and_count_two(self) -> None:
+        """PR24-N §36.6 (AX): active 2 avg 0.0 → count = 1.0 (PR19-E binary 0.8 자연 만료).
+        의미 (gap × count 결합) 보존, count 강도만 정밀화.
+        빈 강도의 contradiction 은 repeated pressure 가 아니다.
+        """
         engine = Engine()
         _, claim_id = _claim(engine, base_confidence=1.0)
         _add_unresolved_gap(engine, claim_id, required_evidence_type=801)
@@ -356,16 +360,19 @@ class TestGapSeverityComposition:
         engine.register_contradiction(claim_id, c2)
         result = engine.compute_effective_confidence(claim_id).value
         # 1.0 × 1.0 (cand) × 1.0 (freshness, strength=0) × 0.8 (gap, 2 unresolved)
-        #   × 0.8 (count, active=2) × 1.0 × 1.0 = 0.64
-        assert result == pytest.approx(0.64)
+        #   × 1.0 (count avg 0) × 1.0 × 1.0 = 0.8
+        assert result == pytest.approx(0.8)
 
-    # invariant 21 ★ — full 7-modifier composition
+    # invariant 21 ★ — full 7-modifier composition (PR24-N 자연 만료)
     def test_full_seven_modifier_composition_with_three_gaps(self) -> None:
-        """disputed + active 2 (most strength 0.8) + 3 unresolved gaps
+        """disputed + active 2 (strengths 0.3 / 0.8) + 3 unresolved gaps
         + firing 1 + hint-only direct evidence.
 
-        effective = base × 0.5 × 0.6 × 0.7 × 0.8 × 0.9 × 0.9
-                  = base × 0.13608
+        PR24-N §36.6 (AX): active 2 avg 0.55 → count 0.8625 (PR19-E binary 0.8 정제).
+        의미 (7-modifier 결합) 보존, count 강도만 정밀화.
+
+        effective = base × 0.5 × 0.6 × 0.7 × 0.8625 × 0.9 × 0.9
+                  = base × 0.14671125
         """
         engine = Engine()
         # rule_stats with firing_count = 1 → rule_stats modifier 0.9
@@ -407,8 +414,8 @@ class TestGapSeverityComposition:
             engine._claims[claim_id], status=CLAIM_STATUS_DISPUTED,
         )
         result = engine.compute_effective_confidence(claim_id).value
-        # 1.0 × 0.5 × 0.6 × 0.7 × 0.8 × 0.9 × 0.9 = 0.13608
-        assert result == pytest.approx(0.13608)
+        # 1.0 × 0.5 × 0.6 × 0.7 × 0.8625 (count avg 0.55) × 0.9 × 0.9 = 0.14671125
+        assert result == pytest.approx(0.14671125)
 
 
 # ---- 5. Read-only (Sub-decision AQ) ----------------------------------------
@@ -614,7 +621,12 @@ class TestGapSeverityPrivacyAndRegression:
         assert result == pytest.approx(0.6)
 
     def test_pr19e_count_modifier_preserved_no_gap(self) -> None:
-        """active 2 (strength 0), candidate, gap 0 → 1.0 × 0.8 × 1.0 = 0.8."""
+        """PR19-E threshold=2 보존 (PR24-N tier 강도 갱신).
+
+        PR19-E threshold=2 구조는 보존된다.
+        PR24-N §36.6 (AX): avg 0.0 → count = 1.0 (PR19-E binary 0.8 자연 만료).
+        빈 강도의 contradiction 은 repeated pressure 가 아니다.
+        """
         engine = Engine()
         _, claim_id = _claim(engine, base_confidence=1.0)
         c1 = engine.add_evidence(
@@ -628,7 +640,8 @@ class TestGapSeverityPrivacyAndRegression:
         engine.register_contradiction(claim_id, c1)
         engine.register_contradiction(claim_id, c2)
         result = engine.compute_effective_confidence(claim_id).value
-        assert result == pytest.approx(0.8)
+        # 1.0 × 1.0 × 1.0 × 1.0 × 1.0 (count avg 0) × 1.0 × 1.0 = 1.0
+        assert result == pytest.approx(1.0)
 
     def test_pr20f_rule_stats_modifier_preserved_no_gap(self) -> None:
         """firing 1, candidate, gap 0 → 1.0 × 0.9 × 1.0 = 0.9."""

@@ -111,14 +111,21 @@ class TestEffectiveConfidenceCountModifier:
 
     # invariant 5 ★
     def test_active_two_applies_count_modifier(self) -> None:
-        """active 2 → count = 0.8 추가 감쇠.
+        """active 2 + strength 0/0 → count = 1.0 (PR24-N 자연 만료).
 
-        candidate + active=2 (strengths 0.0, 0.0): freshness 영향 최소 (most recent=0)
-        → base × 1.0 × (1.0 - 0.0 × 0.5) × 1.0 (no gap) × 0.8 = base × 0.8
+        PR24-N §36.6 (AX): active >= 2 일 때
+        count_modifier = 1.0 - avg_active_strength × 0.25.
+        PR19-E binary 0.8 의 중심점(avg 0.8)은 보존된다.
+        그러나 strength 0/0 은 0.8 → 1.0 으로 자연 만료된다.
+        빈 강도의 contradiction 은 repeated pressure 가 아니다.
+
+        candidate + active=2 (strengths 0.0, 0.0):
+            freshness=1.0 / count=1.0 (avg 0.0 × 0.25 = 0.0)
+            → base × 1.0 × 1.0 × 1.0 × 1.0 = base × 1.0
         """
         engine = Engine()
         _, claim_id = _candidate_claim(engine, base_confidence=1.0)
-        # Strength 0.0 으로 freshness 영향 제거 (modifier = 1.0)
+        # Strength 0.0 으로 freshness + count 모두 1.0
         ev1 = _evidence(engine, claim_id, strength=0.0)
         ev2 = _evidence(engine, claim_id, strength=0.0)
         engine.register_contradiction(claim_id, ev1)
@@ -126,8 +133,8 @@ class TestEffectiveConfidenceCountModifier:
 
         result = engine.compute_effective_confidence(claim_id)
 
-        # 1.0 × 1.0 (cand) × 1.0 (freshness, strength=0) × 1.0 (no gap) × 0.8 (count) = 0.8
-        assert result.value == pytest.approx(0.8)
+        # 1.0 × 1.0 (cand) × 1.0 (freshness) × 1.0 (no gap) × 1.0 (count avg=0) = 1.0
+        assert result.value == pytest.approx(1.0)
 
     # invariant 8 — refuted + active any → 0.0 (status=0)
     def test_refuted_with_active_two_returns_zero(self) -> None:
@@ -165,9 +172,17 @@ class TestCountModifierThreshold:
         # 1.0 × 1.0 (conf) × (1.0 - 0.8 × 0.5) × 1.0 (no gap) × 1.0 (count, active=1) = 0.6
         assert result.value == pytest.approx(0.6)
 
-    # invariant 6 ★ — active 2 + freshness 0.8
+    # invariant 6 ★ — active 2 + freshness 0.8 (PR24-N 자연 만료)
     def test_active_two_confirmed_with_strong_freshness(self) -> None:
-        """active 2, 최신 strength 0.8 → base × 1.0 × 0.6 × 1.0 × 0.8 = base × 0.48."""
+        """active 2, strengths 0.3/0.8 → avg 0.55 → count 0.8625.
+
+        PR24-N §36.6 (AX): count_modifier = 1.0 - avg × 0.25.
+        avg = (0.3 + 0.8) / 2 = 0.55 → count = 1.0 - 0.55 × 0.25 = 0.8625.
+        의미 (freshness × count 결합) 보존, count 강도만 정밀화.
+
+        freshness 는 PR11-C 그대로: most recent (0.8) → 0.6.
+        → base × 1.0 × 0.6 × 1.0 × 0.8625 = base × 0.5175.
+        """
         engine = Engine()
         _, claim_id = _candidate_claim(engine, base_confidence=1.0)
         # 등록 순서 = id 증가 순서 — most recent = ev2 (strength=0.8)
@@ -181,15 +196,21 @@ class TestCountModifierThreshold:
 
         result = engine.compute_effective_confidence(claim_id)
 
-        # 1.0 × 1.0 × 0.6 (freshness, most recent 0.8) × 1.0 (no gap) × 0.8 (count) = 0.48
-        assert result.value == pytest.approx(0.48)
+        # 1.0 × 1.0 × 0.6 (freshness most recent 0.8) × 1.0 (no gap) × 0.8625 (count avg 0.55) = 0.5175
+        assert result.value == pytest.approx(0.5175)
 
-    # invariant 7 ★ — N 무관
+    # invariant 7 ★ — N 무관 (strength 동일 시), PR24-N 자연 만료
     def test_n_invariant_two_vs_ten_same_count_modifier(self) -> None:
-        """active 2 와 active 10 의 count_modifier 동일 (Sub-decision E-4)."""
+        """active 2 와 active 10 (모두 strength 0) → 둘 다 count 1.0.
+
+        PR24-N §36.6 (AX): N 무관 의미는 보존 (strength 동일 시 평균 동일),
+        다만 strength 0/0 의 binary 0.8 expected 는 자연 만료.
+        avg 0.0 → count = 1.0 (PR19-E 자연 만료).
+        빈 강도의 contradiction 은 repeated pressure 가 아니다.
+        """
         engine_two = Engine()
         _, claim_two = _candidate_claim(engine_two, base_confidence=1.0)
-        # 모두 strength=0.0 으로 freshness 영향 제거
+        # 모두 strength=0.0 → avg 0.0 → count = 1.0
         for _ in range(2):
             ev = _evidence(engine_two, claim_two, strength=0.0)
             engine_two.register_contradiction(claim_two, ev)
@@ -203,9 +224,9 @@ class TestCountModifierThreshold:
         result_two = engine_two.compute_effective_confidence(claim_two)
         result_ten = engine_ten.compute_effective_confidence(claim_ten)
 
-        # 둘 다 base × 0.8 (count = 0.8, N 무관)
-        assert result_two.value == pytest.approx(0.8)
-        assert result_ten.value == pytest.approx(0.8)
+        # 둘 다 base × 1.0 (count = 1.0, strength 0/0 자연 만료)
+        assert result_two.value == pytest.approx(1.0)
+        assert result_ten.value == pytest.approx(1.0)
         assert result_two == result_ten
 
 
@@ -241,11 +262,12 @@ class TestCountModifierComposition:
     """§31.12 invariant 9 ★ — 5-modifier 결합."""
 
     def test_disputed_with_active_two_and_unresolved_gap(self) -> None:
-        """disputed + active 2 (최신 0.8) + unresolved gap 1 개:
-        → base × 0.5 × 0.6 × 0.9 × 0.8 = base × 0.216.
+        """disputed + active 2 (0.3/0.8) + unresolved gap 1 개:
+        → base × 0.5 × 0.6 × 0.9 × 0.8625 = base × 0.232875.
 
-        PR23-M §35.5 (AP): 1 unresolved → tier 1 → 0.9 (PR12-D binary 0.8 정제).
-        의미 (status × freshness × gap × count 결합) 보존, gap 강도만 갱신.
+        PR23-M §35.5 (AP): 1 unresolved → tier 1 → 0.9.
+        PR24-N §36.6 (AX): active 2 avg 0.55 → count 0.8625 (PR19-E binary 0.8 정제).
+        의미 (4-modifier 결합) 보존, count 강도만 정밀화.
         """
         engine = Engine()
         _, claim_id = _candidate_claim(engine, base_confidence=1.0)
@@ -260,8 +282,8 @@ class TestCountModifierComposition:
 
         result = engine.compute_effective_confidence(claim_id)
 
-        # 1.0 × 0.5 × 0.6 × 0.9 (1 unresolved tier) × 0.8 = 0.216
-        assert result.value == pytest.approx(0.216)
+        # 1.0 × 0.5 × 0.6 × 0.9 (1 unresolved tier) × 0.8625 (count avg 0.55) = 0.232875
+        assert result.value == pytest.approx(0.232875)
 
 
 class TestCountModifierPriorBehaviorUnchanged:
