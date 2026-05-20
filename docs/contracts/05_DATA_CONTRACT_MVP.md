@@ -6069,3 +6069,352 @@ PR22-S:
 구현 단계 (95/96차) — **테스트 먼저 잠금 → 구현** 순서:
 - 95차: tests (위 40 invariant) — 일부 fail (validation 미적용, 모든 거부 케이스가 현재는 silent cast / 통과), 다수 pass (PR21-L 의 호환 케이스 / snapshot / modifier 의미 보존)
 - 96차: `register_hint_evidence_types` 본문 강화 (bool 우선 검사 + non-int reject + temp set 으로 all-or-nothing + non-iterable TypeError) — 95차 테스트 통과로 입증
+
+## 35. Gap modifier — severity tiering (MVP — count-tier, no new taxonomy)
+
+> 상태: 98/99/100차 (PR23-M). PR12-D 의 binary `gap_modifier` 를 unresolved
+> gap 개수 기반 tier 로 정제.
+> **공식 변경 없음** (여전히
+> `effective = base × status × freshness × gap × count × rule_stats × evidence_type`).
+> **`gap` 항 내부 계산만** binary 0.8 → count-tiered.
+> **state shape / snapshot schema / 새 Gap 필드 / domain taxonomy / lifecycle
+> 전이 / refute 정책 모두 본 PR 범위 밖** — 별도 PR.
+
+### 35.1 PR23-M 의 한 줄 정의
+
+> **PR23-M 은 gap 의 의미를 새로 정의하는 PR 이 아니다.**
+> **PR23-M 은 이미 존재하는 unresolved gap penalty 를 count tier 로
+> 정제하는 PR 이다.**
+
+PR11-D §24.5 의 modifier 분해 자리에서 **gap 항만** 정제. PR11-C / PR19-E /
+PR20-F / PR21-L 의 자리는 그대로. Claim 판단 / lifecycle / refute / 새 Gap
+구조 모두 변경 없음.
+
+### 35.2 핵심 명제 (§35.2)
+
+> **Gap severity is derived from unresolved gap count, not from a new taxonomy.**
+> **An unresolved gap is still information shortage, not contradiction.**
+> **PR23-M only refines the weak gap modifier from binary to tiered.**
+
+한국어:
+
+```text
+gap severity 는 unresolved gap 개수에서 파생되는 신호다.
+새 taxonomy 가 아니다.
+
+unresolved gap 은 여전히 "정보 부족" 을 의미하지, "반박" 이 아니다.
+
+PR23-M 은 약한 gap modifier 를 binary 에서 tier 로 정제할 뿐이다.
+```
+
+대조:
+
+```text
+gap_modifier ≠ "이 Claim 이 틀렸다" (← refute / status 영역)
+gap_modifier ≠ "이 Claim 에 반박이 쌓였다" (← count / freshness 영역)
+gap_modifier = "이 Claim 에 모이지 못한 evidence 가 몇 개인가?"
+```
+
+### 35.3 공식 형태 변경 없음
+
+```python
+effective = (
+    base_confidence
+    * status_modifier        # PR11-D
+    * freshness_modifier     # PR11-C
+    * gap_modifier           # PR12-D → PR23-M 내부 계산만 변경
+    * count_modifier         # PR19-E
+    * rule_stats_modifier    # PR20-F
+    * evidence_type_modifier # PR21-L
+)
+```
+
+modifier 항 7 개 / 순서 / 곱셈 결합 / `[0.0, 1.0]` 범위 / boost 금지 모두
+보존. 본 PR 은 **`gap_modifier` 내부 계산식** 만 정제.
+
+### 35.4 Sub-decision AO — Severity source = unresolved gap count
+
+`gap_modifier` 는 **claim 당 unresolved gap 개수** 만 본다.
+
+배제:
+- 새 `Gap.severity` 필드 추가
+- gap taxonomy enum (critical / major / minor / ...)
+- public severity 상수
+- LLM 기반 severity 분류
+- gap type / rule / evidence_type 별 weight table
+
+이유:
+
+PR12-D 가 이미 unresolved gap → effective 의 연결을 만들었다. PR23-M 은 그
+연결의 정제 (binary → tier) 만 한다. domain taxonomy 를 도입하는 순간 framework
+가 도메인 의미를 소유하기 시작 — PR21-L Sub-decision AF 정신 위반. 구조적
+변화로 제한.
+
+### 35.5 Sub-decision AP — Tier table
+
+```text
+| unresolved gap count | gap modifier |
+|---:|---:|
+| 0  | 1.0 |
+| 1  | 0.9 |
+| 2  | 0.8 |
+| 3+ | 0.7 |
+```
+
+특징:
+- monotonic non-increasing (개수 늘수록 약화)
+- 0.7 hard floor — gap modifier 는 절대 0.6 미만이 되지 않음
+- 1 gap 의 강도가 PR12-D 의 binary 0.8 보다 약함 (0.9) — "1 gap 은 약한 정보 부족" 강조
+- 2 gap 강도가 PR12-D 의 binary 와 동일 (0.8) — 기존 정의의 자연 지점
+- 3+ 는 누적 불확실성, 그러나 여전히 contradiction (status disputed=0.5) 보다는 약함
+
+### 35.6 Sub-decision AQ — Information shortage remains weak
+
+```text
+gap modifier 는 절대 0.0 이 되지 않는다.
+gap modifier 는 status 를 바꾸지 않는다.
+gap modifier 는 contradiction 을 만들지 않는다.
+gap modifier 는 lifecycle history 를 만들지 않는다.
+```
+
+이유:
+
+gap = "engine 에 evidence 가 부족함". claim 이 틀렸다는 의미 아님. 따라서:
+
+- 0.0 으로 보내지 않음 (refute 영역과 분리)
+- status disputed (0.5) 보다 약하게 — `0.7 > 0.5` 보장
+- lifecycle 전이 0 (PR6/PR8 동작 무변화)
+- contradiction set 무변화 (PR7/PR10-A 무관)
+- lifecycle audit event 0 (PR10-B 무관)
+
+### 35.7 Sub-decision AR — Formula shape unchanged
+
+```text
+effective = base × status × freshness × gap × count × rule_stats × evidence_type
+```
+
+PR23-M 은:
+- modifier 항 추가/삭제 없음
+- 순서 변경 없음
+- 결합 방식 (곱셈) 변경 없음
+- 다른 modifier 의미 변경 없음
+
+오직 `gap` 항의 **내부 계산식** 만 바뀐다. caller 가 보는 effective
+confidence 값은 unresolved gap 이 1 개인 claim 에 대해 PR23-M 후 PR12-D
+대비 약하게 더 커진다 (0.8 → 0.9), 3+ 개인 경우 약해진다 (0.8 → 0.7).
+
+### 35.8 Sub-decision AS — `_GAP_PENALTY_MODIFIER = 0.8` 상수 처리
+
+```python
+# Before (PR12-D)
+_GAP_PENALTY_MODIFIER = 0.8
+
+# After (PR23-M)
+_GAP_MODIFIER_NO_UNRESOLVED = 1.0       # tier 0
+_GAP_MODIFIER_ONE_UNRESOLVED = 0.9      # tier 1
+_GAP_MODIFIER_TWO_UNRESOLVED = 0.8      # tier 2
+_GAP_MODIFIER_THREE_OR_MORE_UNRESOLVED = 0.7  # tier 3+
+```
+
+기존 `_GAP_PENALTY_MODIFIER` 상수는 **제거**. PR12-D privacy 테스트 (§28
+invariant 23) 는 "ragcore / ragcore.types 에 노출되지 않는지" 만 검사하므로
+상수 제거 자체에는 영향 없음. 단:
+
+- privacy test 의 `names = ["_GAP_PENALTY_MODIFIER", ...]` 검사는 상수 부재 시에도
+  여전히 통과 (없는 것은 노출되지 않은 것 → assertion 만족) → 회귀 없음
+- 새 상수 4 개도 동일한 privacy 정신 보존 (engine 내부 private, `ragcore` /
+  `ragcore.types` 미노출)
+
+### 35.9 Sub-decision AT — PR12-D 자연 만료 테스트 명시 갱신 (100차 동봉)
+
+PR12-D 의 다음 expected 값은 **"1 unresolved gap 이면 binary 0.8" 을 가정**
+하여 작성됨 — PR23-M tier 후 자연 만료. PR11-C 의 active=2 expected 값을
+PR19-E 가 갱신한 패턴과 동일하게 100차에서 함께 갱신:
+
+| 파일 | 테스트 | PR12-D expected | PR23-M expected |
+|---|---|---:|---:|
+| `test_engine_gap_modifier.py` | `test_candidate_with_unresolved_gap_attenuates` | 0.8 | 0.9 |
+| `test_engine_gap_modifier.py` | `test_confirmed_with_unresolved_gap_attenuates` | 0.8 | 0.9 |
+| `test_engine_gap_modifier.py` | `test_disputed_with_unresolved_gap_compounds` | 0.4 | 0.45 |
+| `test_engine_gap_modifier.py` | (resolved+unresolved 혼재 1 gap 케이스) | 0.8 | 0.9 |
+| `test_engine_gap_modifier.py` | (freshness + 1 gap 결합 케이스) | freshness × 0.8 | freshness × 0.9 |
+| PR19-E / PR20-F / PR21-L composition 테스트 중 "unresolved gap 1개" 가정 | varies | × 0.8 | × 0.9 |
+
+각 갱신 위치에 명시 코멘트:
+
+```python
+# PR23-M §35.5 (AP): 1 unresolved gap → 0.9 (tier 1).
+# 의미는 PR12-D 와 동일 ("unresolved 1+ → attenuation"),
+# 강도만 binary 0.8 → tier 0.9 로 정제됨.
+```
+
+→ PR12-D invariant 의 의미 (gap → attenuation) 는 보존, 절대값만 갱신.
+
+### 35.10 Sub-decision AU — Snapshot schema bump 없음
+
+```text
+_CURRENT_SNAPSHOT_SCHEMA_VERSION = 2  (그대로)
+_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS = frozenset({1, 2})  (그대로)
+```
+
+이유:
+
+PR23-M 은 engine state shape 를 바꾸지 않는다:
+- `_gaps` / `_gap_resolutions` / `_claim_gap_refs` 구조 동일
+- `Gap` dataclass 구조 동일 (`severity` 필드 활용 안 함 — Sub-decision AO 정신)
+- snapshot 직렬화 형식 동일
+
+오직 `compute_effective_confidence` 의 `gap_modifier` 계산식만 바뀜.
+snapshot 호환성 영향 없음 → schema bump 불필요 (PR18-K 정신).
+
+### 35.11 결정 로직 (pseudocode)
+
+```python
+def _gap_modifier_for_claim(self, claim_id: int) -> float:
+    gaps = self.gaps_for_claim(claim_id)
+    if not gaps:
+        return _GAP_MODIFIER_NO_UNRESOLVED  # 1.0
+    unresolved_count = sum(
+        1 for g in gaps if self.gap_resolution(g.id) is None
+    )
+    if unresolved_count == 0:
+        return _GAP_MODIFIER_NO_UNRESOLVED  # 1.0 (all resolved)
+    if unresolved_count == 1:
+        return _GAP_MODIFIER_ONE_UNRESOLVED  # 0.9
+    if unresolved_count == 2:
+        return _GAP_MODIFIER_TWO_UNRESOLVED  # 0.8
+    return _GAP_MODIFIER_THREE_OR_MORE_UNRESOLVED  # 0.7
+```
+
+특징:
+- early-return 0 gap → 1.0
+- resolved/unresolved 분리: gap 가 다 resolved 면 modifier 1.0 (PR5 §17 / PR12-D Sub-decision T 정신)
+- 3+ 는 한 tier 로 통합 (open-ended)
+- read-only, engine state mutate 없음
+- private helper (engine 내부)
+
+### 35.12 결정성 (Determinism)
+
+같은 engine state 에 대해 같은 modifier:
+- `gaps_for_claim` 결정성 보장 (PR4 dedup index)
+- `gap_resolution` lookup 결정성 보장 (PR5 dict)
+- `sum(1 for ...)` 결정성 보장
+- tier mapping 결정성 보장
+
+### 35.13 Invariants (테스트로 잠금)
+
+PR23-M 99차 test-first 가 잠그는 invariants:
+
+#### Tier mapping (Sub-decision AP)
+1. unresolved gap 0 개 → 1.0
+2. gap 0 개 (gap 자체가 없음) → 1.0
+3. unresolved gap 1 개 → 0.9
+4. unresolved gap 2 개 → 0.8
+5. unresolved gap 3 개 → 0.7
+6. unresolved gap 10 개 → 0.7 (3+ tier 통합)
+7. unresolved gap 100 개 → 0.7 (open-ended)
+
+#### Resolution semantics (Sub-decision AP + PR12-D 정신 보존)
+8. 3 gaps, 모두 resolved → 1.0 (PR12-D Sub-decision T 정신)
+9. 3 gaps, 2 resolved + 1 unresolved → 0.9 (1 unresolved tier)
+10. 3 gaps, 1 resolved + 2 unresolved → 0.8 (2 unresolved tier)
+11. gap resolution 후 modifier tier 가 자동 복구 (1 unresolved → resolve → 0 unresolved → 1.0)
+
+#### Monotonicity / boundary
+12. tier 가 monotonic non-increasing (count 증가 시 modifier 약화만)
+13. 0.7 hard floor — 어떤 count 에서도 0.7 미만 안 됨
+14. 0.0 절대 안 됨 (Sub-decision AQ)
+15. 1.0 boost 절대 안 됨 (Sub-decision AR — formula 정신)
+
+#### Composition (status × freshness × gap × count × rule_stats × evidence_type)
+16. refuted + N gaps → 0.0 (status dominate, Sub-decision AQ + PR12-D Sub-decision P 정신)
+17. disputed + 1 unresolved gap → base × 0.5 × 0.9 = base × 0.45
+18. disputed + 2 unresolved gap → base × 0.5 × 0.8 = base × 0.40
+19. confirmed + freshness 0.8 + 1 unresolved gap → base × 0.6 × 0.9 = base × 0.54
+20. candidate + 2 unresolved gap + count 2 active → base × 0.8 × 0.8 = base × 0.64
+21. **7-modifier full composition** (disputed + active 2 (most 0.8) + 3 unresolved gaps + firing 1 + hint-only direct evidence):
+    base × 0.5 × 0.6 × 0.7 × 0.8 × 0.9 × 0.9 = **base × 0.13608**
+
+#### No state mutation (Sub-decision AQ)
+22. `to_snapshot()` identical before/after compute
+23. `_gaps` / `_gap_resolutions` / `_claim_gap_refs` 변경 없음
+24. `_lifecycle_seq` 변경 없음
+25. lifecycle history 변경 없음
+26. contradiction set 변경 없음
+
+#### Snapshot / formula shape (Sub-decision AU + AR)
+27. `to_snapshot()["schema_version"] == 2` 유지
+28. snapshot serialization format 변경 없음
+29. round-trip 후 tier 동일하게 적용 (state 보존되므로 modifier 자동 일치)
+30. `Gap` dataclass 구조 변경 없음
+
+#### Private constants (Sub-decision AS)
+31. `_GAP_MODIFIER_NO_UNRESOLVED == 1.0` private
+32. `_GAP_MODIFIER_ONE_UNRESOLVED == 0.9` private
+33. `_GAP_MODIFIER_TWO_UNRESOLVED == 0.8` private
+34. `_GAP_MODIFIER_THREE_OR_MORE_UNRESOLVED == 0.7` private
+35. 4 개 신규 상수 모두 `ragcore` / `ragcore.types` 에 미노출
+36. 구 `_GAP_PENALTY_MODIFIER` 도 미노출 (제거되었거나, 제거되었더라도 부재 = 미노출 OK)
+
+#### Public namespace (Sub-decision D + AF 정신 보존)
+37. `types.py` 변경 없음
+38. `__init__.py` 변경 없음
+39. `rule_output.py` 변경 없음
+40. public namespace 신규 export 0
+
+#### Regression boundaries (PR1~PR22-S 보존)
+41. **PR11-C freshness modifier 의미 보존** (gap 무관 케이스로 검증)
+42. **PR19-E count modifier 의미 보존** (gap 무관 케이스)
+43. **PR20-F rule_stats modifier 의미 보존**
+44. **PR21-L evidence_type modifier 의미 보존**
+45. **PR22-S strict validation API 의미 보존**
+46. **PR10-A refute / PR11-B refute_by_freshness 동작 무변화**
+47. **PR9-A `active_contradictions_for_claim` asc 동작 무변화**
+48. 기존 780 회귀 없음 (전체 통과로 입증, 단 §35.9 자연 만료 테스트 5~7 개 갱신 제외)
+
+### 35.14 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| 새 `Gap.severity` 필드 추가 | Sub-decision AO — types.py 영구 보존 |
+| Gap taxonomy enum (critical / major / minor) | Sub-decision AO — taxonomy 소유 금지 |
+| Public severity 상수 | Sub-decision D + AS — private 유지 |
+| LLM 기반 severity 분류 | Sub-decision AO — domain semantics 회피 |
+| Gap type / rule / evidence_type 별 weight table | binary → tier MVP, multi-class weight 는 별도 PR |
+| Lifecycle 전이 (gap → refuted 자동) | Sub-decision AQ 영구 |
+| Gap modifier → contradiction 등록 | Sub-decision AQ |
+| Tier 경계 조정 (3 → N) | MVP 잠금, 별도 PR |
+| Tier 값 조정 (0.9/0.8/0.7 → 다른 값) | MVP 잠금 |
+| Continuous gap modifier (`f(count)` 함수) | tier MVP, 별도 PR |
+| Resolved gap 도 약하게 감쇠 (resolved 도 "한때 부족했음") | Sub-decision AP — resolved 는 영향 없음 (PR5 정신) |
+| Snapshot schema v3 bump | Sub-decision AU — state shape 무변화 |
+| Public `_GAP_MODIFIER_*` 상수 export | Sub-decision AS — engine 내부 private |
+| Per-rule / per-gap-type tier override | engine-global tier 만 |
+| RuleStats outcome ratio (Q/R 트랙) | 별도 PR |
+| `rule_output.py` 변경 | Sub-decision D 영구 |
+
+### 35.15 Position in flow
+
+```text
+PR12-D 까지:
+  gap_modifier:
+    if no gaps OR all resolved → 1.0
+    else (1+ unresolved)        → 0.8 (binary)
+
+PR23-M:
+  gap_modifier:
+    unresolved_count = count(gap for gap in claim if not resolved)
+    if unresolved_count == 0 → 1.0   (PR12-D Sub-decision T 정신 보존)
+    if unresolved_count == 1 → 0.9   (신규 tier — 1 gap 은 약함)
+    if unresolved_count == 2 → 0.8   (PR12-D binary 와 동일 지점)
+    if unresolved_count >= 3 → 0.7   (누적 불확실성, hard floor)
+
+  PR12-D 와 PR23-M 의 의미 분리:
+    PR12-D: "unresolved gap 이 있다 / 없다" (binary)
+    PR23-M: "unresolved gap 이 얼마나 쌓였는가" (count tier)
+    → 두 의미가 같은 modifier 자리에서 표현, 다른 강도 분포
+```
+
+구현 단계 (99/100차) — **테스트 먼저 잠금 → 구현** 순서:
+- 99차: tests (위 48 invariant) — 일부 fail (1/2/3 unresolved tier 미반영, 4 신규 상수 미존재), 다수 pass (PR1~PR22-S 의 다른 modifier / state / snapshot / lifecycle / public namespace 보존)
+- 100차: 4 개 private 상수 + `_gap_modifier_for_claim` helper + `compute_effective_confidence` 의 gap 항 helper 호출로 교체 + 구 `_GAP_PENALTY_MODIFIER` 제거 + §35.9 자연 만료 테스트 5~7 개 PR12-D expected 갱신 (0.8 → 0.9 등) — 99차 테스트 통과로 입증
