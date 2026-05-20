@@ -4571,3 +4571,233 @@ PR-H:
 구현 단계 (75/76차) — **테스트 먼저 잠금 → 구현** 순서:
 - 75차: tests (위 22 invariant) — `AttributeError` 로 fail (to_snapshot / from_snapshot 미구현). 단, "PR1~PR12-D 의미 무변화" 검증은 이미 pass
 - 76차: `to_snapshot` instance method + `from_snapshot` classmethod 구현 — 75차 테스트 통과로 입증
+
+## 30. Snapshot migration (MVP — framework only)
+
+> 상태: 78/79/80차 (PR18-K). PR17 의 `schema_version` 자리에 migration
+> framework 만 잠금.
+> **실제 v0→v1 migration / v1→v2 migration / 자동 추론 / partial migration /
+> 데이터 복구 / rule 재실행 / lifecycle 재판단 / file IO 모두 본 PR 범위 밖**
+> — PR19+.
+
+### 30.1 PR18-K 의 한 줄 정의
+
+> **PR18-K 는 snapshot 의 호환성 보정 framework 만 잠그는 PR 이다. 실제
+> migration 함수는 등록하지 않는다 (현재 schema_version=1 만 존재).**
+
+PR17 §29 가 `schema_version` 자리를 잠갔고, §29.5 가 "migration 로직은 PR-H+"
+명시. PR18-K 가 그 자리에 framework 도입.
+
+### 30.2 핵심 명제
+
+```text
+Snapshot migration preserves compatibility, not truth.
+It may reshape snapshot structure, but it must not re-run rules,
+recompute lifecycle transitions, or reinterpret evidence.
+```
+
+한국어:
+
+```text
+Snapshot migration 은 호환성을 보존한다. 진실 판단을 다시 하지 않는다.
+
+구조는 바꿀 수 있지만 의미를 재계산하면 안 된다. claim / evidence /
+lifecycle 을 다시 판단하는 과정이 아니다.
+```
+
+PR17 의 정신 ("state preservation, not re-judgment") 을 **compatibility
+preservation, not re-judgment** 로 확장.
+
+### 30.3 Sub-decision K-1 — Framework only
+
+| 옵션 | 채택 | 이유 |
+|---|---|---|
+| **(K-1-framework-only)** | ✓ | 현재 v1 만 존재. 가짜 migration 도입 회피 |
+| (K-1-with-first-migration) | ✗ | v2 가 아직 없으므로 가상 migration 은 의미 X |
+
+PR18-K MVP 는 **migration 호출 경로만** 잠금. 실제 migrator 등록은 PR19+ 에서
+schema 변경이 일어나면 그 시점에.
+
+### 30.4 Sub-decision K-2 — Current schema version
+
+```python
+_CURRENT_SNAPSHOT_SCHEMA_VERSION = 1
+_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS: frozenset[int] = frozenset({1})
+```
+
+- engine 내부 private (PR17 의 schema_version=1 hardcoded 값을 상수화)
+- 미래에 schema 변경 시 두 상수만 업데이트
+
+### 30.5 Sub-decision K-3 — Missing schema_version → ValueError
+
+PR17 §29.5 의 동작 그대로 유지:
+
+```python
+if "schema_version" not in snapshot:
+    raise ValueError("snapshot missing schema_version")
+```
+
+### 30.6 Sub-decision K-4 — Future / unsupported version → ValueError
+
+```python
+version = snapshot["schema_version"]
+if version not in _SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS:
+    raise ValueError(
+        f"unsupported schema_version: {version}; "
+        f"supported: {sorted(_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS)}"
+    )
+```
+
+PR17 의 `version != 1 → ValueError` 의 일반화. 미래에 supported 가 `{1, 2}`
+로 확장되면 자연 적용.
+
+### 30.7 Sub-decision K-5 — Version 1 → identity migration
+
+```python
+def _migrate_snapshot_to_current(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Apply migration path to bring snapshot up to current schema version.
+
+    schema_version=1 (현재) → identity (no transformation).
+    미래 (v2 도입 시): v1 → v2 변환 step 추가.
+    """
+    # MVP: identity for v1
+    return snapshot
+```
+
+caller transparent — `from_snapshot` 안에서 자동 호출.
+
+### 30.8 Sub-decision K-6 — Migration 은 pure function (dict → dict)
+
+```text
+input:  snapshot dict
+output: snapshot dict (current version 으로 변환됨)
+side effect: 없음
+engine state: 직접 건드리지 않음
+```
+
+이유:
+- 결정성 보장 (같은 input dict → 같은 output dict)
+- 테스트 친화 (engine 인스턴스 없이도 migration 테스트 가능)
+- 미래 migration chain (1 → 2 → 3) 의 step-by-step 구성 자연스러움
+
+### 30.9 Sub-decision K-7 — from_snapshot 의 migration step 통합
+
+```python
+@classmethod
+def from_snapshot(cls, snapshot: dict[str, Any]) -> "Engine":
+    if "schema_version" not in snapshot:
+        raise ValueError(...)
+    version = snapshot["schema_version"]
+    if version not in _SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS:
+        raise ValueError(...)
+    snapshot = _migrate_snapshot_to_current(snapshot)  # ← PR18-K 신규 step
+    # 이후 PR17 의 restore 로직 (변경 없음)
+    ...
+```
+
+caller 코드 변경 0. `from_snapshot` 시그니처 / KeyError-style ValueError
+/ return type 모두 PR17 그대로.
+
+### 30.10 API — public 노출 안 함
+
+PR18-K 가 추가하는 것은 **engine 내부 private 만**:
+
+- `_CURRENT_SNAPSHOT_SCHEMA_VERSION` (module level private)
+- `_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS` (module level private)
+- `_migrate_snapshot_to_current` (module level private)
+
+`ragcore` / `ragcore.types` / `ragcore.__init__` 새 export 없음.
+
+caller 시점에서 PR18-K 는 **invisible** — `to_snapshot` / `from_snapshot` 의
+public 시그니처와 의미 그대로.
+
+### 30.11 결정성 (Determinism)
+
+```text
+같은 snapshot dict → _migrate_snapshot_to_current → 항상 같은 output dict
+```
+
+PR18-K MVP 의 migration 은 identity 라 trivial 하게 결정적. 미래 migration
+도입 시 같은 invariant 보장 필요.
+
+### 30.12 보존 (impact 없음)
+
+| | PR18-K 영향 |
+|---|---|
+| `Claim` / `Evidence` / `Gap` / `Relation` / `ScoreValue` / `ClaimLifecycleEvent` dataclass | 없음 |
+| `to_snapshot` 시그니처 / 동작 | 없음 (schema_version=1 그대로 출력) |
+| `from_snapshot` 시그니처 / KeyError-style ValueError / return type | 없음 |
+| `from_snapshot` 의 round-trip identity (PR17) | 없음 |
+| `_next_id` / `_entities` / `_claims` / ... 모든 engine state | 없음 |
+| 5 lifecycle API + PR11-B sibling | 없음 |
+| `compute_effective_confidence` (4-modifier composition) | 없음 |
+| `register_contradiction*` | 없음 |
+| PR11-A query / PR9-A asc / PR5 gap_resolution | 없음 |
+| All private constants (PR10-A, PR11-D, PR11-C, PR12-D) | 없음 |
+| `CLAIM_STATUS_MAP` / `_ALLOWED_CLAIM_STATUSES` | 없음 (Sub-decision D 정합) |
+| `fire_rule*` / `RuleStats` | 없음 |
+| public exports | 없음 (PR18-K 의 모든 추가는 private) |
+| 외부 dependency | 없음 |
+
+PR18-K 는 **engine 내부 private framework 만 추가**. caller 시점에서 invisible.
+
+### 30.13 Invariants (테스트로 잠금)
+
+1. `_CURRENT_SNAPSHOT_SCHEMA_VERSION` 이 정확히 `1` (현재)
+2. `_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS` 가 `{1}` 포함
+3. `_migrate_snapshot_to_current` 는 callable
+4. **v1 snapshot → migration identity** (입력과 동일한 dict 반환)
+5. **PR17 round-trip identity 보존** — `from_snapshot(to_snapshot(engine))` 모든 query 동일 (PR17 의 22 invariant 그대로 유효)
+6. **missing schema_version → ValueError** (PR17 §29 동작 보존)
+7. **unsupported version (예: 99) → ValueError** (PR17 동작 일반화)
+8. **version=2 (currently unsupported) → ValueError** (미래 호환성 위치)
+9. Migration 의 결정성 — 같은 input dict 두 번 호출 → 같은 output dict
+10. Migration 은 input dict 를 mutate 하지 않음 (또는 deep equality 보존)
+11. `_migrate_snapshot_to_current`, `_CURRENT_SNAPSHOT_SCHEMA_VERSION`,
+    `_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS` 모두 **public export 안 됨**
+    (ragcore + ragcore.types)
+12. `to_snapshot` 의 출력은 항상 `schema_version=1` (PR17 동작 보존)
+13. **PR17 의 22 invariant 모두 유효** (PR18-K 가 PR17 의미 변경 0)
+14. 기존 636 회귀 없음 (전체 통과로 입증)
+
+### 30.14 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| 실제 v0 → v1 migration | v0 snapshot 이 존재하지 않음 (PR17 이 v1 부터 시작) |
+| v1 → v2 migration | v2 가 아직 정의되지 않음 — PR19+ 에서 schema 변경 시 |
+| 자동 추론 migration | 명시성 원칙 — caller 가 명시적 등록 |
+| Partial migration | 별도 결정점 |
+| 데이터 복구 (corrupt snapshot 복구) | 의미 추론 → core 밖 |
+| Rule 재실행 / lifecycle 재판단 | PR17 §29.2 / PR18-K §30.2 정신 |
+| File IO | PR17 Sub-decision H-2 일관 (caller 책임) |
+| Migration registry public API (caller 가 직접 migrator 등록) | engine 내부 private — 미래 정책 |
+| Pickle / Python-specific migration | PR17 Sub-decision H-2 일관 |
+| Migration 의 cryptographic verification | core 밖 |
+
+### 30.15 Position in flow
+
+```text
+PR17 까지:
+  to_snapshot() → schema_version=1
+  from_snapshot(dict) → version != 1 또는 missing → ValueError
+  → migration 자리 명시되어 있지만 framework 없음
+
+PR18-K:
+  to_snapshot() → schema_version=1 (변경 없음)
+  from_snapshot(dict):
+    1. missing schema_version → ValueError
+    2. version not in {1} → ValueError
+    3. _migrate_snapshot_to_current(snapshot) → identity for v1
+    4. PR17 restore 로직 (변경 없음)
+
+  미래 (PR19+):
+    _SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS = {1, 2}
+    _CURRENT_SNAPSHOT_SCHEMA_VERSION = 2
+    _migrate_snapshot_to_current 가 v1 → v2 step 적용
+    to_snapshot() → schema_version=2 출력
+```
+
+구현 단계 (79/80차) — **테스트 먼저 잠금 → 구현** 순서:
+- 79차: tests (위 14 invariant) — 일부 fail (constants 미존재, future version 시 KeyError-style 위치 다름), 다수 pass (PR17 동작 그대로)
+- 80차: `_CURRENT_SNAPSHOT_SCHEMA_VERSION` / `_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS` / `_migrate_snapshot_to_current` + `from_snapshot` 의 migration step 통합 — 79차 테스트 통과로 입증
