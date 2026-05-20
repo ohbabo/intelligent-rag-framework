@@ -5245,7 +5245,8 @@ rule_output.py / 기존 modifier 4 개 변경 0.
 — PR17 round-trip 자동 보존.
 
 `_rule_stats_modifier_for_claim` 은 **stateless 계산** 이므로 snapshot 에
-저장할 새 필드 없음. PR18-K schema_version 도 변경 없음 (여전히 `2`).
+저장할 새 필드 없음. PR18-K snapshot schema version 변경 없음 — 정책 의미는
+"bump 없음" 이며, 실제로 `_CURRENT_SNAPSHOT_SCHEMA_VERSION` 은 PR18-K 시점 그대로 유지된다 (현재 `1`).
 
 ### 32.11 결정성 (Determinism)
 
