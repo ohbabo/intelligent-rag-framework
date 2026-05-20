@@ -6418,3 +6418,372 @@ PR23-M:
 구현 단계 (99/100차) — **테스트 먼저 잠금 → 구현** 순서:
 - 99차: tests (위 48 invariant) — 일부 fail (1/2/3 unresolved tier 미반영, 4 신규 상수 미존재), 다수 pass (PR1~PR22-S 의 다른 modifier / state / snapshot / lifecycle / public namespace 보존)
 - 100차: 4 개 private 상수 + `_gap_modifier_for_claim` helper + `compute_effective_confidence` 의 gap 항 helper 호출로 교체 + 구 `_GAP_PENALTY_MODIFIER` 제거 + §35.9 자연 만료 테스트 5~7 개 PR12-D expected 갱신 (0.8 → 0.9 등) — 99차 테스트 통과로 입증
+
+## 36. Count modifier — strength averaging (MVP — continuous repeated pressure)
+
+> 상태: 102/103/104차 (PR24-N). PR19-E 의 binary `_COUNT_PENALTY_MODIFIER = 0.8` 을
+> active contradiction average strength 기반 continuous 로 정제.
+> **공식 변경 없음** (여전히
+> `effective = base × status × freshness × gap × count × rule_stats × evidence_type`).
+> **`count` 항 내부 계산만** binary 0.8 → strength-averaged continuous.
+> **state shape / snapshot schema / Evidence·Claim·Gap dataclass / lifecycle 전이 /
+> refute 정책 / source diversity / independence_class / max·sum strength 모두 본 PR
+> 범위 밖** — 별도 PR.
+
+### 36.1 PR24-N 의 한 줄 정의
+
+> **PR24-N 은 count modifier 의 의미를 새로 만드는 PR 이 아니다.**
+> **PR24-N 은 PR19-E 의 binary repeated-pressure attenuation 을**
+> **active contradiction strength average 기반 continuous modifier 로 정제하는 PR 이다.**
+
+PR11-D §24.5 의 modifier 분해 자리에서 **count 항만** 정제. PR11-C / PR12-D /
+PR20-F / PR21-L / PR22-S / PR23-M 의 자리는 그대로. Claim 판단 / lifecycle /
+refute / 새 Evidence 구조 모두 변경 없음.
+
+### 36.2 핵심 명제 (§36.2)
+
+```text
+Count modifier remains a repeated-pressure signal.
+PR24-N refines repeated pressure from binary count threshold
+to average strength of active contradictions.
+```
+
+한국어:
+
+```text
+count modifier 는 여전히 "반복 압력" 신호다.
+PR24-N 은 반복 압력을 단순 개수 기준에서
+활성 contradiction 들의 평균 강도 기준으로 정제한다.
+```
+
+대조:
+
+```text
+PR19-E: "active count >= 2 인가?" (binary)
+PR24-N: "active count >= 2 이고, 그 활성 contradiction 들의 평균 강도가 얼마인가?" (continuous)
+PR23-M (gap): "unresolved gap count 가 얼마인가?" (tier)
+```
+
+PR23-M 의 정제 패턴 (binary → tier) 과 PR24-N 의 정제 패턴 (binary →
+continuous) 은 **같은 정신**:
+- PR12-D / PR19-E 의 의미 (attenuation 의 존재 자체) 는 보존
+- 강도만 더 정밀화 (개수 또는 강도 분포에 따라)
+
+### 36.3 공식 형태 변경 없음
+
+```python
+effective = (
+    base_confidence
+    * status_modifier        # PR11-D
+    * freshness_modifier     # PR11-C
+    * gap_modifier           # PR12-D + PR23-M (tier)
+    * count_modifier         # PR19-E → PR24-N (continuous)
+    * rule_stats_modifier    # PR20-F
+    * evidence_type_modifier # PR21-L (+ PR22-S 강화)
+)
+```
+
+modifier 항 7 개 / 순서 / 곱셈 결합 / `[0.0, 1.0]` 범위 / boost 금지 모두
+보존. 본 PR 은 **`count_modifier` 내부 계산식** 만 정제.
+
+### 36.4 Sub-decision AV — Name / source / input 유지
+
+`count_modifier` 이름 / 입력 source / threshold=2 정신 모두 PR19-E 그대로:
+
+- 이름: `count_modifier` (변경 없음)
+- 입력 source: `active_contradictions_for_claim(claim_id)` (PR9-A asc, PR19-E 그대로)
+- threshold: active count 0~1 → modifier 1.0 (PR19-E §31.5 Sub-decision E-2 보존)
+- active count >= 2 부터 modifier 가 1.0 미만이 됨
+
+이유:
+
+PR11-C 가 active 1 개 일 때 most recent strength 기반으로 단독 처리. PR19-E 의
+threshold=2 정신은 "count modifier 는 freshness 와 독립인 추가 repeated pressure
+신호" 의 핵심 — 보존.
+
+### 36.5 Sub-decision AW — Active count >= 2 일 때만 continuous 적용
+
+```text
+active_count < 2 → count_modifier = 1.0 (PR19-E 와 동일)
+active_count >= 2 → count_modifier = 1.0 - average_strength × _COUNT_STRENGTH_PENALTY_WEIGHT
+```
+
+active count 가 0/1 인 경우 modifier 는 항상 1.0 — PR11-C freshness 가 단독
+처리. PR24-N 은 PR19-E 가 손대지 않던 영역 (active 0/1) 을 손대지 않는다.
+
+### 36.6 Sub-decision AX — Average strength 공식 + penalty weight 0.25
+
+```python
+_COUNT_STRENGTH_PENALTY_WEIGHT = 0.25
+
+# active_count >= 2 일 때:
+active_evidences = [self._evidences[ev_id]
+                    for ev_id in self.active_contradictions_for_claim(claim_id)]
+average_strength = mean(ev.strength.value for ev in active_evidences)
+count_modifier = 1.0 - average_strength * _COUNT_STRENGTH_PENALTY_WEIGHT
+```
+
+범위:
+- `strength ∈ [0.0, 1.0]` 이므로 `average_strength ∈ [0.0, 1.0]`
+- `count_modifier ∈ [0.75, 1.0]` (max 25% attenuation)
+
+핵심 지점:
+
+| average_strength | count_modifier |
+|---:|---:|
+| 0.0 | 1.0 |
+| 0.4 | 0.9 |
+| **0.8** | **0.8** ← PR19-E binary 와 동일 |
+| 1.0 | 0.75 |
+
+`average_strength = 0.8` 지점이 **PR19-E binary 0.8 의 중심점 재현**.
+
+### 36.7 Sub-decision AY — 중심점 보존 (PR19-E 0.8 = avg 0.8)
+
+PR24-N 의 정제 설계 원칙:
+
+```text
+average_strength = 0.8 → count_modifier = 0.8 (PR19-E 와 동일)
+```
+
+이 지점이 PR19-E 의 binary 0.8 을 자연 재현. PR23-M Sub-decision AP 가 "2
+unresolved → 0.8" 으로 PR12-D 의 binary 중심점을 자연 보존한 것과 동일 정신.
+
+### 36.8 Sub-decision AZ — `_COUNT_PENALTY_MODIFIER = 0.8` 제거 + 신규 weight 도입
+
+```python
+# Removed (PR19-E)
+_COUNT_PENALTY_MODIFIER = 0.8
+
+# Added (PR24-N)
+_COUNT_STRENGTH_PENALTY_WEIGHT = 0.25
+```
+
+PR19-E privacy 정신은 보존 — 신규 상수도 engine 내부 private, `ragcore` /
+`ragcore.types` 미노출.
+
+### 36.9 Sub-decision BA — Snapshot schema bump 없음
+
+```text
+_CURRENT_SNAPSHOT_SCHEMA_VERSION = 2  (그대로)
+_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS = frozenset({1, 2})  (그대로)
+```
+
+PR24-N 은 engine state shape 를 바꾸지 않는다:
+- `_contradictions` / `_resolved_contradictions` / `_evidences` 구조 동일
+- `Evidence` dataclass 구조 동일 (이미 존재하는 `strength` 필드 활용)
+- snapshot 직렬화 형식 동일
+
+오직 `compute_effective_confidence` 의 `count_modifier` 계산식만 변경.
+PR18-K 정신: 의미 있는 변화 때만 bump.
+
+### 36.10 Sub-decision BB — PR19-E 자연 만료 테스트 명시 갱신 (104차 동봉)
+
+PR19-E 의 "active 2 이상 → binary 0.8" 가정한 expected 값들이 자연 만료.
+**PR19-E test 중 `strength = 0.0` 인 active 들이 가장 큰 의미 변화**:
+
+```text
+PR19-E: active 2 + strength 0/0 → count_modifier = 0.8 (압력 있음)
+PR24-N: active 2 + strength 0/0 → count_modifier = 1.0 (압력 없음)
+```
+
+이는 PR23-M 자연 만료 (1 gap binary 0.8 → tier 0.9) 보다 큰 의미 변화 —
+"빈 강도의 contradiction 은 repeated pressure 가 아니다" 라는 PR24-N 의 정제
+정신을 반영. 의미 보존 명제는:
+
+```text
+PR19-E 의 "repeated pressure" 의미는 강도가 있을 때에만 살아 있다.
+strength 0 인 contradiction 은 압력 신호가 아니다.
+```
+
+예상 자연 만료 위치 (104차에서 함께 갱신):
+
+| 파일 | 갱신 케이스 |
+|---|---|
+| `test_engine_count_modifier.py` | active 2 + strength 0.0/0.0 → 1.0 / active 2 + 0.3/0.8 (avg 0.55) → 0.6 × 0.8625 = 0.5175 / N invariant (2 vs 10, strength 0 동일하게 → 1.0) / refuted dominate (pass 유지) / composition 결합 |
+| `test_engine_rule_stats_modifier.py` | active 2 + strength 0/0 + firing 1 (composition) |
+| `test_engine_evidence_type_modifier.py` | active 2 + strength 0/0 + hint-only / full 7-modifier |
+| `test_engine_gap_severity_tiering.py` | active 2 + strength 0/0 + 2 gaps / 7-modifier full (avg 0.55) |
+| `test_engine_persistence.py` | round-trip with all modifiers (active 2 케이스 포함시) |
+
+각 갱신 위치에 명시 코멘트:
+
+```python
+# PR24-N §36.6 (AX): active >= 2 일 때 count_modifier = 1.0 - avg × 0.25.
+# PR19-E binary 0.8 의 중심점 (avg 0.8) 은 보존되고,
+# 강도가 약한 contradiction 들은 더 약한 압력으로 정제됨.
+```
+
+PR19-E "N invariant" 테스트 (2 vs 10 같은 값) 는 strength 가 동일하면 PR24-N
+에서도 같은 값이 나오므로 의미는 보존 — strength 0 → 둘 다 1.0 (값만 갱신).
+
+### 36.11 결정 로직 (pseudocode)
+
+```python
+def _count_modifier_for_claim(self, claim_id: int) -> float:
+    active_evidence_ids = self.active_contradictions_for_claim(claim_id)
+    active_count = len(active_evidence_ids)
+    if active_count < 2:
+        return 1.0
+    total_strength = sum(
+        self._evidences[ev_id].strength.value
+        for ev_id in active_evidence_ids
+    )
+    average_strength = total_strength / active_count
+    return 1.0 - average_strength * _COUNT_STRENGTH_PENALTY_WEIGHT
+```
+
+특징:
+- early-return active_count < 2 → 1.0 (Sub-decision AV / AW)
+- `active_contradictions_for_claim` 사용 (PR9-A asc — PR19-E 와 동일 source)
+- evidence strength 평균 (Python float 산술, deterministic)
+- private helper (engine 내부)
+- read-only — engine state mutate 없음
+
+### 36.12 결정성 (Determinism)
+
+- `active_contradictions_for_claim` 결정성 보장 (PR9-A asc)
+- `_evidences` lookup 결정성 보장 (PR1 dict)
+- 산술 평균은 동일 input 에 동일 결과
+- `_COUNT_STRENGTH_PENALTY_WEIGHT` 모듈 레벨 상수
+
+### 36.13 Invariants (테스트로 잠금)
+
+PR24-N 103차 test-first 가 잠그는 invariants:
+
+#### Threshold 보존 (Sub-decision AV / AW)
+1. active count 0 → count_modifier = 1.0
+2. active count 1 (strength any) → count_modifier = 1.0
+3. active count 1 + strength 1.0 → count_modifier = 1.0 (threshold 미달)
+
+#### Continuous attenuation (Sub-decision AX)
+4. active 2, strength 0.0/0.0 → 1.0 - 0.0 × 0.25 = 1.0 ★
+5. active 2, strength 0.4/0.4 → 1.0 - 0.4 × 0.25 = 0.9 ★
+6. active 2, strength 0.8/0.8 → 1.0 - 0.8 × 0.25 = 0.8 (PR19-E 중심점)
+7. active 2, strength 1.0/1.0 → 1.0 - 1.0 × 0.25 = 0.75 ★
+8. active 2, strength 0.3/0.8 → avg 0.55 → 1.0 - 0.55 × 0.25 = 0.8625 ★
+9. active 3, strength 0.0/0.5/1.0 → avg 0.5 → 0.875 ★
+10. active 10, strength all 0.8 → avg 0.8 → 0.8 (N 무관 strength 동일 시)
+
+#### Center point preservation (Sub-decision AY)
+11. PR19-E 의 "active 2 → 0.8" 은 PR24-N 에서 "active 2 + avg 0.8 → 0.8" 로 자연 재현
+12. avg 0.8 에서 modifier 0.8 ± 1e-9 (floating-point invariant)
+
+#### Boundary / no boost (Sub-decision AX)
+13. count_modifier ∈ [0.75, 1.0] 모든 input 에 대해
+14. count_modifier 절대 0.0 안 됨
+15. count_modifier 절대 > 1.0 안 됨
+
+#### Composition (status × freshness × gap × count × rule_stats × evidence_type)
+16. refuted + active 2 (any strength) → 0.0 (status dominate)
+17. candidate + active 2, strength 0.8/0.8 → base × 1.0 × 0.6 × 1.0 × 0.8 = base × 0.48
+    (PR11-C × PR24-N composition, PR19-E 와 동일)
+18. confirmed + active 2, strength 0.0/0.0 → base × 1.0 × 1.0 × 1.0 × 1.0 = base × 1.0
+    (PR11-C 도 strength=0 most recent 이므로 1.0, PR24-N 도 avg=0 이므로 1.0) ★
+19. disputed + active 2 (avg 0.55) + 1 unresolved gap + firing 1 + hint-only
+    → base × 0.5 × 0.6 × 0.9 × 0.8625 × 0.9 × 0.9 ≈ base × 0.18860 ★
+20. **7-modifier full composition with active 2 (avg 0.8) + 3 gaps + firing 1 + hint-only**
+    → base × 0.5 × 0.6 × 0.7 × 0.8 × 0.9 × 0.9 = base × 0.13608
+    (PR23-M 와 동일 — strength 0.3/0.8 → avg 0.55, 그러나 PR23-M 작성 시 짜놓은 케이스는
+    most recent strength=0.8 + avg 0.8 로 설계되어 동일 값) ★
+
+#### Source preservation (Sub-decision AV)
+21. PR9-A `active_contradictions_for_claim` asc 동작 무변화
+22. PR11-C freshness modifier 의미 변경 없음 (active 1 일 때)
+23. `_resolved_contradictions` 의 evidence 는 count 에서 제외 (PR9-A 정신 보존)
+
+#### No state mutation
+24. `to_snapshot()` identical before/after compute
+25. `_contradictions` / `_resolved_contradictions` / `_evidences` 변경 없음
+26. `_lifecycle_seq` 변경 없음
+27. lifecycle history 변경 없음
+
+#### Snapshot / formula shape (Sub-decision BA)
+28. `to_snapshot()["schema_version"] == 2` 유지
+29. snapshot keys 집합 변경 없음
+30. round-trip 후 동일 strength average 적용
+31. `Evidence` dataclass 구조 변경 없음
+
+#### Private constants (Sub-decision AZ)
+32. `_COUNT_STRENGTH_PENALTY_WEIGHT == 0.25` private ★
+33. 신규 상수 `ragcore` / `ragcore.types` 미노출
+34. 구 `_COUNT_PENALTY_MODIFIER` 미노출 (제거됨)
+
+#### Public namespace (Sub-decision D + AF 정신 보존)
+35. `types.py` 변경 없음
+36. `__init__.py` 변경 없음
+37. `rule_output.py` 변경 없음
+38. public namespace 신규 export 0
+
+#### Regression boundaries (PR1~PR23-M 보존)
+39. PR11-C freshness modifier 의미 보존 (active 1 케이스)
+40. PR12-D + PR23-M gap modifier 의미 보존 (active 0 케이스)
+41. PR20-F rule_stats modifier 의미 보존
+42. PR21-L evidence_type modifier 의미 보존
+43. PR22-S strict validation API 의미 보존
+44. PR10-A refute / PR11-B refute_by_freshness 동작 무변화
+45. PR17 round-trip identity 보존
+46. PR23-M gap tier 동작 무변화 (active 무관 케이스)
+47. 기존 827 회귀 없음 (전체 통과로 입증, 단 §36.10 자연 만료 테스트 갱신 제외)
+
+### 36.14 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| active count 1 에도 count modifier 적용 | Sub-decision AV / AW — PR11-C 영역 |
+| Max strength 사용 (`max(strengths)`) | average 정신, 별도 PR (의미가 다름) |
+| Sum strength 사용 (`sum(strengths)`) | average 정신, threshold 효과 흐림 |
+| Source diversity (서로 다른 source 가중치) | independence_class 정의 필요, 별도 PR |
+| `independence_class` 기반 count | 별도 PR |
+| Contradiction type 별 weight | 별도 PR — taxonomy 소유 회피 (Sub-decision AF 정신) |
+| Penalty weight 조정 (0.25 → 다른 값) | MVP 잠금 |
+| `f(count)` 비선형 함수 결합 | 별도 PR |
+| Resolved contradiction 도 약하게 반영 | PR9-A active 정신 — resolved 는 제외 |
+| Lifecycle 전이 (count → refuted 자동) | Sub-decision AQ 정신 (PR23-M) |
+| Snapshot schema v3 bump | Sub-decision BA — state shape 무변화 |
+| Public `_COUNT_STRENGTH_PENALTY_WEIGHT` export | Sub-decision AZ — engine 내부 private |
+| RuleStats outcome ratio (Q/R 트랙) | 별도 PR |
+| `rule_output.py` 변경 | Sub-decision D 영구 |
+| Per-rule / per-claim weight override | engine-global weight 만 |
+
+### 36.15 Position in flow
+
+```text
+PR19-E 까지:
+  count_modifier:
+    active_count = len(active_contradictions_for_claim(claim_id))
+    if active_count >= 2 → 0.8 (binary)
+    else → 1.0
+
+PR24-N:
+  count_modifier:
+    active_ids = active_contradictions_for_claim(claim_id)
+    active_count = len(active_ids)
+    if active_count < 2 → 1.0
+    else:
+        avg_strength = mean(self._evidences[id].strength.value for id in active_ids)
+        return 1.0 - avg_strength × _COUNT_STRENGTH_PENALTY_WEIGHT (0.25)
+        # → range [0.75, 1.0]
+
+  PR19-E 와 PR24-N 의 의미 분리:
+    PR19-E: "active 가 2+ 이면 무조건 0.8"
+    PR24-N: "active 가 2+ 이면 그 평균 강도에 비례한 attenuation"
+    → 중심점 (avg 0.8) 에서 PR19-E 와 동일, 그 외에서는 정제 (강도 약하면 약하게, 강도 강하면 강하게)
+
+  PR11-C / PR24-N 의 역할 분리:
+    PR11-C: most recent active strength (1 개 일 때 단독)
+    PR24-N: active 들의 평균 strength (2 개 이상일 때 추가)
+    → 두 modifier 는 같은 evidence 를 보지만 다른 의미 (single most recent vs aggregate average)
+
+  Modifier 강도 분포 정리 (PR24-N 후):
+    status        강 (0.0 / 0.5 / 1.0)
+    freshness     중 (1.0 - s × 0.5, max 50% 감쇠)
+    gap (PR23-M)  약 (1.0 / 0.9 / 0.8 / 0.7, max 30% 감쇠)
+    count (PR24-N) 약 (1.0 ~ 0.75, max 25% 감쇠)
+    rule_stats    매우 약 (1.0 / 0.9, max 10%)
+    evidence_type 매우 약 (1.0 / 0.9, max 10%)
+```
+
+구현 단계 (103/104차) — **테스트 먼저 잠금 → 구현** 순서:
+- 103차: tests (위 47 invariant) — 일부 fail (continuous expected 값들 / `_COUNT_STRENGTH_PENALTY_WEIGHT` 미존재 / `_count_modifier_for_claim` helper 미존재), 다수 pass (PR1~PR23-M 의 다른 modifier / state / snapshot / lifecycle / public namespace 보존)
+- 104차: `_COUNT_STRENGTH_PENALTY_WEIGHT` 신규 private 상수 + `_count_modifier_for_claim` helper 신규 + `compute_effective_confidence` 의 count 항 helper 호출로 교체 + 구 `_COUNT_PENALTY_MODIFIER` 제거 + §36.10 자연 만료 테스트 16+ 개 expected 갱신 (binary 0.8 → continuous values, strength 0/0 케이스는 0.8 → 1.0 의미 변화 명시) — 103차 테스트 통과로 입증

@@ -173,13 +173,20 @@ class TestMostRecentOnly:
         active_contradictions_by_freshness → (recent, older)  desc
         most_recent = recent (strength=0.2)
         freshness_modifier = 1.0 - 0.2 × 0.5 = 0.9 (PR11-C: recent only)
-        count_modifier = 0.8 (PR19-E: active >= 2)
-        → effective = 1.0 × 1.0 × 0.9 × 1.0 (no gap) × 0.8 = 0.72
+
+        PR24-N §36.6 (AX): count_modifier = 1.0 - avg × 0.25.
+        avg = (1.0 + 0.2) / 2 = 0.6 → count = 1.0 - 0.6 × 0.25 = 0.85.
+        PR11-C invariant ("older strong is irrelevant to freshness") 보존:
+            freshness 만 recent (0.2) 기준 0.9.
+            count 는 avg 기반이므로 older strong 도 count 평균에 들어가지만
+            freshness 영역과 분리되어 있음.
+
+        → effective = 1.0 × 1.0 × 0.9 × 1.0 (no gap) × 0.85 = 0.765
 
         (만약 older 가 freshness 에 영향 줬다면:
             freshness = 1.0 - 1.0 × 0.5 = 0.5
-            effective = 1.0 × 1.0 × 0.5 × 1.0 × 0.8 = 0.4
-         → 0.72 ≠ 0.4 이므로 older 영향 없음 검증됨)
+            effective = 1.0 × 1.0 × 0.5 × 1.0 × 0.85 = 0.425
+         → 0.765 ≠ 0.425 이므로 older 영향 없음 검증됨)
         """
         engine = Engine()
         _, claim_id = _candidate_claim(engine, base_confidence=1.0)
@@ -193,10 +200,10 @@ class TestMostRecentOnly:
 
         result = engine.compute_effective_confidence(claim_id)
 
-        # PR11-C 의 freshness_modifier = 0.9 (recent only invariant 보존)
-        # PR19-E 의 count_modifier = 0.8 (active >= 2 추가 감쇠)
-        # 1.0 × 1.0 (conf) × 0.9 × 1.0 (no gap) × 0.8 = 0.72
-        assert result.value == pytest.approx(0.72)
+        # PR11-C freshness_modifier = 0.9 (recent only invariant 보존)
+        # PR24-N count_modifier = 0.85 (active 2, avg = (1.0+0.2)/2 = 0.6)
+        # 1.0 × 1.0 (conf) × 0.9 × 1.0 (no gap) × 0.85 = 0.765
+        assert result.value == pytest.approx(0.765)
 
 
 class TestResolvedExcluded:

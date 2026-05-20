@@ -409,10 +409,16 @@ class TestEvidenceTypeComposition:
         # 1.0 × 1.0 × 1.0 × 0.9 (1 unresolved tier) × 1.0 × 1.0 × 0.9 = 0.81
         assert result.value == pytest.approx(0.81)
 
-    # invariant 19 — count + hint-only → count × 0.9 ★
+    # invariant 19 — count × hint-only (PR24-N 자연 만료) ★
     def test_active_two_and_hint_only(self) -> None:
         """2 active contradictions (type 99, strength 0) + 1 hint direct (type 42).
-        → count=0.8, evidence_type=0.9. 0.8 × 0.9 = 0.72."""
+
+        PR24-N §36.6 (AX): active 2 avg 0.0 → count = 1.0 (binary 0.8 자연 만료).
+        의미 (count × evidence_type 결합) 보존, count 강도만 정밀화.
+        빈 강도의 contradiction 은 repeated pressure 가 아니다.
+
+        → count = 1.0, evidence_type = 0.9. 1.0 × 0.9 = 0.9.
+        """
         engine = Engine()
         _safe_register_hint(engine, [42])
         _, claim_id = _claim_with_rule(engine, base_confidence=1.0)
@@ -422,8 +428,8 @@ class TestEvidenceTypeComposition:
         engine.register_contradiction(claim_id, c1)
         engine.register_contradiction(claim_id, c2)
         result = engine.compute_effective_confidence(claim_id)
-        # 1.0 × 1.0 × 1.0 × 1.0 × 0.8 × 1.0 × 0.9 = 0.72
-        assert result.value == pytest.approx(0.72)
+        # 1.0 × 1.0 × 1.0 × 1.0 × 1.0 (count avg 0) × 1.0 × 0.9 = 0.9
+        assert result.value == pytest.approx(0.9)
 
     # invariant 20 — rule_stats + hint-only → rule_stats × 0.9 ★
     def test_rule_stats_penalty_and_hint_only(self) -> None:
@@ -439,18 +445,19 @@ class TestEvidenceTypeComposition:
         # rule_stats 0.9 × evidence_type 0.9 = 0.81
         assert result.value == pytest.approx(0.81)
 
-    # invariant 21 — full 7-modifier composition ★
+    # invariant 21 — full 7-modifier composition (PR24-N 자연 만료) ★
     def test_full_seven_modifier_composition(self) -> None:
-        """disputed + active 2 (most strength 0.8) + unresolved gap 1 개 + firing 1
+        """disputed + active 2 (0.3/0.8) + unresolved gap 1 개 + firing 1
         + hint-only direct evidence.
 
-        PR23-M §35.5 (AP): 1 unresolved → tier 1 → 0.9 (PR12-D binary 0.8 정제).
-        의미 (7-modifier 결합) 보존, gap 강도만 갱신.
+        PR23-M §35.5 (AP): 1 unresolved → tier 1 → 0.9.
+        PR24-N §36.6 (AX): active 2 avg 0.55 → count 0.8625 (PR19-E binary 0.8 정제).
+        의미 (7-modifier 결합) 보존, count 강도만 정밀화.
 
         base × status × freshness × gap × count × rule_stats × evidence_type
-        = 1.0 × 0.5 × (1.0 - 0.8 × 0.5) × 0.9 × 0.8 × 0.9 × 0.9
-        = 1.0 × 0.5 × 0.6 × 0.9 × 0.8 × 0.9 × 0.9
-        = 0.17496
+        = 1.0 × 0.5 × (1.0 - 0.8 × 0.5) × 0.9 × 0.8625 × 0.9 × 0.9
+        = 1.0 × 0.5 × 0.6 × 0.9 × 0.8625 × 0.9 × 0.9
+        = 0.18862875
         """
         engine = Engine()
         _register_rule(engine, rule_id=1, rule_version=1)
@@ -469,7 +476,7 @@ class TestEvidenceTypeComposition:
             engine._claims[claim_id], status=CLAIM_STATUS_DISPUTED,
         )
         result = engine.compute_effective_confidence(claim_id)
-        assert result.value == pytest.approx(0.17496)
+        assert result.value == pytest.approx(0.18862875)
 
 
 # ---- 5. Snapshot schema v2 + migration (Sub-decision AG/AH) ----------------
@@ -635,8 +642,12 @@ class TestEvidenceTypeNoStateMutationAndRegression:
         # gap=0.9 (1 unresolved tier), evidence_type=1.0 → 0.9
         assert result.value == pytest.approx(0.9)
 
-    # invariant 34 — PR19-E count modifier preserved (empty hint)
+    # invariant 34 — PR19-E threshold=2 보존 (PR24-N tier 강도 갱신)
     def test_pr19e_count_modifier_preserved_without_hint(self) -> None:
+        """PR19-E threshold=2 구조는 보존된다.
+        PR24-N §36.6 (AX): avg 0.0 → count = 1.0 (PR19-E binary 0.8 자연 만료).
+        빈 강도의 contradiction 은 repeated pressure 가 아니다.
+        """
         engine = Engine()
         _, claim_id = _claim_with_rule(engine, base_confidence=1.0)
         c1 = _evidence(engine, claim_id, evidence_type=99, strength=0.0)
@@ -644,7 +655,8 @@ class TestEvidenceTypeNoStateMutationAndRegression:
         engine.register_contradiction(claim_id, c1)
         engine.register_contradiction(claim_id, c2)
         result = engine.compute_effective_confidence(claim_id)
-        assert result.value == pytest.approx(0.8)
+        # count = 1.0 (avg 0), evidence_type = 1.0 (empty hint) → 1.0
+        assert result.value == pytest.approx(1.0)
 
     # invariant 35 — PR20-F rule_stats modifier preserved (empty hint)
     def test_pr20f_rule_stats_modifier_preserved_without_hint(self) -> None:

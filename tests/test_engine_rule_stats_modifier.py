@@ -360,9 +360,15 @@ class TestRuleStatsCompositionWithExistingModifiers:
         result = engine.compute_effective_confidence(claim_id)
         assert result.value == pytest.approx(0.81)
 
-    # invariant 16 ★ — count × rule_stats (independence)
+    # invariant 16 ★ — count × rule_stats (PR24-N 자연 만료)
     def test_active_two_and_firing_one(self) -> None:
-        """active 2 (strength 0) + firing 1 → 1.0 × 1.0 × 1.0 × 1.0 × 0.8 × 0.9 = 0.72."""
+        """active 2 strength 0/0 + firing 1 → 1.0 × 1.0 × 1.0 × 1.0 × 1.0 × 0.9 = 0.9.
+
+        PR24-N §36.6 (AX): active >= 2 일 때 count_modifier = 1.0 - avg × 0.25.
+        avg 0.0 → count = 1.0 (PR19-E binary 0.8 자연 만료).
+        의미 (count × rule_stats 독립) 보존, count 강도만 정밀화.
+        빈 강도의 contradiction 은 repeated pressure 가 아니다.
+        """
         engine = Engine()
         _register_rule(engine, rule_id=1, rule_version=1)
         _bump_firing(engine, rule_id=1, rule_version=1, delta=1)
@@ -374,20 +380,21 @@ class TestRuleStatsCompositionWithExistingModifiers:
         engine.register_contradiction(claim_id, ev1)
         engine.register_contradiction(claim_id, ev2)
         result = engine.compute_effective_confidence(claim_id)
-        # count = 0.8, rule_stats = 0.9 → 0.72
-        assert result.value == pytest.approx(0.72)
+        # count = 1.0 (avg 0.0), rule_stats = 0.9 → 0.9
+        assert result.value == pytest.approx(0.9)
 
-    # invariant 17 ★ — full 6-modifier composition
+    # invariant 17 ★ — full 6-modifier composition (PR24-N 자연 만료)
     def test_full_six_modifier_composition(self) -> None:
-        """disputed + active 2 (most recent strength 0.8) + unresolved gap 1 개 + firing 1.
+        """disputed + active 2 (0.3/0.8) + unresolved gap 1 개 + firing 1.
 
-        PR23-M §35.5 (AP): 1 unresolved → tier 1 → 0.9 (PR12-D binary 0.8 정제).
-        의미 (6-modifier 결합) 보존, gap 강도만 갱신.
+        PR23-M §35.5 (AP): 1 unresolved → tier 1 → 0.9.
+        PR24-N §36.6 (AX): active 2 avg 0.55 → count 0.8625 (PR19-E binary 0.8 정제).
+        의미 (6-modifier 결합) 보존, count 강도만 정밀화.
 
         base × status × freshness × gap × count × rule_stats
-        = 1.0 × 0.5 × (1.0 - 0.8 × 0.5) × 0.9 × 0.8 × 0.9
-        = 1.0 × 0.5 × 0.6 × 0.9 × 0.8 × 0.9
-        = 0.1944
+        = 1.0 × 0.5 × (1.0 - 0.8 × 0.5) × 0.9 × 0.8625 × 0.9
+        = 1.0 × 0.5 × 0.6 × 0.9 × 0.8625 × 0.9
+        = 0.2095875
         """
         engine = Engine()
         _register_rule(engine, rule_id=1, rule_version=1)
@@ -404,7 +411,7 @@ class TestRuleStatsCompositionWithExistingModifiers:
             engine._claims[claim_id], status=CLAIM_STATUS_DISPUTED,
         )
         result = engine.compute_effective_confidence(claim_id)
-        assert result.value == pytest.approx(0.1944)
+        assert result.value == pytest.approx(0.2095875)
 
 
 # ---- 5. No state mutation (Sub-decision Z) ---------------------------------
@@ -507,9 +514,14 @@ class TestRuleStatsRegressionBoundaries:
         # PR12-D + PR23-M: 1.0 × 1.0 × 1.0 × 0.9 (1 unresolved tier) × 1.0 × 1.0 = 0.9
         assert result.value == pytest.approx(0.9)
 
-    # invariant 24 — PR19-E count modifier 무변화
+    # invariant 24 — PR19-E count modifier 의미 보존 (PR24-N 자연 만료)
     def test_pr19e_count_modifier_meaning_preserved(self) -> None:
-        """active 2 (strength 0), candidate, rule_stats=1.0 → base × 0.8 (PR19-E 그대로)."""
+        """active 2 strength 0/0, candidate, rule_stats=1.0 → base × 1.0.
+
+        PR19-E threshold=2 구조는 보존된다 (active 2 부터 count 영역).
+        PR24-N §36.6 (AX): avg 0.0 → count = 1.0 (binary 0.8 자연 만료).
+        빈 강도의 contradiction 은 repeated pressure 가 아니다.
+        """
         engine = Engine()
         _, claim_id = _claim_with_rule(
             engine, rule_id=42, rule_version=1, base_confidence=1.0,
@@ -519,5 +531,6 @@ class TestRuleStatsRegressionBoundaries:
         engine.register_contradiction(claim_id, ev1)
         engine.register_contradiction(claim_id, ev2)
         result = engine.compute_effective_confidence(claim_id)
-        # PR19-E: 1.0 × 1.0 × 1.0 × 1.0 × 0.8 × 1.0 = 0.8
-        assert result.value == pytest.approx(0.8)
+        # PR19-E threshold=2 보존 + PR24-N: avg 0.0 → count 1.0
+        # 1.0 × 1.0 × 1.0 × 1.0 × 1.0 × 1.0 = 1.0
+        assert result.value == pytest.approx(1.0)

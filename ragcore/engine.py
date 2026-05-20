@@ -76,13 +76,27 @@ _GAP_TIER_ONE_UNRESOLVED_MODIFIER = 0.9
 _GAP_TIER_TWO_UNRESOLVED_MODIFIER = 0.8
 _GAP_TIER_THREE_OR_MORE_UNRESOLVED_MODIFIER = 0.7
 
-# PR19-E §31: count modifier — active contradiction 개수 기반 보조 감쇠.
-# effective = base × status × freshness × gap × count
-# active count >= 2 → 0.8 (binary, N 무관), 그 외 → 1.0
+# PR19-E §31 + PR24-N §36: count modifier — strength averaging (was binary 0.8).
+# effective = base × status × freshness × gap × count × rule_stats × evidence_type
+#
+# PR19-E (binary, 제거됨):
+#   active count >= 2 → 0.8 (repeated-pressure attenuation)
+#
+# PR24-N (continuous):
+#   active count >= 2 → 1.0 - average_active_strength × 0.25
+#   active count < 2  → 1.0 (PR11-C freshness 영역 보존)
+#
+# 핵심 명제 (§36.2):
+#   빈 강도의 contradiction 은 repeated pressure 가 아니다.
+#
+# Center preservation (Sub-decision AY):
+#   avg strength 0.8 → 1.0 - 0.8 × 0.25 = 0.8
+#   PR19-E binary 0.8 중심점이 자연 재현된다.
+#
+# Range: count_modifier ∈ [0.75, 1.0] (max 25% attenuation, hard floor 0.75)
 # Engine 내부 private — public export 안 함.
-# 의미: active 1 은 PR11-C freshness 가 처리, active 2+ 누적 압력 추가 감쇠.
-# 0.8 (PR12-D gap_modifier 와 같은 약한 보조 신호 정신 일관).
-_COUNT_PENALTY_MODIFIER = 0.8
+# Sub-decision AZ: 구 _COUNT_PENALTY_MODIFIER 제거, 신규 weight 도입.
+_COUNT_STRENGTH_PENALTY_WEIGHT = 0.25
 
 # PR20-F §32: rule_stats modifier — weak maturity signal (NOT quality verdict).
 # effective = base × status × freshness × gap × count × rule_stats
@@ -906,6 +920,30 @@ class Engine:
             return _GAP_TIER_TWO_UNRESOLVED_MODIFIER
         return _GAP_TIER_THREE_OR_MORE_UNRESOLVED_MODIFIER
 
+    def _count_modifier_for_claim(self, claim_id: int) -> float:
+        """PR19-E §31 + PR24-N §36 — count modifier as continuous repeated pressure.
+
+        Sub-decision AV~BB:
+            - AV: name/source/threshold=2 preserved from PR19-E
+            - AW: active count < 2 → 1.0, preserving PR11-C freshness role
+            - AX: active count >= 2 → 1.0 - avg_strength × 0.25
+            - AY: center preservation, avg 0.8 → 0.8 (PR19-E binary 재현)
+            - AZ: _COUNT_STRENGTH_PENALTY_WEIGHT private, old binary constant removed
+            - BA: no snapshot schema bump (state shape 무변화)
+            - BB: PR19-E binary expectations naturally expire
+
+        핵심 문장:
+            빈 강도의 contradiction 은 repeated pressure 가 아니다.
+        """
+        active = self.active_contradictions_for_claim(claim_id)
+        if len(active) < 2:
+            return 1.0
+        average_strength = sum(
+            self._evidences[evidence_id].strength.value
+            for evidence_id in active
+        ) / len(active)
+        return 1.0 - average_strength * _COUNT_STRENGTH_PENALTY_WEIGHT
+
     def _rule_stats_modifier_for_claim(self, claim: Claim) -> float:
         """PR20-F §32 — weak maturity signal (NOT rule quality verdict).
 
@@ -1023,10 +1061,14 @@ class Engine:
             2   → _GAP_TIER_TWO_UNRESOLVED_MODIFIER (0.8)
             3+  → _GAP_TIER_THREE_OR_MORE_UNRESOLVED_MODIFIER (0.7)
 
-        count_modifier (PR19-E §31.3, Sub-decision E-2 + E-4 — binary supplemental):
-            active_count = len(active_contradictions_for_claim(claim_id))
-            if active_count >= 2: → _COUNT_PENALTY_MODIFIER (0.8)
-            else: → 1.0
+        count_modifier (PR19-E §31.3 + PR24-N §36, Sub-decision AV~BB — strength averaging):
+            active = active_contradictions_for_claim(claim_id)
+            if len(active) < 2: → 1.0 (PR11-C freshness 영역)
+            else:
+                avg_strength = average(_evidences[ev].strength.value for ev in active)
+                → 1.0 - avg_strength × _COUNT_STRENGTH_PENALTY_WEIGHT (0.25)
+            # avg 0.0 → 1.0 / avg 0.4 → 0.9 / avg 0.8 → 0.8 (PR19-E 중심점) / avg 1.0 → 0.75
+            # 핵심: 빈 강도의 contradiction 은 repeated pressure 가 아니다.
 
         rule_stats_modifier (PR20-F §32.8, Sub-decision V + W + X + Y — weak maturity):
             if claim.created_by_rule == 0: → 1.0
@@ -1072,10 +1114,7 @@ class Engine:
 
         gap_modifier = self._gap_modifier_for_claim(claim_id)
 
-        active_count = len(self.active_contradictions_for_claim(claim_id))
-        count_modifier = (
-            _COUNT_PENALTY_MODIFIER if active_count >= 2 else 1.0
-        )
+        count_modifier = self._count_modifier_for_claim(claim_id)
 
         rule_stats_modifier = self._rule_stats_modifier_for_claim(claim)
         evidence_type_modifier = self._evidence_type_modifier_for_claim(claim_id)
