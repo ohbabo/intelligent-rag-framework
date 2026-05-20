@@ -67,6 +67,12 @@ _FRESHNESS_PENALTY_WEIGHT = 0.5
 # (PR11-D status=0.5 / PR11-C max attenuation=0.5 vs PR12-D 0.8 → 명확히 약함)
 _GAP_PENALTY_MODIFIER = 0.8
 
+# PR18-K §30: snapshot schema version + migration framework.
+# Engine 내부 private — public export 안 함.
+# 미래 schema 변경 시 두 상수만 업데이트 + migration step 추가.
+_CURRENT_SNAPSHOT_SCHEMA_VERSION = 1
+_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS: frozenset[int] = frozenset({1})
+
 
 class Engine:
     def __init__(self) -> None:
@@ -954,7 +960,7 @@ class Engine:
             JSON-compatible dict with ``schema_version`` + all engine state.
         """
         return {
-            "schema_version": 1,
+            "schema_version": _CURRENT_SNAPSHOT_SCHEMA_VERSION,
             "next_id": dict(sorted(self._next_id.items())),
             "lifecycle_seq": self._lifecycle_seq,
             "entities": _serialize_dict_int_dataclass(self._entities),
@@ -988,12 +994,7 @@ class Engine:
         Raises:
             ValueError: missing or unknown schema_version.
         """
-        if "schema_version" not in snapshot:
-            raise ValueError("snapshot missing schema_version")
-        if snapshot["schema_version"] != 1:
-            raise ValueError(
-                f"unknown schema_version: {snapshot['schema_version']}"
-            )
+        snapshot = _migrate_snapshot_to_current(snapshot)
         engine = cls()
         engine._next_id = dict(snapshot.get("next_id", {}))
         engine._lifecycle_seq = snapshot.get("lifecycle_seq", 0)
@@ -1036,6 +1037,39 @@ class Engine:
             for item in snapshot["claim_lifecycle_events"]
         }
         return engine
+
+
+# ---- Snapshot migration framework (PR18-K §30) ----------------------------
+# Engine 내부 private — public export 안 함.
+# 미래 schema 변경 시 _SUPPORTED 확장 + migration step 추가.
+
+def _migrate_snapshot_to_current(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Bring a snapshot up to the current schema version.
+
+    PR18-K MVP 는 v1 만 supported — identity migration (사본 반환).
+    미래 (v2 도입 시): v1 → v2 변환 step 추가.
+
+    Returns:
+        Snapshot dict at current schema version. Input dict 는 mutate 하지 않음.
+
+    Raises:
+        ValueError: missing schema_version, unsupported version, 또는 미래
+                    migration path 가 미정인 경우.
+    """
+    version = snapshot.get("schema_version")
+    if version is None:
+        raise ValueError("Snapshot schema_version is required")
+    if version not in _SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS:
+        raise ValueError(
+            f"Unsupported snapshot schema_version: {version}; "
+            f"supported: {sorted(_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS)}"
+        )
+    if version == _CURRENT_SNAPSHOT_SCHEMA_VERSION:
+        return dict(snapshot)  # identity (shallow copy)
+    # 미래 자리: 중간 버전 → CURRENT 변환 chain
+    raise ValueError(
+        f"Unsupported snapshot schema_version: {version}"
+    )
 
 
 # ---- Persistence serialization helpers (PR17 §29) -------------------------
