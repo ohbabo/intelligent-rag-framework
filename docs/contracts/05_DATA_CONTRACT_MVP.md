@@ -4801,3 +4801,262 @@ PR18-K:
 구현 단계 (79/80차) — **테스트 먼저 잠금 → 구현** 순서:
 - 79차: tests (위 14 invariant) — 일부 fail (constants 미존재, future version 시 KeyError-style 위치 다름), 다수 pass (PR17 동작 그대로)
 - 80차: `_CURRENT_SNAPSHOT_SCHEMA_VERSION` / `_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS` / `_migrate_snapshot_to_current` + `from_snapshot` 의 migration step 통합 — 79차 테스트 통과로 입증
+
+## 31. Effective confidence — count modifier (MVP — binary, supplemental)
+
+> 상태: 82/83/84차 (PR19-E). 4-modifier composition 에 count 추가.
+> `effective = base × status × freshness × gap × count`.
+> **N-dependent decay / log 함수 / independence_class 기반 count /
+> strength 합산 / weighted count / source diversity / RuleStats 결합 모두 본
+> PR 범위 밖** — PR20+.
+
+### 31.1 PR19-E 의 한 줄 정의
+
+> **PR19-E 는 "최신 contradiction 하나의 강도" 를 다시 보는 PR 이 아니다.
+> PR11-C 가 이미 그 역할을 한다. PR19-E 는 "활성 contradiction 이 여러 개
+> 쌓였을 때" 의 추가 신호를 effective_confidence 에 반영하는 PR 이다.**
+
+PR11-D §24.5 의 modifier 분해 자리에 **네 번째 modifier**. PR11-C / PR12-D
+다음의 5th composition layer.
+
+### 31.2 핵심 명제 (§31.2)
+
+```text
+Count modifier is binary and supplemental:
+one active contradiction is handled by freshness,
+multiple active contradictions add repeated-pressure attenuation.
+```
+
+한국어:
+
+```text
+count modifier 는 이진적이고 보조적인 감쇠다.
+활성 반박 1개는 freshness 가 처리하고,
+활성 반박이 여러 개일 때만 누적 압력으로 추가 감쇠한다.
+```
+
+### 31.3 공식 — 5-modifier composition
+
+```python
+effective_confidence(claim) = (
+    base_confidence
+    × status_modifier(claim.status)         # PR11-D §24, 변경 없음
+    × freshness_modifier(claim_id)           # PR11-C §26, 변경 없음
+    × gap_modifier(claim_id)                 # PR12-D §28, 변경 없음
+    × count_modifier(claim_id)               # PR19-E §31, 신규
+)
+```
+
+`count_modifier` (PR19-E 신규, Sub-decision E-2 + E-3 + E-4):
+
+```python
+def count_modifier(claim_id):
+    active_count = len(self.active_contradictions_for_claim(claim_id))
+    if active_count >= 2:
+        return _COUNT_PENALTY_MODIFIER  # 0.8
+    return 1.0
+```
+
+`_COUNT_PENALTY_MODIFIER = 0.8` (engine 내부 private).
+
+### 31.4 Sub-decision E-1 — Count 대상
+
+```python
+active_contradictions_for_claim(claim_id)  # PR9-A 차집합 (resolved 제외)
+```
+
+PR9-A `active_contradictions_for_claim` (asc) 또는 PR11-A
+`active_contradictions_by_freshness` (desc) 둘 다 같은 set — count 만 보니
+정렬 무관. PR9-A 의 의미 그대로 활용 (차집합: contradictions - resolved).
+
+### 31.5 Sub-decision E-2 — Threshold = 2
+
+```text
+active count >= 2 → count_modifier = 0.8
+active count <= 1 → count_modifier = 1.0
+```
+
+**왜 2 인가?**:
+- active 1 개는 PR11-C freshness modifier 가 이미 처리 (most recent strength
+  기반 continuous attenuation)
+- 2 개부터는 "반박이 누적되고 있다" 는 별도 신호
+- 1 개 + 1 개 = 2 개 일 때만 PR11-C 와 PR19-E 가 함께 적용 (의미 분리)
+
+PR11-C 와 PR19-E 의 역할 분리:
+
+| modifier | 신호 | 활성화 조건 |
+|---|---|---|
+| **freshness_modifier (PR11-C)** | most recent active contradiction strength | active ≥ 1 (== 1 일 때 단독, ≥ 2 시 most recent 만 봄) |
+| **count_modifier (PR19-E)** | active contradiction 누적 압력 | active ≥ 2 |
+
+### 31.6 Sub-decision E-3 — Modifier 값 0.8
+
+```python
+_COUNT_PENALTY_MODIFIER = 0.8
+```
+
+PR12-D `_GAP_PENALTY_MODIFIER` 와 같은 값 — "약한 보조 신호" 정신 일관.
+
+| modifier | 의미 | 값 | 강도 |
+|---|---|---|---|
+| status_modifier (PR11-D) | lifecycle 결정 | refuted=0.0, disputed=0.5 | **강** |
+| freshness_modifier (PR11-C) | 최근 strength | 1 - s × 0.5 (max 50% 감쇠) | **중** |
+| gap_modifier (PR12-D) | 정보 부족 | 0.8 | **약** |
+| **count_modifier (PR19-E)** | **누적 압력** | **0.8** | **약 (보조)** |
+
+### 31.7 Sub-decision E-4 — Binary, N 무관
+
+```text
+active 2 개 → 0.8
+active 3 개 → 0.8
+active 10 개 → 0.8
+
+N 의존 없음 (2 개 이상이면 동일).
+```
+
+| 옵션 | 채택 | 이유 |
+|---|---|---|
+| **(E-4-binary)** | ✓ | "최소 연결 PR" 정신. PR12-D Sub-decision U 와 일관 |
+| (E-4-N-dependent) | ✗ | 함수 형태 / saturation / hard floor 결정 부담 |
+| (E-4-log) | ✗ | 비선형 함수 — PR12-D 단순성 정신 위반 |
+
+N-dependent 함수 (log, step, saturation) 는 PR20+ 자연 확장.
+
+### 31.8 Sub-decision E-5 — Resolved 제외 (PR9-A 차집합 정합)
+
+```python
+active_contradictions_for_claim(c)
+# = contradictions_for_claim(c) - resolved_contradictions_for_claim(c)
+```
+
+resolved 된 contradiction 은 count 에서 제외. PR9-A 의 차집합 의미 / PR11-C
+의 active 정의 / PR12-D 의 resolved 제외 정신과 일관.
+
+### 31.9 Sub-decision E-6 — PR11-C 와 역할 분리
+
+```text
+PR11-C freshness_modifier:
+- input: most recent active contradiction.strength.value
+- 동작: 1.0 - strength × 0.5 (continuous, max 50%)
+- 활성화: active ≥ 1
+
+PR19-E count_modifier:
+- input: len(active_contradictions_for_claim)
+- 동작: 0.8 (binary, if N ≥ 2)
+- 활성화: active ≥ 2
+```
+
+같은 active set 을 다른 차원에서 본다:
+- PR11-C: strength dimension (most recent 한 개)
+- PR19-E: count dimension (개수)
+
+두 modifier 가 곱해지면 **active 2 개 + 최신 strong** 시나리오에서 자연 결합:
+
+```text
+active = [ev_a (strength=0.3), ev_b (strength=0.9)]
+freshness_modifier = 1.0 - 0.9 × 0.5 = 0.55 (most recent)
+count_modifier = 0.8 (active >= 2)
+→ effective × 0.55 × 0.8 = effective × 0.44
+```
+
+### 31.10 결정성 (Determinism)
+
+```text
+같은 (claim.base_confidence, claim.status, active set, evidence.strength,
+      gaps_for_claim, gap_resolution) → 항상 같은 effective
+```
+
+PR19-E 는:
+- wall-clock 안 봄
+- random / external state 안 봄
+- PR9-A `active_contradictions_for_claim` 결정성 그대로
+
+PR11-D / PR11-C / PR12-D 결정성 + PR19-E count 결정성.
+
+### 31.11 보존 (impact 없음)
+
+| | PR19-E 영향 |
+|---|---|
+| `Claim` / `Evidence` / `Gap` / `Relation` / `ScoreValue` / `ClaimLifecycleEvent` dataclass | 없음 |
+| PR9-A `active_contradictions_for_claim` (input only) | 없음 |
+| PR11-A `active_contradictions_by_freshness` | 없음 |
+| 5 lifecycle API + PR11-B sibling | 없음 |
+| `register_contradiction*` / PR5 gap_resolution | 없음 |
+| All private constants (PR10-A, PR11-D, PR11-C, PR12-D) | 없음 |
+| PR11-D `_STATUS_MODIFIER_*` 값 | 없음 |
+| PR11-C `_FRESHNESS_PENALTY_WEIGHT` | 없음 |
+| PR12-D `_GAP_PENALTY_MODIFIER` | 없음 |
+| `compute_effective_confidence` 시그니처 | 없음 (본문에 곱셈 1개 추가만) |
+| PR17 `to_snapshot` / `from_snapshot` round-trip identity | 없음 (engine state 변경 없음) |
+| PR18-K migration framework | 없음 |
+| `CLAIM_STATUS_MAP` / `_ALLOWED_CLAIM_STATUSES` | 없음 (Sub-decision D 정합) |
+| `fire_rule*` / `RuleStats` | 없음 |
+| public exports | 없음 (`_COUNT_PENALTY_MODIFIER` private) |
+| 외부 dependency | 없음 |
+
+PR19-E 는 **본문에 곱셈 1개 추가만**. engine 의 다른 동작 변경 0.
+
+### 31.12 Invariants (테스트로 잠금)
+
+1. unknown claim_id → `KeyError` (PR11-D 동작 보존)
+2. **active 0 + candidate → effective == base** (count = 1.0)
+3. **active 0 + confirmed → effective == base**
+4. **active 1 + candidate → freshness 만 적용, count = 1.0** ★ (PR11-C / PR19-E 분리)
+5. **active 2 + candidate → freshness + count 0.8** ★ (PR19-E 활성화)
+6. **active 2 + confirmed + strength 0.8 → base × 1.0 × 0.6 × 1.0 × 0.8 = base × 0.48** ★
+7. **active 10 + confirmed → count = 0.8 (N 무관)** ★ (Sub-decision E-4)
+8. **active 2 + refuted → 0.0** (Sub-decision P 자연 보존)
+9. **5-modifier composition: disputed + active 2 + unresolved gap → base × 0.5 × 0.6 × 0.8 × 0.8 = base × 0.192** ★
+10. **Resolved 제외**: contradictions 3개 중 2개 resolved → active 1 → count = 1.0 ★ (Sub-decision E-5)
+11. **PR11-C freshness_modifier 동작 무변화** (active 1 일 때 PR19-E count = 1.0 확인)
+12. **PR12-D gap_modifier 동작 무변화**
+13. **PR10-A refute / PR11-B refute_by_freshness 동작 무변화**
+14. **PR9-A `active_contradictions_for_claim` asc 동작 무변화**
+15. **PR11-D `_STATUS_MODIFIER_*` 값 무변화**
+16. effective ≤ base (no boost — Sub-decision N 정신)
+17. compute is read-only
+18. determinism
+19. PR17 round-trip identity 보존 (engine state 변경 없음 → snapshot 자동 보존)
+20. `_COUNT_PENALTY_MODIFIER` private (ragcore + ragcore.types 미노출)
+21. 기존 652 회귀 없음 (전체 통과로 입증)
+
+### 31.13 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| N-dependent decay (`f(N)` 형태) | Sub-decision E-4 (binary, "최소 연결 PR") |
+| Log / count 비선형 함수 | 단순성 정신, PR20+ 자연 확장 |
+| Independence_class 기반 count (서로 다른 source 의 contradiction 만 count) | PR20+ — independence 정의 필요 |
+| Strength 합산 (`sum(ev.strength) >= threshold`) | freshness 와 의미 중복 위험 |
+| Weighted count (다른 evidence_type 가중치 다름) | PR20+ |
+| Source diversity (서로 다른 source 의 contradiction 우선) | PR20+ |
+| RuleStats 결합 | PR20+ — F (RuleStats modifier) 자리 |
+| PR10-A refute 정책 변경 | 본 PR 범위 밖 |
+| 새 lifecycle 상태 추가 | G (superseded/retracted) 자리 |
+| Confidence boost (modifier > 1.0) | PR11-D Sub-decision N 영구 OOS |
+| Public `_COUNT_PENALTY_MODIFIER` | engine 내부 private |
+| Wall-clock timestamp | PR10-A/B / PR11-A/B/C/D / PR12-D 일관 영구 OOS |
+
+### 31.14 Position in flow
+
+```text
+PR12-D 까지:
+  effective = base × status × freshness × gap
+  → count dimension 은 effective 에 반영 안 됨
+
+PR19-E:
+  effective = base × status × freshness × gap × count
+  count_modifier:
+    active_count = len(active_contradictions_for_claim)
+    if active_count >= 2: 0.8
+    else: 1.0
+
+  PR11-C 와 PR19-E 의 역할 분리:
+    active = 0 → freshness = 1.0, count = 1.0 (둘 다 영향 없음)
+    active = 1 → freshness = strength-based, count = 1.0 (PR11-C 만 적용)
+    active >= 2 → freshness = strength-based (most recent), count = 0.8 (둘 다 적용)
+```
+
+구현 단계 (83/84차) — **테스트 먼저 잠금 → 구현** 순서:
+- 83차: tests (위 21 invariant) — 일부 fail (active >= 2 시 추가 감쇠), 다수 pass (PR12-D 까지의 동작 보존)
+- 84차: `_COUNT_PENALTY_MODIFIER` private constant + `compute_effective_confidence` 본문 확장 (× count_modifier 추가) — 83차 테스트 통과로 입증
