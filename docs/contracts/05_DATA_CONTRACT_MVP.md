@@ -5060,3 +5060,272 @@ PR19-E:
 구현 단계 (83/84차) — **테스트 먼저 잠금 → 구현** 순서:
 - 83차: tests (위 21 invariant) — 일부 fail (active >= 2 시 추가 감쇠), 다수 pass (PR12-D 까지의 동작 보존)
 - 84차: `_COUNT_PENALTY_MODIFIER` private constant + `compute_effective_confidence` 본문 확장 (× count_modifier 추가) — 83차 테스트 통과로 입증
+
+## 32. Effective confidence — rule_stats modifier (MVP — weak maturity)
+
+> 상태: 86/87/88차 (PR20-F). 5-modifier composition 에 rule_stats 추가.
+> `effective = base × status × freshness × gap × count × rule_stats`.
+> **confirmed/refuted outcome ratio / rule quality verdict / firing freshness
+> (timestamp 기반) / boost (modifier > 1.0) / rule_output public status 확장 /
+> YAML rule schema 변경 / lifecycle 전이 변경 / RuleStats persistence schema 확장
+> 모두 본 PR 범위 밖** — 별도 PR 자리.
+
+### 32.1 PR20-F 의 한 줄 정의
+
+> **PR20-F 는 "이 룰은 맞는가/틀린가" 를 판결하는 PR 이 아니다.
+> PR20-F 는 "이 룰이 엔진 안에서 충분히 관측되었는가" 를 effective_confidence 에
+> 약하게 반영하는 PR 이다.**
+
+PR11-D §24.5 의 modifier 분해 자리에 **다섯 번째 modifier**. PR11-C / PR12-D /
+PR19-E 의 옆에 동등한 자리. **Claim 판단 (lifecycle / status / refute) 은
+이 PR 에서 한 줄도 바뀌지 않는다.** PR2 에서 등장한 RuleStats noun 을
+PR11-D 의 effective verb 에 연결하는 PR 이다.
+
+### 32.2 핵심 명제 (§32.2)
+
+> **RuleStats modifier is a weak maturity signal, not a rule quality verdict.**
+>
+> RuleStats modifier 는 룰의 품질을 판결하는 장치가 아니라, 해당 룰이 엔진
+> 안에서 충분히 관측되었는지를 약하게 반영하는 성숙도 신호다.
+
+대조:
+
+```text
+RuleStats modifier ≠ "이 룰은 맞다 / 틀리다"
+RuleStats modifier = "이 룰은 아직 관측 이력이 충분한가?"
+```
+
+### 32.3 공식 — 5-modifier → 6-modifier composition
+
+```python
+effective = (
+    base_confidence
+    * status_modifier            # PR11-D
+    * freshness_modifier         # PR11-C
+    * gap_modifier               # PR12-D
+    * count_modifier             # PR19-E
+    * rule_stats_modifier        # PR20-F  ← 본 PR
+)
+```
+
+5 개의 modifier 는 모두 **곱셈** 으로 결합. 모두 `[0.0, 1.0]` 범위. **boost
+(modifier > 1.0) 영구 OOS** — `effective ≤ base` 보존.
+
+### 32.4 Sub-decision V — 무엇을 보는가 (`firing_count` only)
+
+`rule_stats_modifier` 는 **RuleStats.firing_count 한 필드만 본다.**
+
+배제:
+- `confirmed_true_count` / `confirmed_false_count` (outcome ratio) — 별도 PR
+- `observed_precision` / `false_positive_rate` (rule quality score) — 별도 PR
+- timestamp 기반 firing freshness — 별도 PR
+- rule_definition.maturity / prior_confidence — 별도 의미
+
+이유:
+
+PR20-F MVP 는 **RuleStats noun → effective verb 의 최소 연결** 이다. outcome
+ratio / quality score / timestamp 의 의미는 각자 독립 PR 가치가 있고, 한 번에
+묶으면 "룰 품질 평가 시스템" 으로 비대화된다. fire 관측 이력 1개만 본다.
+
+### 32.5 Sub-decision W — Threshold = 2, binary
+
+```python
+_RULE_STATS_PENALTY_MODIFIER = 0.9
+_RULE_STATS_MIN_FIRING_COUNT = 2
+```
+
+규칙:
+
+```text
+firing_count <  2 → rule_stats_modifier = 0.9
+firing_count >= 2 → rule_stats_modifier = 1.0
+```
+
+이유:
+- **binary** — PR19-E count_modifier 와 동일 정신. N-dependent 함수는 별도 PR
+- **threshold 2** — "처음 한 번 firing" 과 "두 번째 이상" 의 분리. 한 번만
+  firing 된 룰은 우연일 가능성을 약하게 반영, 두 번째 firing 부터는
+  성숙으로 본다
+- **약함 (0.9)** — refuted (0.0) 이나 disputed (0.5) 보다 훨씬 약함, gap
+  (0.8) / count (0.8) 보다도 약함. RuleStats 는 "증거 부족" 이나 "반박" 이
+  아니라 단순히 "엔진 안 관측 이력 부족" 의 신호이므로 가장 약한 modifier
+  자리
+
+modifier 강도 정리:
+
+```text
+status      : 강함 — refuted=0.0, disputed=0.5
+freshness   : 중간 — 최대 50% 감쇠 (1.0 - strength × 0.5)
+gap         : 약함 — 0.8
+count       : 약함 — 0.8
+rule_stats  : 매우 약함 — 0.9   ← 본 PR
+```
+
+### 32.6 Sub-decision X — Boost 금지
+
+```text
+rule_stats_modifier ∈ {0.9, 1.0}
+firing_count 가 아무리 많아도 modifier 는 1.0 을 초과하지 않는다.
+```
+
+이유:
+
+PR11-D 의 `effective ≤ base` 정신, PR19-E §31 Sub-decision N 정신과 동일.
+"firing 이 많다" 는 boost 의미가 아직 정당화되지 않았다. 본 PR 은 attenuation
+만 한다.
+
+### 32.7 Sub-decision Y — Unknown / no rule source → 1.0
+
+규칙:
+
+```text
+다음 경우 rule_stats_modifier = 1.0 (감쇠 없음):
+1. Claim.created_by_rule == 0 (sentinel — 룰 기반 아님)
+2. (Claim.created_by_rule, Claim.created_by_rule_version) 페어가
+   _rule_stats 에 등록되어 있지 않음
+```
+
+이유:
+
+PR20-F 는 **기존 호환 보존이 최우선**. 룰 등록 없이 add_claim 으로 직접 생성한
+Claim, 그리고 등록되지 않은 (rule_id, rule_version) 페어를 가진 Claim 모두
+PR11-D 시점부터 존재해온 합법 시나리오. 이들에 0.9 감쇠를 주면 PR1~PR19-E 의
+다수 테스트 와 기존 사용자 코드가 회귀한다.
+
+→ **no rule source 는 lookup miss 와 동일하게 처리. modifier = 1.0.**
+
+### 32.8 결정 로직 (pseudocode)
+
+```python
+def _rule_stats_modifier_for_claim(claim: Claim) -> float:
+    rule_id = claim.created_by_rule
+    rule_version = claim.created_by_rule_version
+    if rule_id == 0:
+        return 1.0
+    key = (rule_id, rule_version)
+    stats = self._rule_stats.get(key)
+    if stats is None:
+        return 1.0
+    if stats.firing_count < _RULE_STATS_MIN_FIRING_COUNT:
+        return _RULE_STATS_PENALTY_MODIFIER
+    return 1.0
+```
+
+특징:
+- `dict.get(key)` 사용 — `get_rule_stats` 의 `KeyError` 경로를 우회 (Sub-decision Y)
+- private 함수 (engine 내부) — public API 미노출
+- read-only — `_rule_stats` mutate 없음
+- Claim.created_by_rule 의 sentinel 0 만 별도 처리, 나머지는 lookup miss 로 통합
+
+### 32.9 compute_effective_confidence 변경
+
+```python
+def compute_effective_confidence(self, claim_id: int) -> ScoreValue:
+    ...
+    active_count = len(self.active_contradictions_for_claim(claim_id))
+    count_modifier = _COUNT_PENALTY_MODIFIER if active_count >= 2 else 1.0
+    rule_stats_modifier = self._rule_stats_modifier_for_claim(claim)  # NEW
+    return ScoreValue(
+        claim.base_confidence.value
+        * status_modifier
+        * freshness_modifier
+        * gap_modifier
+        * count_modifier
+        * rule_stats_modifier                                          # NEW
+    )
+```
+
+**변경 폭**: `compute_effective_confidence` 본문 + 1 라인 (× rule_stats),
+보조 private 메서드 1 개, private constant 2 개. types.py / __init__.py /
+rule_output.py / 기존 modifier 4 개 변경 0.
+
+### 32.10 Sub-decision Z — Persistence 영향
+
+`_rule_stats` / `_rule_definitions` / `_claims` 의 **engine state 자체는 변경 없음**
+— PR17 round-trip 자동 보존.
+
+`_rule_stats_modifier_for_claim` 은 **stateless 계산** 이므로 snapshot 에
+저장할 새 필드 없음. PR18-K snapshot schema version 변경 없음 — 정책 의미는
+"bump 없음" 이며, 실제로 `_CURRENT_SNAPSHOT_SCHEMA_VERSION` 은 PR18-K 시점 그대로 유지된다 (현재 `1`).
+
+### 32.11 결정성 (Determinism)
+
+같은 engine state 에 대해 `compute_effective_confidence(claim_id)` 는
+호출 순서/시간과 무관하게 같은 값. `_rule_stats[key].firing_count` 는
+`update_rule_stats` 로만 변하고, dict lookup 은 deterministic.
+
+### 32.12 Invariants (테스트로 잠금)
+
+PR20-F 87차 test-first 가 잠그는 invariants:
+
+1. `created_by_rule == 0` Claim → `rule_stats_modifier = 1.0`
+2. (rule_id, rule_version) 페어 미등록 → `rule_stats_modifier = 1.0`
+3. `firing_count == 0` → 0.9 감쇠
+4. `firing_count == 1` → 0.9 감쇠
+5. `firing_count == 2` → 1.0 (감쇠 없음)
+6. `firing_count == 10` → 1.0 (boost 없음, Sub-decision X)
+7. `firing_count == 1_000_000` → 1.0 (여전히 boost 없음)
+8. refuted claim → status_modifier=0.0 이 dominate, rule_stats 무관하게 effective=0.0
+9. disputed + rule_stats penalty composition 정확
+10. unresolved gap + rule_stats penalty 곱셈 결합
+11. active_count >= 2 + rule_stats penalty 곱셈 결합 (count 와 독립)
+12. 5-modifier full composition: confirmed + active=2 freshness + unresolved gap + firing=1
+    → `base × 1.0 × (1.0 - s × 0.5) × 0.8 × 0.8 × 0.9` 정확
+13. **PR10-A refute / PR11-B refute_by_freshness 동작 무변화**
+14. **PR9-A `active_contradictions_for_claim` asc 동작 무변화**
+15. **PR11-D `_STATUS_MODIFIER_*` 값 무변화**
+16. **PR11-C `_FRESHNESS_PENALTY_WEIGHT=0.5` 무변화**
+17. **PR12-D `_GAP_PENALTY_MODIFIER=0.8` 무변화**
+18. **PR19-E `_COUNT_PENALTY_MODIFIER=0.8` 무변화**
+19. effective ≤ base (no boost — Sub-decision X)
+20. compute is read-only (_rule_stats mutate 없음)
+21. determinism
+22. PR17 round-trip identity 보존 (engine state 변경 없음 → snapshot 자동 보존)
+23. `_RULE_STATS_PENALTY_MODIFIER` / `_RULE_STATS_MIN_FIRING_COUNT` private
+    (ragcore + ragcore.types 미노출)
+24. 기존 670 회귀 없음 (전체 통과로 입증)
+
+### 32.13 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| `confirmed_true_count` / `confirmed_false_count` 기반 outcome ratio | Sub-decision V — 별도 PR (rule quality verdict) |
+| `observed_precision` / `false_positive_rate` 사용 | Sub-decision V — 별도 PR |
+| Timestamp 기반 firing freshness | wall-clock 영구 OOS, engine-local seq 도입 시 별도 PR |
+| Threshold 가 `firing_count`-dependent 함수 (log, sqrt 등) | Sub-decision W — binary 정신 |
+| Threshold 값 조정 (2 → N) | Sub-decision W — MVP 잠금, 별도 PR |
+| Boost modifier (`firing_count` 많을수록 > 1.0) | Sub-decision X — 영구 OOS |
+| `rule_definition.maturity` / `prior_confidence` 사용 | 의미가 다름 — 별도 PR |
+| 미등록 rule 에 대해 penalty 부여 | Sub-decision Y — 호환 보존 |
+| `_rule_stats` 자동 누적 (firing_count 자동 증가) | 본 PR 은 read-only — `update_rule_stats` 호출자 책임 |
+| YAML rule schema 변경 | 본 PR 범위 밖 |
+| RuleOutput status 허용값 변경 (disputed/superseded 등) | Sub-decision D 영구 보존 |
+| rule_output.py 변경 | Sub-decision D 영구 보존 |
+| types.py public export 변경 | Sub-decision D 영구 보존 |
+| `RuleStats` 새 필드 추가 | persistence schema 영향 — 별도 PR |
+| PR18-K snapshot schema_version bump | engine state 무변화 → bump 필요 없음 |
+
+### 32.14 Position in flow
+
+```text
+PR19-E 까지:
+  effective = base × status × freshness × gap × count
+  → rule maturity dimension 은 effective 에 반영 안 됨
+
+PR20-F:
+  effective = base × status × freshness × gap × count × rule_stats
+  rule_stats_modifier:
+    if claim.created_by_rule == 0          → 1.0
+    elif (rule_id, rule_version) miss      → 1.0
+    elif firing_count < 2                  → 0.9
+    else                                   → 1.0
+
+  PR19-E (count) 와 PR20-F (rule_stats) 의 역할 분리:
+    count       = "이 Claim 에 활성 contradiction 이 몇 개 쌓였는가" (Claim-local)
+    rule_stats  = "이 Claim 을 만든 룰이 엔진 안에서 몇 번 firing 됐는가" (Rule-global)
+    → 서로 독립 차원, 곱셈 결합
+```
+
+구현 단계 (87/88차) — **테스트 먼저 잠금 → 구현** 순서:
+- 87차: tests (위 24 invariant) — 일부 fail (rule_stats 미반영 상태), 다수 pass (PR19-E 까지의 동작 보존)
+- 88차: `_RULE_STATS_PENALTY_MODIFIER` / `_RULE_STATS_MIN_FIRING_COUNT` private constants + `_rule_stats_modifier_for_claim` 보조 메서드 + `compute_effective_confidence` 본문 확장 (× rule_stats_modifier 추가) — 87차 테스트 통과로 입증
