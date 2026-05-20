@@ -67,6 +67,14 @@ _FRESHNESS_PENALTY_WEIGHT = 0.5
 # (PR11-D status=0.5 / PR11-C max attenuation=0.5 vs PR12-D 0.8 → 명확히 약함)
 _GAP_PENALTY_MODIFIER = 0.8
 
+# PR19-E §31: count modifier — active contradiction 개수 기반 보조 감쇠.
+# effective = base × status × freshness × gap × count
+# active count >= 2 → 0.8 (binary, N 무관), 그 외 → 1.0
+# Engine 내부 private — public export 안 함.
+# 의미: active 1 은 PR11-C freshness 가 처리, active 2+ 누적 압력 추가 감쇠.
+# 0.8 (PR12-D gap_modifier 와 같은 약한 보조 신호 정신 일관).
+_COUNT_PENALTY_MODIFIER = 0.8
+
 # PR18-K §30: snapshot schema version + migration framework.
 # Engine 내부 private — public export 안 함.
 # 미래 schema 변경 시 두 상수만 업데이트 + migration step 추가.
@@ -842,13 +850,14 @@ class Engine:
         return self._rule_stats[key]
 
     def compute_effective_confidence(self, claim_id: int) -> ScoreValue:
-        """Effective confidence as base × status × freshness × gap.
+        """Effective confidence as base × status × freshness × gap × count.
 
-        Composition (PR11-D §24 + PR11-C §26 + PR12-D §28):
+        Composition (PR11-D §24 + PR11-C §26 + PR12-D §28 + PR19-E §31):
             effective = base
                       × status_modifier(claim.status)         # PR11-D
                       × freshness_modifier(claim_id)           # PR11-C
                       × gap_modifier(claim_id)                 # PR12-D
+                      × count_modifier(claim_id)               # PR19-E
 
         status_modifier (PR11-D §24.3, unchanged):
             candidate / confirmed → 1.0
@@ -866,10 +875,14 @@ class Engine:
             elif all gap_resolution(g.id) is not None: → 1.0
             else: → _GAP_PENALTY_MODIFIER (0.8)
 
-        의미 분리:
-            - PR10-A binary refute trigger / PR11-B sibling: status 전이
-            - PR11-C continuous freshness attenuation: scoring 감쇠 (× 0.5 max)
-            - PR12-D binary gap attenuation: scoring 감쇠 (× 0.8, 약한 신호)
+        count_modifier (PR19-E §31.3, Sub-decision E-2 + E-4 — binary supplemental):
+            active_count = len(active_contradictions_for_claim(claim_id))
+            if active_count >= 2: → _COUNT_PENALTY_MODIFIER (0.8)
+            else: → 1.0
+
+        의미 분리 (PR11-C vs PR19-E):
+            PR11-C: most recent active contradiction strength (1 개 시 단독)
+            PR19-E: active contradiction count pressure (2 개 이상 시 추가)
 
         Returns:
             ScoreValue (effective ≤ base, no boost — §24.5 Sub-decision N).
@@ -900,11 +913,17 @@ class Engine:
         else:
             gap_modifier = _GAP_PENALTY_MODIFIER
 
+        active_count = len(self.active_contradictions_for_claim(claim_id))
+        count_modifier = (
+            _COUNT_PENALTY_MODIFIER if active_count >= 2 else 1.0
+        )
+
         return ScoreValue(
             claim.base_confidence.value
             * status_modifier
             * freshness_modifier
             * gap_modifier
+            * count_modifier
         )
 
     def update_rule_stats(
