@@ -895,24 +895,46 @@ class Engine:
         return 1.0
 
     def register_hint_evidence_types(self, types: Iterable[int]) -> None:
-        """PR21-L §33 — register caller-defined "hint-like" evidence type ids.
+        """PR21-L §33 + PR22-S §34 — register caller-defined "hint-like" evidence type ids.
 
         Sub-decision AF: framework 는 Evidence.type 정수 의미를 소유하지 않는다.
-        caller 가 어떤 정수가 "hint" 인지 알려준다. PR21-L 의 유일한 public API
-        추가. types.py / __init__.py / rule_output.py 변경 없음.
+        caller 가 어떤 정수가 "hint" 인지 알려준다. types.py / __init__.py /
+        rule_output.py 변경 없음.
+
+        PR22-S §34 strict validation (Sub-decision AI/AJ/AK/AL/AM/AN):
+            - AI: no implicit casting — int(t) cast 하지 않음
+            - AJ: int 만 허용, bool 거부 (bool 검사를 int 검사 이전에 — Python
+                  isinstance(True, int) == True 함정 회피)
+            - AK: 값 범위 제한 없음 (음수 / 0 / 큰 정수 모두 허용 — taxonomy
+                  ownership 회피)
+            - AL: all-or-nothing — 임시 set 으로 검증 완료 후에만 union
+            - AM: non-iterable input → TypeError. str / bytes 는 technically
+                  iterable 이지만 API 입력 컨테이너로 거부
+            - AN: state shape / snapshot schema 무변화
 
         Args:
-            types: hint evidence type ids. list / tuple / frozenset / 그 외
-                Iterable[int] 모두 허용. 중복은 idempotent (set union).
-                빈 iterable 은 no-op.
+            types: hint evidence type ids. list / tuple / set / frozenset /
+                generator 등 `Iterable[int]` 허용. str / bytes 컨테이너는 거부.
+                빈 iterable 은 no-op. 중복은 idempotent (set union 누적).
 
-        정책 (Sub-decision AC/AE/AF):
-            - 누적: 이전 등록 보존, 새 ids 는 set union
-            - idempotent: 같은 id 두 번 등록해도 set 의미 그대로
-            - 명시적 삭제 API 는 OOS (MVP)
-            - Evidence.type 정수 의미는 검증하지 않음 (framework 가 소유 X)
+        Raises:
+            TypeError: input 이 str/bytes 컨테이너이거나, element 가 int 가
+                아닌 경우 (bool 포함). partial mutation 발생하지 않음.
         """
-        self._hint_evidence_types.update(int(t) for t in types)
+        if isinstance(types, (str, bytes)):
+            raise TypeError(
+                "hint evidence types must be an iterable of int values, "
+                f"not {type(types).__name__}"
+            )
+        validated: set[int] = set()
+        for value in types:
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(
+                    "hint evidence type values must be int values, "
+                    f"not {type(value).__name__}"
+                )
+            validated.add(value)
+        self._hint_evidence_types.update(validated)
 
     def _evidence_type_modifier_for_claim(self, claim_id: int) -> float:
         """PR21-L §33 — weak source-quality signal (NOT truth verdict).
