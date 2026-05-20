@@ -140,10 +140,11 @@ class TestSnapshotAPIExists:
         snapshot = engine.to_snapshot()
         assert isinstance(snapshot, dict)
 
-    def test_snapshot_has_schema_version_1(self) -> None:
+    def test_snapshot_has_schema_version_2(self) -> None:
+        """PR21-L §33 Sub-decision AH: schema_version bumped 1 → 2."""
         engine = Engine()
         snapshot = engine.to_snapshot()
-        assert snapshot["schema_version"] == 1
+        assert snapshot["schema_version"] == 2
 
 
 class TestSchemaVersionValidation:

@@ -6,6 +6,7 @@ Reference implementation. ID 발급은 kind 별 단조 증가 카운터.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import asdict, replace
 from typing import Any
 
@@ -86,11 +87,21 @@ _COUNT_PENALTY_MODIFIER = 0.8
 _RULE_STATS_PENALTY_MODIFIER = 0.9
 _RULE_STATS_MIN_FIRING_COUNT = 2
 
-# PR18-K §30: snapshot schema version + migration framework.
+# PR21-L §33: evidence_type modifier — caller-registered weak source-quality.
+# effective = base × status × freshness × gap × count × rule_stats × evidence_type
+# direct evidence 전부 caller-registered hint set 에 포함되면 0.9, 그 외 → 1.0.
 # Engine 내부 private — public export 안 함.
-# 미래 schema 변경 시 두 상수만 업데이트 + migration step 추가.
-_CURRENT_SNAPSHOT_SCHEMA_VERSION = 1
-_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS: frozenset[int] = frozenset({1})
+# 의미: caller 가 "이 type 은 보조 신호" 라고 등록한 경우만 약하게 감쇠.
+# framework 는 Evidence.type 정수 의미를 소유하지 않는다 (Sub-decision AF).
+# 0.9 (PR20-F rule_stats 와 동일 강도 — 가장 약한 modifier 자리).
+_EVIDENCE_TYPE_PENALTY_MODIFIER = 0.9
+
+# PR18-K §30 + PR21-L §33: snapshot schema version + migration framework.
+# Engine 내부 private — public export 안 함.
+# PR21-L 에서 hint_evidence_types engine state 추가 → schema v1 → v2 bump.
+# 미래 schema 변경 시 두 상수 업데이트 + migration step (예: _v2_to_v3) 추가.
+_CURRENT_SNAPSHOT_SCHEMA_VERSION = 2
+_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS: frozenset[int] = frozenset({1, 2})
 
 
 class Engine:
@@ -118,6 +129,10 @@ class Engine:
         # per-engine monotonic counter (NOT timestamp, NOT per-claim).
         self._lifecycle_seq: int = 0
         self._claim_lifecycle_events: dict[int, list[ClaimLifecycleEvent]] = {}
+        # PR21-L §33: caller-registered hint evidence type ids.
+        # framework 는 Evidence.type 정수 의미를 소유하지 않는다 — caller 가
+        # register_hint_evidence_types 로 등록한 set 만 modifier 계산에 사용.
+        self._hint_evidence_types: set[int] = set()
 
     def _allocate_id(self, kind: str) -> int:
         next_id = self._next_id.get(kind, 0) + 1
@@ -879,16 +894,64 @@ class Engine:
             return _RULE_STATS_PENALTY_MODIFIER
         return 1.0
 
-    def compute_effective_confidence(self, claim_id: int) -> ScoreValue:
-        """Effective confidence as base × status × freshness × gap × count × rule_stats.
+    def register_hint_evidence_types(self, types: Iterable[int]) -> None:
+        """PR21-L §33 — register caller-defined "hint-like" evidence type ids.
 
-        Composition (PR11-D §24 + PR11-C §26 + PR12-D §28 + PR19-E §31 + PR20-F §32):
+        Sub-decision AF: framework 는 Evidence.type 정수 의미를 소유하지 않는다.
+        caller 가 어떤 정수가 "hint" 인지 알려준다. PR21-L 의 유일한 public API
+        추가. types.py / __init__.py / rule_output.py 변경 없음.
+
+        Args:
+            types: hint evidence type ids. list / tuple / frozenset / 그 외
+                Iterable[int] 모두 허용. 중복은 idempotent (set union).
+                빈 iterable 은 no-op.
+
+        정책 (Sub-decision AC/AE/AF):
+            - 누적: 이전 등록 보존, 새 ids 는 set union
+            - idempotent: 같은 id 두 번 등록해도 set 의미 그대로
+            - 명시적 삭제 API 는 OOS (MVP)
+            - Evidence.type 정수 의미는 검증하지 않음 (framework 가 소유 X)
+        """
+        self._hint_evidence_types.update(int(t) for t in types)
+
+    def _evidence_type_modifier_for_claim(self, claim_id: int) -> float:
+        """PR21-L §33 — weak source-quality signal (NOT truth verdict).
+
+        Sub-decision AA/AB/AC/AD/AE:
+            - AA: direct evidence only (Evidence.claim_id == claim_id),
+                  contradiction / resolved contradiction evidence 제외
+            - AB: direct evidence 0 개 → 1.0
+            - AC: direct evidence 1+ 개이고 전부 hint set 에 포함 → 0.9
+            - AD: no boost (modifier ∈ {0.9, 1.0})
+            - AE: hint set empty → 항상 1.0 (vacuous truth 함정 회피)
+        """
+        if not self._hint_evidence_types:
+            return 1.0
+        contradicting = self._contradictions.get(claim_id, set())
+        resolved = self._resolved_contradictions.get(claim_id, set())
+        excluded = contradicting | resolved
+        direct = [
+            ev
+            for ev in self._evidences.values()
+            if ev.claim_id == claim_id and ev.id not in excluded
+        ]
+        if not direct:
+            return 1.0
+        if all(ev.type in self._hint_evidence_types for ev in direct):
+            return _EVIDENCE_TYPE_PENALTY_MODIFIER
+        return 1.0
+
+    def compute_effective_confidence(self, claim_id: int) -> ScoreValue:
+        """Effective confidence as base × status × freshness × gap × count × rule_stats × evidence_type.
+
+        Composition (PR11-D §24 + PR11-C §26 + PR12-D §28 + PR19-E §31 + PR20-F §32 + PR21-L §33):
             effective = base
                       × status_modifier(claim.status)         # PR11-D
                       × freshness_modifier(claim_id)           # PR11-C
                       × gap_modifier(claim_id)                 # PR12-D
                       × count_modifier(claim_id)               # PR19-E
                       × rule_stats_modifier(claim)             # PR20-F
+                      × evidence_type_modifier(claim_id)       # PR21-L
 
         status_modifier (PR11-D §24.3, unchanged):
             candidate / confirmed → 1.0
@@ -917,13 +980,23 @@ class Engine:
             elif firing_count < 2: → _RULE_STATS_PENALTY_MODIFIER (0.9)
             else: → 1.0
 
+        evidence_type_modifier (PR21-L §33.13, Sub-decision AA~AE — caller-registered):
+            if not self._hint_evidence_types: → 1.0
+            direct = [ev for ev in self._evidences if ev.claim_id == claim_id
+                      and ev.id not in (_contradictions | _resolved_contradictions)]
+            if not direct: → 1.0
+            elif all ev.type in self._hint_evidence_types for ev in direct:
+                → _EVIDENCE_TYPE_PENALTY_MODIFIER (0.9)
+            else: → 1.0
+
         의미 분리:
             PR11-C: most recent active contradiction strength (1 개 시 단독)
             PR19-E: active contradiction count pressure (2 개 이상 시 추가)
-            PR20-F: rule maturity (claim-global → rule-global 신호, 다른 4 modifier 와 독립)
+            PR20-F: rule maturity (rule-global 신호)
+            PR21-L: direct supporting evidence source-quality (claim-local, caller-registered)
 
         Returns:
-            ScoreValue (effective ≤ base, no boost — §24.5 Sub-decision N / §32.6 Sub-decision X).
+            ScoreValue (effective ≤ base, no boost — §24.5 N / §32.6 X / §33.7 AD).
 
         Raises:
             KeyError: unknown claim_id.
@@ -957,6 +1030,7 @@ class Engine:
         )
 
         rule_stats_modifier = self._rule_stats_modifier_for_claim(claim)
+        evidence_type_modifier = self._evidence_type_modifier_for_claim(claim_id)
 
         return ScoreValue(
             claim.base_confidence.value
@@ -965,6 +1039,7 @@ class Engine:
             * gap_modifier
             * count_modifier
             * rule_stats_modifier
+            * evidence_type_modifier
         )
 
     def update_rule_stats(
@@ -1039,6 +1114,8 @@ class Engine:
             "claim_lifecycle_events": _serialize_dict_int_list_dataclass(
                 self._claim_lifecycle_events,
             ),
+            # PR21-L §33 — sorted list for deterministic round-trip (Sub-decision AG).
+            "hint_evidence_types": sorted(self._hint_evidence_types),
         }
 
     @classmethod
@@ -1096,25 +1173,42 @@ class Engine:
             ]
             for item in snapshot["claim_lifecycle_events"]
         }
+        engine._hint_evidence_types = set(snapshot["hint_evidence_types"])
         return engine
 
 
-# ---- Snapshot migration framework (PR18-K §30) ----------------------------
+# ---- Snapshot migration framework (PR18-K §30 + PR21-L §33) ---------------
 # Engine 내부 private — public export 안 함.
 # 미래 schema 변경 시 _SUPPORTED 확장 + migration step 추가.
+
+
+def _migrate_snapshot_v1_to_v2(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """PR21-L §33 — v1 snapshot 을 v2 로 승격.
+
+    Sub-decision AH: hint_evidence_types 기본값 = 빈 list.
+    input snapshot 은 mutate 하지 않음 (얕은 사본).
+
+    v1 snapshot 은 hint_evidence_types 키를 가지지 않는다 → 빈 list 로 채움.
+    schema_version 도 2 로 갱신.
+    """
+    out = dict(snapshot)
+    out["schema_version"] = 2
+    out["hint_evidence_types"] = []
+    return out
+
 
 def _migrate_snapshot_to_current(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Bring a snapshot up to the current schema version.
 
-    PR18-K MVP 는 v1 만 supported — identity migration (사본 반환).
-    미래 (v2 도입 시): v1 → v2 변환 step 추가.
+    Chain (PR21-L §33):
+        v1 → v2 (PR21-L step: add hint_evidence_types default)
+        v2 → CURRENT: identity
 
     Returns:
         Snapshot dict at current schema version. Input dict 는 mutate 하지 않음.
 
     Raises:
-        ValueError: missing schema_version, unsupported version, 또는 미래
-                    migration path 가 미정인 경우.
+        ValueError: missing schema_version, unsupported version.
     """
     version = snapshot.get("schema_version")
     if version is None:
@@ -1124,9 +1218,12 @@ def _migrate_snapshot_to_current(snapshot: dict[str, Any]) -> dict[str, Any]:
             f"Unsupported snapshot schema_version: {version}; "
             f"supported: {sorted(_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS)}"
         )
+    if version == 1:
+        snapshot = _migrate_snapshot_v1_to_v2(snapshot)
+        version = snapshot["schema_version"]
     if version == _CURRENT_SNAPSHOT_SCHEMA_VERSION:
         return dict(snapshot)  # identity (shallow copy)
-    # 미래 자리: 중간 버전 → CURRENT 변환 chain
+    # 미래 자리: 중간 버전 → CURRENT 변환 chain (예: v2 → v3)
     raise ValueError(
         f"Unsupported snapshot schema_version: {version}"
     )
