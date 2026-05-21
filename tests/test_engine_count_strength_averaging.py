@@ -338,14 +338,16 @@ class TestCountStrengthAveragingComposition:
 
         result = engine.compute_effective_confidence(claim_id)
 
+        # PR26-R §38.6 (BM): firing_count 0 → maturity_ratio 0.0 → rule_stats 0.8
+        # (PR20-F binary 0.9 자연 만료).
         # status        = 0.5
         # freshness     = 0.5  (most recent active contradiction strength 1.0)
         # gap           = 0.7  (PR23-M: 3+ unresolved gaps)
         # count         = 0.75 (PR24-N: avg strength 1.0)
-        # rule_stats    = 0.9  (registered rule, firing_count 0 < 2)
+        # rule_stats    = 0.8  (PR26-R continuous: registered rule, firing_count 0)
         # evidence_type = 0.9  (hint-only direct evidence)
         assert result.value == pytest.approx(
-            0.5 * 0.5 * 0.7 * 0.75 * 0.9 * 0.9
+            0.5 * 0.5 * 0.7 * 0.75 * 0.8 * 0.9
         )
 
 
@@ -534,7 +536,14 @@ class TestCountStrengthAveragingRegressionBoundaries:
         # PR23-M: 2 unresolved gaps → gap modifier 0.8
         assert result.value == pytest.approx(0.8)
 
-    def test_pr20f_rule_stats_modifier_unchanged(self) -> None:
+    def test_pr20f_rule_stats_modifier_meaning_preserved(self) -> None:
+        """PR20-F 의 "firing_count attenuation 적용" 의미 보존,
+        PR26-R §38 으로 강도만 정밀화 (firing 0 → 0.8 continuous).
+
+        PR20-F threshold=2 구조는 보존된다 (firing 2+ → 1.0).
+        PR26-R §38.6 (BM): firing_count 0 → maturity_ratio 0.0 → 0.8.
+        PR20-F binary 0.9 가 firing == 0 케이스에서 자연 만료.
+        """
         engine = Engine()
         engine.register_rule(
             RuleDefinition(
@@ -553,8 +562,8 @@ class TestCountStrengthAveragingRegressionBoundaries:
 
         result = engine.compute_effective_confidence(claim_id)
 
-        # registered rule with firing_count 0 < 2 → 0.9
-        assert result.value == pytest.approx(0.9)
+        # PR26-R continuous: firing_count 0 → 0.8 (PR20-F binary 0.9 자연 만료)
+        assert result.value == pytest.approx(0.8)
 
     def test_pr21l_evidence_type_modifier_unchanged(self) -> None:
         engine = Engine()

@@ -7186,3 +7186,404 @@ PR25-T: unregister + clear API 완결
 구현 단계 (107/108차) — **테스트 먼저 잠금 → 구현** 순서:
 - 107차: tests (위 52 invariant) — 일부 fail (unregister / clear API 미존재 AttributeError + modifier 즉시 반영 케이스), 다수 pass (PR21-L / PR22-S / PR23-M / PR24-N / snapshot schema / public namespace / lifecycle 보존)
 - 108차: `_validate_hint_evidence_type_values` private helper 추출 (PR22-S register 본문 이전) + `unregister_hint_evidence_types` 신규 (helper 공유 + `set.difference_update`) + `clear_hint_evidence_types` 신규 (`set.clear`) + 기존 `register_hint_evidence_types` 본문을 helper 호출로 교체 (외부 동작 변경 없음) — 107차 테스트 통과로 입증
+
+## 38. RuleStats modifier — continuous maturity (MVP — binary → continuous refinement)
+
+> 상태: 110/111/112/113차 (PR26-R). PR20-F 의 binary `_RULE_STATS_PENALTY_MODIFIER = 0.9` 을
+> firing_count 기반 continuous maturity ratio 로 정제.
+> **공식 변경 없음** (여전히
+> `effective = base × status × freshness × gap × count × rule_stats × evidence_type`).
+> **`rule_stats` 항 내부 계산만** binary → maturity-ratio continuous.
+> **state shape / snapshot schema / RuleStats dataclass / lifecycle 전이 /
+> refute 정책 / observed_precision · false_positive_rate · outcome ratio /
+> rule quality verdict / timestamp / rule reputation 모두 본 PR 범위 밖** — 별도 PR.
+
+### 38.1 PR26-R 의 한 줄 정의
+
+> **PR26-R 은 RuleStats 를 품질 평가기로 바꾸는 PR 이 아니다.**
+> **PR26-R 은 기존 firing_count 기반 maturity penalty 를**
+> **binary 에서 continuous 로 정제하는 PR 이다.**
+
+PR11-D §24.5 의 modifier 분해 자리에서 **rule_stats 항만** 정제. PR11-C /
+PR12-D / PR23-M / PR19-E / PR24-N / PR21-L / PR22-S / PR25-T 의 자리는 그대로.
+Claim 판단 / lifecycle / refute / 새 RuleStats 구조 모두 변경 없음.
+
+PR23-M (gap binary → tier) / PR24-N (count binary → continuous) 에 이어
+**정제 패턴 3차 연속 적용** — modifier 의미 자체는 보존하고 강도 분포만 정밀화.
+
+### 38.2 핵심 명제 (§38.2)
+
+```text
+RuleStats modifier is a weak maturity signal, not a rule quality verdict.
+Continuous refinement separates zero-observation from one-observation
+without introducing quality judgment.
+```
+
+한국어:
+
+```text
+RuleStats modifier 는 룰의 품질을 판결하는 장치가 아니라,
+해당 룰이 엔진 안에서 충분히 관측되었는지를 약하게 반영하는 성숙도 신호다.
+
+PR26-R 의 정제는 0회 관측과 1회 관측을 구분하지만,
+품질 판결 (옳다 / 그르다) 을 도입하지 않는다.
+```
+
+대조:
+
+```text
+PR20-F: "firing_count >= 2 인가?" (binary maturity)
+PR26-R: "firing_count 가 saturation 까지 얼마나 채워졌나?" (continuous maturity)
+PR23-M (gap): "unresolved gap count 가 얼마인가?" (tier)
+PR24-N (count): "active contradiction avg strength 가 얼마인가?" (continuous)
+```
+
+### 38.3 공식 형태 변경 없음
+
+```python
+effective = (
+    base_confidence
+    * status_modifier        # PR11-D
+    * freshness_modifier     # PR11-C
+    * gap_modifier           # PR12-D + PR23-M (tier)
+    * count_modifier         # PR19-E + PR24-N (continuous)
+    * rule_stats_modifier    # PR20-F → PR26-R (continuous, 내부만 변경)
+    * evidence_type_modifier # PR21-L (+ PR22-S 강화 + PR25-T API 완결)
+)
+```
+
+modifier 항 7 개 / 순서 / 곱셈 결합 / `[0.0, 1.0]` 범위 / boost 금지 모두
+보존. 본 PR 은 **`rule_stats_modifier` 내부 계산식** 만 정제.
+
+### 38.4 Sub-decision BK — Source = firing_count only
+
+`rule_stats_modifier` 는 **`RuleStats.firing_count` 한 필드만 본다** (PR20-F
+Sub-decision V 그대로 유지).
+
+배제:
+- `observed_precision` (PR20-F V — 별도 PR)
+- `false_positive_rate` (PR20-F V — 별도 PR)
+- `confirmed_true_count` / `confirmed_false_count` (outcome ratio — Q 트랙)
+- timestamps / rule age (wall-clock 영구 OOS)
+- domain type / rule reputation
+- quality verdict
+
+이유: PR26-R 의 본질은 **maturity 정제** — quality verdict 와 무관. 이걸 보면
+"룰이 옳다 / 그르다" 영역으로 넘어가서 modifier 의미가 흐려진다.
+
+### 38.5 Sub-decision BL — Saturation threshold = 2
+
+```python
+_RULE_STATS_MATURITY_SATURATION_COUNT = 2
+```
+
+PR20-F 의 `firing_count >= 2 → mature` 정신 그대로 보존.
+- `firing_count >= 2` → maturity_ratio == 1.0 → modifier = 1.0 (mature)
+- `firing_count < 2` → maturity_ratio < 1.0 → modifier < 1.0
+
+### 38.6 Sub-decision BM — Penalty weight = 0.2
+
+```python
+_RULE_STATS_MATURITY_PENALTY_WEIGHT = 0.2
+```
+
+공식:
+
+```python
+capped_firing_count = min(
+    max(stats.firing_count, 0),
+    _RULE_STATS_MATURITY_SATURATION_COUNT,
+)
+maturity_ratio = capped_firing_count / _RULE_STATS_MATURITY_SATURATION_COUNT
+rule_stats_modifier = 1.0 - (1.0 - maturity_ratio) * _RULE_STATS_MATURITY_PENALTY_WEIGHT
+```
+
+핵심 지점:
+
+| firing_count | maturity_ratio | rule_stats_modifier |
+|---:|---:|---:|
+| 0 | 0.0 | **0.8** ★ 신규 (PR20-F 는 0.9 였음) |
+| 1 | 0.5 | **0.9** ← PR20-F binary 중심점 자연 재현 |
+| 2 | 1.0 | 1.0 |
+| 10 | 1.0 | 1.0 (saturated) |
+| 1000 | 1.0 | 1.0 (saturated) |
+
+PR20-F binary 의 `firing_count == 1` 지점 (0.9) 이 자연 재현 — PR23-M / PR24-N
+중심점 보존 정신 일관.
+
+### 38.7 Sub-decision BN — No boost
+
+```text
+rule_stats_modifier ∈ [0.8, 1.0]
+```
+
+PR11-D Sub-decision N / PR19-E Sub-decision E / PR20-F Sub-decision X /
+PR23-M / PR24-N 정신 일관. RuleStats 는 confidence 를 올리지 않는다.
+성숙도가 충분하면 `1.0`, 부족하면 약하게 깎기만 한다.
+
+### 38.8 Sub-decision BO — Sentinel compatibility
+
+```text
+claim.created_by_rule == 0 → 1.0   (PR20-F Sub-decision Y 보존)
+rule_stats lookup miss → 1.0       (PR20-F Sub-decision Y 보존)
+```
+
+PR20-F 가 잠근 호환 의미 그대로. 룰 등록 없이 `add_claim` 으로 직접 만든
+Claim 과 미등록 `(rule_id, rule_version)` 페어를 가진 Claim 은 PR26-R 후에도
+modifier = 1.0 (무영향).
+
+### 38.9 Sub-decision BP — PR20-F 자연 만료
+
+PR20-F 의 binary expected 중 **`firing_count == 0` 케이스만** 자연 만료:
+
+```text
+firing_count == 0:
+  PR20-F: 0.9 (binary "< 2")
+  PR26-R: 0.8 (continuous, "0회 관측")
+
+firing_count == 1:
+  PR20-F: 0.9 (binary "< 2")
+  PR26-R: 0.9 (continuous, "1회 관측") — 중심점 보존, 자연 만료 아님
+
+firing_count >= 2:
+  PR20-F: 1.0
+  PR26-R: 1.0 — 동일
+```
+
+→ `firing_count == 1` 인 케이스는 갱신 불필요. `firing_count == 0` 인 PR20-F
+테스트만 expected 갱신.
+
+각 갱신 위치에 명시 코멘트:
+
+```python
+# PR26-R §38.6 (BM): firing_count 0 → maturity_ratio 0.0
+# → rule_stats_modifier = 0.8 (PR20-F binary 0.9 자연 만료).
+# 의미 (firing_count < 2 → attenuation) 보존, 강도만 정밀화.
+# firing_count == 1 은 0.9 그대로 (중심점 보존).
+```
+
+### 38.10 Sub-decision BQ — Defensive clamp
+
+```python
+capped_firing_count = min(
+    max(stats.firing_count, 0),
+    _RULE_STATS_MATURITY_SATURATION_COUNT,
+)
+```
+
+이유:
+
+현재 `update_rule_stats` 는 `firing_delta` 음수를 validate 하지 않는다 (caller
+가 외부에서 음수 delta 호출 가능). PR26-R modifier 계산은 음수 firing_count
+가 들어와도 안정적으로 동작해야 함:
+
+- `max(firing_count, 0)` — 음수 → 0 으로 clamp → modifier = 0.8 (floor)
+- `min(..., saturation)` — 큰 수 → saturation 으로 clamp → modifier = 1.0
+
+PR26-R MVP 는 `update_rule_stats` validation 의미를 **변경하지 않는다** —
+modifier 계산 안전성만 보호.
+
+배제:
+- `update_rule_stats(firing_delta=-1)` 자체에 TypeError / ValueError — 별도 PR
+- `firing_count < 0` 인 RuleStats state 의 audit / lifecycle event — 별도 PR
+
+### 38.11 결정 로직 (pseudocode)
+
+```python
+def _rule_stats_modifier_for_claim(self, claim: Claim) -> float:
+    if claim.created_by_rule == 0:
+        return 1.0
+    key = (claim.created_by_rule, claim.created_by_rule_version)
+    stats = self._rule_stats.get(key)
+    if stats is None:
+        return 1.0
+    capped_firing_count = min(
+        max(stats.firing_count, 0),
+        _RULE_STATS_MATURITY_SATURATION_COUNT,
+    )
+    maturity_ratio = (
+        capped_firing_count / _RULE_STATS_MATURITY_SATURATION_COUNT
+    )
+    return 1.0 - (1.0 - maturity_ratio) * _RULE_STATS_MATURITY_PENALTY_WEIGHT
+```
+
+특징:
+- early-return sentinel (`created_by_rule == 0`) + lookup miss (PR20-F BO)
+- defensive clamp (BQ)
+- float 산술 — deterministic
+- private helper (engine 내부)
+- read-only — engine state mutate 없음
+
+### 38.12 Sub-decision BR — Snapshot schema bump 없음
+
+```text
+_CURRENT_SNAPSHOT_SCHEMA_VERSION = 2  (그대로)
+_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS = frozenset({1, 2})  (그대로)
+```
+
+PR26-R 은 engine state shape 를 바꾸지 않는다:
+- `_rule_stats` / `_rule_definitions` 구조 동일
+- `RuleStats` dataclass 구조 동일 (이미 존재하는 `firing_count` 필드 활용)
+- snapshot 직렬화 형식 동일
+
+오직 `compute_effective_confidence` 의 `rule_stats_modifier` 계산식만 변경.
+
+### 38.13 Sub-decision BS — `_RULE_STATS_PENALTY_MODIFIER` 제거
+
+```python
+# Removed (PR20-F)
+_RULE_STATS_PENALTY_MODIFIER = 0.9
+_RULE_STATS_MIN_FIRING_COUNT = 2
+
+# Added (PR26-R)
+_RULE_STATS_MATURITY_PENALTY_WEIGHT = 0.2
+_RULE_STATS_MATURITY_SATURATION_COUNT = 2
+```
+
+PR23-M / PR24-N 패턴 일관:
+- PR23-M: 구 `_GAP_PENALTY_MODIFIER = 0.8` 제거 → 4 개 tier 상수
+- PR24-N: 구 `_COUNT_PENALTY_MODIFIER = 0.8` 제거 → `_COUNT_STRENGTH_PENALTY_WEIGHT = 0.25`
+- PR26-R: 구 `_RULE_STATS_PENALTY_MODIFIER = 0.9` + `_RULE_STATS_MIN_FIRING_COUNT = 2` 제거 → `_RULE_STATS_MATURITY_PENALTY_WEIGHT = 0.2` + `_RULE_STATS_MATURITY_SATURATION_COUNT = 2`
+
+PR20-F privacy 정신 보존 — 신규 상수 2 개 모두 engine 내부 private,
+`ragcore` / `ragcore.types` 미노출.
+
+### 38.14 결정성 (Determinism)
+
+- `dict.get` lookup 결정성
+- `min` / `max` 결정성
+- 산술 (`/`, `-`, `*`) 결정성
+- 같은 engine state 에 대해 같은 modifier 값
+
+### 38.15 Invariants (테스트로 잠금)
+
+PR26-R 111차 test-first 가 잠그는 invariants:
+
+#### Sentinel / lookup miss (Sub-decision BO)
+1. `created_by_rule == 0` → 1.0
+2. `created_by_rule == 0` + nonzero version → 1.0
+3. 미등록 (rule_id, version) → 1.0
+4. 같은 rule_id, 다른 version → lookup miss → 1.0
+
+#### Firing_count value mapping (Sub-decision BL/BM)
+5. `firing_count == 0` → 0.8 ★
+6. `firing_count == 1` → 0.9 (중심점 보존, PR20-F 와 동일)
+7. `firing_count == 2` → 1.0 (saturated)
+8. `firing_count == 10` → 1.0 (saturated)
+9. `firing_count == 1_000_000` → 1.0 (saturated)
+
+#### Defensive clamp (Sub-decision BQ)
+10. negative `firing_count` (만약 외부에서 강제 mutate 가능 시) → 0.8 (floor)
+11. modifier 절대 0.0 안 됨
+12. modifier 절대 > 1.0 안 됨
+
+#### No boost / range (Sub-decision BN)
+13. `rule_stats_modifier ∈ [0.8, 1.0]` 모든 input
+14. boost (modifier > 1.0) 영구 금지
+
+#### Composition (status × freshness × gap × count × rule_stats × evidence_type)
+15. refuted + any firing → 0.0 (status dominate)
+16. confirmed + firing 0 → base × 0.8 ★ (PR20-F 0.9 자연 만료)
+17. confirmed + firing 1 → base × 0.9 (PR20-F 와 동일)
+18. confirmed + firing 2 → base × 1.0
+19. disputed + firing 0 → base × 0.5 × 0.8 = 0.40 ★
+20. disputed + firing 1 → base × 0.5 × 0.9 = 0.45 (PR20-F 와 동일)
+21. **full 7-modifier composition** (disputed + active 2 (0.3/0.8 avg 0.55) + 3 gaps + firing 0 + hint-only):
+    `base × 0.5 × 0.6 × 0.7 × 0.8625 × 0.8 × 0.9 = base × 0.130410`
+
+#### No state mutation
+22. `to_snapshot()` identical before/after compute
+23. `_rule_stats` 변경 없음
+24. `_lifecycle_seq` 변경 없음
+25. lifecycle history 변경 없음
+
+#### Snapshot / formula shape (Sub-decision BR)
+26. `to_snapshot()["schema_version"] == 2` 유지
+27. snapshot keys 집합 변경 없음
+28. round-trip 후 동일 maturity ratio 적용
+29. `RuleStats` dataclass 구조 변경 없음
+
+#### Private constants (Sub-decision BS)
+30. `_RULE_STATS_MATURITY_PENALTY_WEIGHT == 0.2` private ★
+31. `_RULE_STATS_MATURITY_SATURATION_COUNT == 2` private ★
+32. 신규 2 상수 `ragcore` / `ragcore.types` 미노출
+33. 구 `_RULE_STATS_PENALTY_MODIFIER` 제거 (미노출 확인)
+34. 구 `_RULE_STATS_MIN_FIRING_COUNT` 제거 (미노출 확인)
+
+#### Public namespace (Sub-decision D + AF 정신 보존)
+35. `types.py` 변경 없음
+36. `__init__.py` 변경 없음
+37. `rule_output.py` 변경 없음
+38. public namespace 신규 export 0
+39. `update_rule_stats` API 외부 동작 변경 없음
+
+#### Regression boundaries (PR1~PR25-T 보존)
+40. PR11-C freshness modifier 의미 보존
+41. PR12-D + PR23-M gap modifier 의미 보존
+42. PR19-E + PR24-N count modifier 의미 보존
+43. PR21-L + PR22-S + PR25-T evidence_type modifier API + 의미 보존
+44. PR10-A refute / PR11-B refute_by_freshness 동작 무변화
+45. PR9-A `active_contradictions_for_claim` asc 동작 무변화
+46. PR17 round-trip identity 보존
+47. PR18-K migration framework 무변화
+48. 기존 921 회귀 없음 (전체 통과로 입증, 단 §38.9 자연 만료 테스트 갱신 제외)
+
+### 38.16 Out of Scope (의도적 제외)
+
+| 제외 | 이유 / 향후 |
+|---|---|
+| `observed_precision` 사용 | Sub-decision BK — quality verdict 영역 |
+| `false_positive_rate` 사용 | Sub-decision BK |
+| `confirmed_true_count` / `confirmed_false_count` 기반 outcome ratio | Q 트랙 (claim lifecycle 역전파 mechanism 대규모) |
+| Timestamp / rule age 기반 staleness | wall-clock 영구 OOS |
+| Rule reputation system | 별도 PR — taxonomy 소유 회피 |
+| Domain-specific rule taxonomy | 별도 PR |
+| Confidence boost (modifier > 1.0) | Sub-decision BN — 영구 OOS |
+| Saturation count 조정 (2 → N) | MVP 잠금 |
+| Penalty weight 조정 (0.2 → 다른 값) | MVP 잠금 |
+| 비선형 maturity 함수 (log / sqrt) | continuous MVP |
+| `update_rule_stats(firing_delta=-1)` validation | Sub-decision BQ — defensive clamp 만, validation 별도 PR |
+| Snapshot schema v3 bump | Sub-decision BR — state shape 무변화 |
+| Public `_RULE_STATS_MATURITY_*` 상수 export | Sub-decision BS — engine 내부 private |
+| `types.py` / `__init__.py` / `rule_output.py` 변경 | Sub-decision D 영구 보존 |
+| Per-rule / per-claim weight override | engine-global weight 만 |
+
+### 38.17 Position in flow
+
+```text
+PR20-F 까지:
+  rule_stats_modifier:
+    if claim.created_by_rule == 0 → 1.0
+    if rule_stats miss            → 1.0
+    if firing_count < 2           → 0.9 (binary)
+    else                          → 1.0
+
+PR26-R:
+  rule_stats_modifier:
+    if claim.created_by_rule == 0 → 1.0  (Sub-decision BO)
+    if rule_stats miss            → 1.0  (Sub-decision BO)
+    capped = min(max(firing_count, 0), 2)  (Sub-decision BQ)
+    maturity_ratio = capped / 2
+    return 1.0 - (1.0 - maturity_ratio) × 0.2  (Sub-decision BM)
+    # range [0.8, 1.0]
+
+  PR20-F 와 PR26-R 의 의미 분리:
+    PR20-F: "firing_count >= 2 인가?" (binary)
+    PR26-R: "firing_count 가 saturation 까지 얼마나 채워졌는가?" (continuous)
+    → 중심점 (firing 1) 에서 PR20-F 와 동일 (0.9), 그 외에서는 정제 (0 회 → 0.8)
+
+  Modifier 강도 분포 (PR26-R 후):
+    status        강 (0.0 / 0.5 / 1.0)
+    freshness     중 (1.0 - s × 0.5, max 50%)
+    gap (PR23-M)  약 (max 30%, floor 0.7)
+    count (PR24-N) 약 (max 25%, floor 0.75)
+    rule_stats (PR26-R) 매우 약 (max 20%, floor 0.8)
+    evidence_type 매우 약 (max 10%, floor 0.9)
+
+  → 정제 패턴 3차 연속 적용 완료 (gap binary→tier / count binary→continuous /
+     rule_stats binary→continuous). 강도 분포에서 modifier 정제 영역 안정화.
+```
+
+구현 단계 (111/112차) — **테스트 먼저 잠금 → 구현** 순서:
+- 111차: tests (위 48 invariant) — 일부 fail (continuous expected 값 / `_RULE_STATS_MATURITY_*` 미존재 / `_rule_stats_modifier_for_claim` 본문 binary 그대로), 다수 pass (PR1~PR25-T 의 다른 modifier / state / snapshot / lifecycle / public namespace 보존)
+- 112차: `_RULE_STATS_MATURITY_PENALTY_WEIGHT` + `_RULE_STATS_MATURITY_SATURATION_COUNT` 신규 + `_rule_stats_modifier_for_claim` 본문 교체 (continuous + defensive clamp) + 구 `_RULE_STATS_PENALTY_MODIFIER` / `_RULE_STATS_MIN_FIRING_COUNT` 제거 + §38.9 자연 만료 테스트 (firing_count == 0 만, PR20-F 0.9 → PR26-R 0.8) expected 갱신 — 111차 테스트 통과로 입증

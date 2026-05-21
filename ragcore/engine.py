@@ -98,16 +98,34 @@ _GAP_TIER_THREE_OR_MORE_UNRESOLVED_MODIFIER = 0.7
 # Sub-decision AZ: 구 _COUNT_PENALTY_MODIFIER 제거, 신규 weight 도입.
 _COUNT_STRENGTH_PENALTY_WEIGHT = 0.25
 
-# PR20-F §32: rule_stats modifier — weak maturity signal (NOT quality verdict).
-# effective = base × status × freshness × gap × count × rule_stats
-# firing_count < 2 → 0.9, 그 외 → 1.0 (binary, no boost).
+# PR20-F §32 + PR26-R §38: rule_stats modifier — continuous maturity signal.
+# effective = base × status × freshness × gap × count × rule_stats × evidence_type
+#
+# PR20-F (binary, 제거됨):
+#   firing_count < 2 → 0.9, 그 외 → 1.0
+#
+# PR26-R (continuous, Sub-decision BK/BL/BM/BN):
+#   clamped = min(max(firing_count, 0), 2)         (Sub-decision BQ defensive clamp)
+#   maturity_ratio = clamped / 2
+#   modifier = 1.0 - (1.0 - maturity_ratio) × 0.2  (Sub-decision BM)
+#
+# 핵심 명제 (§38.2):
+#   RuleStats modifier is a weak maturity signal, not a rule quality verdict.
+#   Continuous refinement separates zero-observation from one-observation
+#   without introducing quality judgment.
+#
+# Mapping:
+#   firing_count == 0 → 0.8 (신규, PR20-F 0.9 자연 만료)
+#   firing_count == 1 → 0.9 (PR20-F 중심점 자연 재현)
+#   firing_count >= 2 → 1.0 (saturated)
+#
+# Range: rule_stats_modifier ∈ [0.8, 1.0] (max 20% attenuation, floor 0.8)
+# 의미: outcome ratio / precision / FPR / timestamp / rule quality verdict 모두 OOS.
 # Engine 내부 private — public export 안 함.
-# 의미: 룰이 엔진 안에서 충분히 관측되었는지 약하게 반영. outcome ratio /
-# precision / FPR / timestamp 는 OOS (별도 PR).
-# 0.9 (status / freshness / gap / count 보다 가장 약함 — RuleStats 는 "증거
-# 부족" 이나 "반박" 이 아니라 단순 "관측 이력 부족" 신호).
-_RULE_STATS_PENALTY_MODIFIER = 0.9
-_RULE_STATS_MIN_FIRING_COUNT = 2
+# Sub-decision BS: 구 _RULE_STATS_PENALTY_MODIFIER / _MIN_FIRING_COUNT 제거,
+#                  신규 weight + saturation 상수 도입.
+_RULE_STATS_MATURITY_PENALTY_WEIGHT = 0.2
+_RULE_STATS_MATURITY_SATURATION_COUNT = 2
 
 # PR21-L §33: evidence_type modifier — caller-registered weak source-quality.
 # effective = base × status × freshness × gap × count × rule_stats × evidence_type
@@ -945,13 +963,26 @@ class Engine:
         return 1.0 - average_strength * _COUNT_STRENGTH_PENALTY_WEIGHT
 
     def _rule_stats_modifier_for_claim(self, claim: Claim) -> float:
-        """PR20-F §32 — weak maturity signal (NOT rule quality verdict).
+        """PR20-F §32 + PR26-R §38 — continuous maturity signal.
 
-        Sub-decision V/W/X/Y:
-            - V: firing_count 만 본다 (outcome ratio / precision / FPR / timestamp OOS)
-            - W: binary threshold = _RULE_STATS_MIN_FIRING_COUNT (= 2)
-            - X: no boost (modifier ∈ {0.9, 1.0})
-            - Y: sentinel (created_by_rule == 0) / lookup miss → 1.0 (호환 보존)
+        Sub-decision BK/BL/BM/BN/BO/BQ (PR26-R §38):
+            - BK: source = firing_count only (outcome ratio / precision / FPR / timestamp OOS)
+            - BL: saturation count = 2 (PR20-F threshold 보존)
+            - BM: penalty weight = 0.2 (max 20% attenuation)
+            - BN: no boost — modifier range [0.8, 1.0]
+            - BO: sentinel (created_by_rule == 0) / lookup miss → 1.0 (PR20-F Y 호환 보존)
+            - BQ: defensive clamp min(max(firing_count, 0), saturation_count) —
+                  update_rule_stats validation 변경 없음, modifier 안전성만 보호
+
+        Mapping:
+            firing_count == 0 → 0.8 (PR20-F binary 0.9 자연 만료)
+            firing_count == 1 → 0.9 (PR20-F 중심점 자연 재현)
+            firing_count >= 2 → 1.0 (saturated)
+
+        핵심 명제 (§38.2):
+            RuleStats modifier is a weak maturity signal, not a rule quality verdict.
+            Continuous refinement separates zero-observation from one-observation
+            without introducing quality judgment.
         """
         if claim.created_by_rule == 0:
             return 1.0
@@ -959,9 +990,14 @@ class Engine:
         stats = self._rule_stats.get(key)
         if stats is None:
             return 1.0
-        if stats.firing_count < _RULE_STATS_MIN_FIRING_COUNT:
-            return _RULE_STATS_PENALTY_MODIFIER
-        return 1.0
+        clamped_count = min(
+            max(stats.firing_count, 0),
+            _RULE_STATS_MATURITY_SATURATION_COUNT,
+        )
+        maturity_ratio = clamped_count / _RULE_STATS_MATURITY_SATURATION_COUNT
+        return 1.0 - (
+            (1.0 - maturity_ratio) * _RULE_STATS_MATURITY_PENALTY_WEIGHT
+        )
 
     def _validate_hint_evidence_type_values(
         self, types: Iterable[int],
@@ -1124,11 +1160,16 @@ class Engine:
             # avg 0.0 → 1.0 / avg 0.4 → 0.9 / avg 0.8 → 0.8 (PR19-E 중심점) / avg 1.0 → 0.75
             # 핵심: 빈 강도의 contradiction 은 repeated pressure 가 아니다.
 
-        rule_stats_modifier (PR20-F §32.8, Sub-decision V + W + X + Y — weak maturity):
+        rule_stats_modifier (PR20-F §32 + PR26-R §38, Sub-decision BK~BQ — continuous maturity):
             if claim.created_by_rule == 0: → 1.0
             elif (rule_id, rule_version) miss: → 1.0
-            elif firing_count < 2: → _RULE_STATS_PENALTY_MODIFIER (0.9)
-            else: → 1.0
+            else:
+                clamped = min(max(firing_count, 0), 2)         (BQ defensive clamp)
+                maturity_ratio = clamped / 2
+                → 1.0 - (1.0 - maturity_ratio) × _RULE_STATS_MATURITY_PENALTY_WEIGHT (0.2)
+            # firing_count == 0 → 0.8 / firing_count == 1 → 0.9 / firing_count >= 2 → 1.0
+            # 핵심: continuous refinement separates zero-observation from one-observation
+            #       without introducing quality judgment.
 
         evidence_type_modifier (PR21-L §33.13, Sub-decision AA~AE — caller-registered):
             if not self._hint_evidence_types: → 1.0
