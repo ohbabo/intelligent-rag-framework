@@ -9189,3 +9189,524 @@ The test suite should verify that current public behavior already satisfies the 
   현재 public behavior 가 이미 §42 정책과 충돌 없음을 검증.
 - 128차: **skip** — PR30-P 본질은 "엔진을 더 만들지 않고 외부 사용 해석 경계를 명문화". docstring 보강 필요 시 129차 docs(dev) 와 함께 묶거나 별도 PR.
 - 129차: docs(dev) record `PR_030_CONSUMER_POLICY_GUIDES_MVP.md` + Draft PR ready + squash merge.
+
+---
+
+## §43. AI-Readable Usage Recipe MVP
+
+### §43.1 Core proposition
+
+AI-readable usage recipe defines the canonical call sequence that an external AI consumer (LLM-driven agent, code-generation tool, or automation script) should follow when using the Engine.
+
+This section does not add a new Engine feature.
+It does not change scoring, lifecycle transitions, persistence, rule output parsing, snapshot shape, or any public API.
+
+The purpose of this section is to make the existing public Engine surface **followable** by an AI consumer without reading the engine internals.
+
+Core proposition:
+
+```text
+PR27-P §39 = how to call the Engine (call boundary)
+PR30-P §42 = how to read Engine outputs (read boundary)
+PR31-S §43 = what canonical recipe an AI consumer should follow (usage recipe boundary)
+```
+
+`§42` answered "what does the output mean."
+`§43` answers "in what order should I make calls to get that output."
+
+> **§43 is a recipe, not a new API.**
+
+---
+
+### §43.2 Recipe overview
+
+§43 locks six canonical usage scenarios. Each scenario uses only public Engine APIs that already exist after PR1~PR30-P.
+
+| Scenario | Letter | Recipe                                                  |
+| -------- | ------ | ------------------------------------------------------- |
+| A        | A      | candidate claim → confirm with positive evidence         |
+| B        | B      | claim → contradiction registered → dispute review        |
+| C        | C      | claim → contradiction registered → refutation            |
+| D        | D      | engine state → snapshot → restore                        |
+| E        | E      | rule_stats → observed_precision feedback → modifier read |
+| F        | F      | hint evidence types → register / unregister / clear      |
+
+Each scenario describes:
+
+```text
+Given:    the prerequisite state
+Steps:    the recommended public API call sequence
+Read:     which value to query at the end
+Meaning:  how to interpret it under §42 wording
+```
+
+§43 does not require the consumer to call methods in this exact order — but doing so produces the documented value with documented meaning.
+
+---
+
+### §43.3 Scenario A — candidate confirmation recipe
+
+Goal:
+
+```text
+Take a candidate claim, add a piece of supporting evidence, and confirm it.
+```
+
+Given:
+
+```text
+Engine() instance
+no rule registered (rule_id = 0 path is fine for §43)
+```
+
+Steps:
+
+```text
+1. entity_id = engine.add_entity(entity_type=...)
+2. claim_id  = engine.add_claim(
+       subject_id=entity_id,
+       claim_type=...,
+       rule_id=0,
+       rule_version=0,
+       reason_code=...,
+       base_confidence=...,
+       status=CLAIM_STATUS_CANDIDATE,
+   )
+3. evidence_id = engine.add_evidence(
+       claim_id=claim_id,
+       evidence_type=...,
+       strength=ScoreValue(1.0),
+       ...,
+   )
+4. engine.confirm_claim_if_ready(claim_id)
+5. score = engine.compute_effective_confidence(claim_id)
+```
+
+Read:
+
+```text
+engine.get_claim(claim_id).status == CLAIM_STATUS_CONFIRMED
+score.value reflects base × status × freshness × ... (§42.5 composition)
+```
+
+Meaning (per §42.3):
+
+```text
+CONFIRMED does not mean absolute truth.
+score is a display signal, not a calibrated truth probability.
+```
+
+§43 boundary category:
+
+```text
+A. candidate confirmation recipe boundary
+```
+
+---
+
+### §43.4 Scenario B — disputed review recipe
+
+Goal:
+
+```text
+A claim already exists (candidate or confirmed). A piece of evidence contradicts it. The
+consumer wants to mark the claim as "disputed" for human / downstream review.
+```
+
+Given:
+
+```text
+Engine() instance
+existing claim_id (CANDIDATE or CONFIRMED)
+existing contradicting evidence_id
+```
+
+Steps:
+
+```text
+1. engine.register_contradiction(claim_id, evidence_id)
+2. engine.dispute_claim_if_ready(claim_id)
+3. score = engine.compute_effective_confidence(claim_id)
+4. history = engine.claim_lifecycle_history(claim_id)
+```
+
+Read:
+
+```text
+engine.get_claim(claim_id).status == CLAIM_STATUS_DISPUTED
+score.value reflects status modifier 0.5 (per §40 / §42.2)
+history shows the dispute transition with timestamp
+```
+
+Meaning (per §42.2 / §42.3):
+
+```text
+DISPUTED is not REFUTED.
+DISPUTED is a "needs review" state with attenuated confidence (×0.5).
+The consumer is responsible for routing this to a reviewer.
+```
+
+§43 boundary category:
+
+```text
+B. disputed review recipe boundary
+```
+
+---
+
+### §43.5 Scenario C — refutation recipe
+
+Goal:
+
+```text
+The consumer has strong evidence that the claim should not be acted on. Move the claim
+to REFUTED so downstream code can ignore it without deleting it.
+```
+
+Given:
+
+```text
+Engine() instance
+existing claim_id (CANDIDATE or CONFIRMED — not already REFUTED)
+existing strongly contradicting evidence_id
+```
+
+Steps:
+
+```text
+1. engine.register_contradiction(claim_id, evidence_id)
+2. engine.refute_claim_if_ready(claim_id)
+3. score = engine.compute_effective_confidence(claim_id)
+```
+
+Read:
+
+```text
+engine.get_claim(claim_id).status == CLAIM_STATUS_REFUTED
+score.value == 0.0   (status dominates to zero, §42.3)
+```
+
+Meaning (per §42.3):
+
+```text
+REFUTED status dominates effective_confidence to zero.
+The claim is preserved as audit history, not deleted.
+Consumer report code should treat REFUTED as "do not act on" but
+"do not lose."
+```
+
+§43 boundary category:
+
+```text
+C. refutation recipe boundary
+```
+
+---
+
+### §43.6 Scenario D — snapshot restore recipe
+
+Goal:
+
+```text
+Hand off Engine state between processes / hosts / runs without re-judgment.
+```
+
+Given:
+
+```text
+Engine() instance with non-trivial state (claims, evidence, rule stats, lifecycle history)
+```
+
+Steps:
+
+```text
+1. snapshot = engine.to_snapshot()
+2. # caller persists snapshot externally (JSON, file IO, DB) — out of Engine scope
+3. restored = Engine.from_snapshot(snapshot)
+4. score_before  = engine.compute_effective_confidence(claim_id)
+5. score_after   = restored.compute_effective_confidence(claim_id)
+```
+
+Read:
+
+```text
+snapshot is a JSON-compatible dict
+snapshot["schema_version"] == 2   (per §32 / §42.6 / PR17 / PR21-L)
+restored.get_claim(claim_id) preserves status, created_by_rule, created_by_rule_version
+score_before == score_after
+```
+
+Meaning (per §42.6):
+
+```text
+Snapshot is state preservation, not re-judgment.
+The framework does not provide file IO — caller owns persistence boundary
+(§39.4 + §42.10).
+```
+
+§43 boundary category:
+
+```text
+D. snapshot restore recipe boundary
+```
+
+---
+
+### §43.7 Scenario E — rule_stats observed_precision feedback recipe
+
+Goal:
+
+```text
+The consumer has measured observed precision for a rule (from out-of-band ground truth)
+and wants to feed it back so that future effective_confidence reflects this signal.
+```
+
+Given:
+
+```text
+Engine() instance
+rule (rule_id, rule_version) already registered via register_rule(RuleDefinition(...))
+claim created with that (rule_id, rule_version) pair
+```
+
+Steps:
+
+```text
+1. engine.update_rule_stats(
+       rule_id,
+       rule_version,
+       firing_delta=...,
+       observed_precision=ScoreValue(p),   # p in [0.0, 1.0]
+   )
+2. score = engine.compute_effective_confidence(claim_id)
+```
+
+Read:
+
+```text
+rule_stats_modifier = maturity_modifier × precision_modifier
+maturity_modifier in [0.8, 1.0]   (§41 / PR26-R)
+precision_modifier in [0.9, 1.0]  (§41 / PR29-R)
+rule_stats_modifier in [0.72, 1.0]
+```
+
+Meaning (per §42.8 / PR29-R §41.1):
+
+```text
+observed_precision is a bounded no-boost adjustment signal.
+observed_precision = 1.0 does not boost effective above the base path.
+observed_precision = 0.0 attenuates by precision_modifier floor (0.9), not "rule is wrong."
+false_positive_rate is OOS (§41.3 + §42.10).
+```
+
+§43 boundary category:
+
+```text
+E. rule_stats feedback recipe boundary
+```
+
+---
+
+### §43.8 Scenario F — hint evidence type recipe
+
+Goal:
+
+```text
+The consumer wants framework to recognize certain Evidence.type IDs as "hint" (weak signal)
+so that the evidence_type modifier attenuates effective_confidence for those types.
+```
+
+Given:
+
+```text
+Engine() instance
+caller has assigned its own integer IDs for hint evidence types (e.g., {7001, 7002, 7003})
+```
+
+Steps:
+
+```text
+1. engine.register_hint_evidence_types({7001, 7002, 7003})
+2. # caller adds evidence with type=7001 / 7002 / 7003 via add_evidence(...)
+3. score_with_hint = engine.compute_effective_confidence(claim_id)
+4. engine.unregister_hint_evidence_types({7001})
+5. score_after_unregister = engine.compute_effective_confidence(claim_id)
+6. engine.clear_hint_evidence_types()
+7. score_after_clear = engine.compute_effective_confidence(claim_id)
+```
+
+Read:
+
+```text
+register_hint_evidence_types affects evidence_type modifier immediately
+unregister_hint_evidence_types removes specific IDs
+clear_hint_evidence_types resets the hint set to empty
+no built-in HINT enum exists in ragcore.__all__
+```
+
+Meaning (per §42.10 / Sub-decision AF):
+
+```text
+The framework does not own the meaning of Evidence.type IDs.
+Caller registers the hint set; framework only computes the modifier.
+The set is mutable through the public API and persists across snapshot.
+```
+
+§43 boundary category:
+
+```text
+F. hint evidence type recipe boundary
+```
+
+---
+
+### §43.9 Method surface mental model
+
+For an AI consumer, the public Engine surface separates into two mental categories:
+
+#### Write-side methods (state mutation)
+
+```text
+add_entity / add_observation / add_claim / add_evidence
+add_relation / add_gap
+resolve_gaps_for_evidence
+confirm_claim_if_ready
+register_contradiction / register_contradiction_resolution
+dispute_claim_if_ready / refute_claim_if_ready
+resolve_disputed_claim_if_ready / refute_disputed_claim_if_ready
+refute_disputed_claim_if_ready_by_freshness
+register_rule
+update_rule_stats
+register_hint_evidence_types / unregister_hint_evidence_types / clear_hint_evidence_types
+from_snapshot   (classmethod, constructs a new Engine)
+```
+
+#### Read-side methods (no mutation)
+
+```text
+get_entity / get_observation / get_claim / get_evidence
+evidences_for_claim
+get_relation / get_gap / gaps_for_claim / gap_resolution
+contradictions_for_claim / resolved_contradictions_for_claim
+active_contradictions_for_claim
+claim_lifecycle_history
+evidence_freshness / active_contradictions_by_freshness
+get_rule / get_rule_stats
+compute_effective_confidence
+to_snapshot
+```
+
+Rule of thumb:
+
+```text
+Methods named add_* / register_* / update_* / *_if_ready / clear_* / from_snapshot
+    mutate state.
+Methods named get_* / *_for_claim / *_history / compute_* / to_snapshot
+    do not mutate state.
+```
+
+`compute_effective_confidence` is read-only by design (§42.3 / §39.5). Calling it repeatedly does not change the snapshot.
+
+§43 boundary category:
+
+```text
+G. method surface mental model boundary
+```
+
+---
+
+### §43.10 AI consumer interpretation checklist
+
+After following any scenario A~F, the AI consumer should re-check §42 wording before rendering output:
+
+```text
+[ ] effective_confidence is a display signal, not calibrated truth        (§42.3)
+[ ] CONFIRMED ≠ 1.0, REFUTED → 0.0, DISPUTED → ×0.5                       (§42.3)
+[ ] modifier values are interpretation guidance, not policy               (§42.4)
+[ ] snapshot is state preservation, not re-judgment                       (§42.6)
+[ ] rule_version is reproducibility metadata, not quality                 (§42.7)
+[ ] observed_precision is bounded no-boost, not quality verdict           (§42.8)
+[ ] consumer owns reporting / display / severity / triage                 (§42.9)
+[ ] no calibrated truth probability API exists                            (§42.10)
+[ ] no file IO snapshot helpers exist                                     (§42.10)
+[ ] no built-in HINT evidence type enum exists                            (§42.10)
+```
+
+If any item is violated by the consumer's output, the consumer has crossed the §42 boundary, not the framework.
+
+---
+
+### §43.11 Out of scope
+
+§43 explicitly does not add:
+
+```text
+new public API
+method renaming
+deprecated alias
+__all__ change
+new enum
+new modifier
+new lifecycle state
+file IO wrapper
+report schema
+serialization format other than the existing snapshot dict
+visualization helpers
+LLM integration
+tool execution
+Cerberus-side adapter
+```
+
+Sub-decision D is preserved:
+
+```text
+ragcore/engine.py        — no change
+ragcore/types.py         — no change
+ragcore/__init__.py      — no change
+ragcore/rule_output.py   — no change
+```
+
+§43 boundary category:
+
+```text
+H. OOS / no API change boundary
+```
+
+---
+
+### §43.12 Invariants
+
+§43 locks the following recipe invariants (verified by 131차 test-first, all-pass expected):
+
+1. **Recipe A** — `add_entity → add_claim(CANDIDATE) → add_evidence → confirm_claim_if_ready → compute_effective_confidence` produces a claim with `status == CONFIRMED` and a positive non-zero score below 1.0.
+2. **Recipe B** — `register_contradiction → dispute_claim_if_ready → compute_effective_confidence` produces a claim with `status == DISPUTED` and `score == base × status(0.5) × freshness × ...`.
+3. **Recipe C** — `register_contradiction → refute_claim_if_ready → compute_effective_confidence` produces a claim with `status == REFUTED` and `score == 0.0`.
+4. **Recipe D** — `to_snapshot → Engine.from_snapshot` preserves `status`, `created_by_rule`, `created_by_rule_version`, and `compute_effective_confidence` output for every claim in the snapshot.
+5. **Recipe E** — `update_rule_stats(firing_delta=2, observed_precision=ScoreValue(1.0))` followed by `compute_effective_confidence` yields a score with `rule_stats_modifier == 1.0` (no boost). `update_rule_stats(firing_delta=2, observed_precision=ScoreValue(0.0))` yields `rule_stats_modifier == 0.9` (precision floor, bounded attenuation).
+6. **Recipe F** — `register_hint_evidence_types({T}) → compute_effective_confidence` and `unregister_hint_evidence_types({T}) → compute_effective_confidence` produce different evidence_type modifier values when the claim has evidence of type T. `clear_hint_evidence_types` resets to the same state as a fresh Engine without any hint type.
+7. **Read-side purity** — Calling `compute_effective_confidence` twice in a row, or calling any `get_*` / `*_for_claim` method, does not change `to_snapshot()` output.
+8. **Method surface invariance** — `ragcore.__all__` does not gain any new symbol, lose any existing symbol, or rename any symbol relative to PR30-P main `60bf492`.
+
+If any recipe invariant fails, the documented call sequence is no longer reproducible — that is the regression signal §43 is designed to surface.
+
+---
+
+### §43.13 Constraints on 131/133차
+
+131/133차 should treat §43 as a recipe-locking spec, not a feature spec:
+
+```text
+test invariants should pass immediately
+no engine implementation change is required
+no public API change is required
+no snapshot schema change is required (still v2)
+all 8 recipe invariants should be locked in one test module
+```
+
+The test suite should verify that AI consumers can follow each recipe using only the existing public Engine surface, producing the documented values with the documented meaning.
+
+구현 단계 (131/133차) — **3-commit cycle (132차 skip 권고, PR27-P / PR28-O / PR30-P 패턴)**:
+- 131차: tests — AI-readable usage recipe invariants 잠금 (8~15 tests, all-pass 예상).
+  현재 public surface 가 이미 §43 6 scenarios 와 일치함을 검증.
+- 132차: **skip** — PR31-S 본질은 "엔진을 더 만들지 않고 외부 사용 recipe 를 명문화". method rename / alias / API surface 정리는 별도 PR.
+- 133차: docs(dev) record `PR_031_AI_READABLE_USAGE_RECIPE_MVP.md` + Draft PR ready + squash merge.
