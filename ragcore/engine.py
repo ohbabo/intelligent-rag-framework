@@ -127,6 +127,29 @@ _COUNT_STRENGTH_PENALTY_WEIGHT = 0.25
 _RULE_STATS_MATURITY_PENALTY_WEIGHT = 0.2
 _RULE_STATS_MATURITY_SATURATION_COUNT = 2
 
+# PR29-R §41: observed_precision modifier — bounded no-boost adjustment signal.
+#
+# rule_stats_modifier = maturity_modifier × precision_modifier
+#
+# precision_modifier:
+#   observed_precision is None → 1.0
+#   observed_precision value p → _RULE_STATS_PRECISION_BASE + p × _RULE_STATS_PRECISION_RANGE
+#                              = 0.9 + p × 0.1
+#
+# Range: [0.9, 1.0], no boost.
+#
+# 핵심 명제 (§41.1):
+#   Observed precision is a bounded adjustment signal, not a rule quality verdict.
+#
+# 보수적 명제:
+#   Observed precision is optional evidence for rule maturity, not ground truth.
+#
+# Engine 내부 private — public export 안 함.
+# Sub-decision J: types.py / __init__.py / rule_output.py 변경 없음.
+# Sub-decision H: false_positive_rate 는 PR29-R 에서 사용하지 않음 (OOS).
+_RULE_STATS_PRECISION_BASE = 0.9
+_RULE_STATS_PRECISION_RANGE = 0.1
+
 # PR21-L §33: evidence_type modifier — caller-registered weak source-quality.
 # effective = base × status × freshness × gap × count × rule_stats × evidence_type
 # direct evidence 전부 caller-registered hint set 에 포함되면 0.9, 그 외 → 1.0.
@@ -963,26 +986,56 @@ class Engine:
         return 1.0 - average_strength * _COUNT_STRENGTH_PENALTY_WEIGHT
 
     def _rule_stats_modifier_for_claim(self, claim: Claim) -> float:
-        """PR20-F §32 + PR26-R §38 — continuous maturity signal.
+        """PR20-F §32 + PR26-R §38 + PR29-R §41 — continuous maturity × bounded precision.
 
-        Sub-decision BK/BL/BM/BN/BO/BQ (PR26-R §38):
-            - BK: source = firing_count only (outcome ratio / precision / FPR / timestamp OOS)
+        PR29-R refines rule_stats_modifier internally:
+            rule_stats_modifier = maturity_modifier × precision_modifier
+
+        Sub-decision BK/BL/BM/BN/BO/BQ (PR26-R §38, maturity 부분):
+            - BK: source = firing_count only for maturity
             - BL: saturation count = 2 (PR20-F threshold 보존)
-            - BM: penalty weight = 0.2 (max 20% attenuation)
-            - BN: no boost — modifier range [0.8, 1.0]
-            - BO: sentinel (created_by_rule == 0) / lookup miss → 1.0 (PR20-F Y 호환 보존)
-            - BQ: defensive clamp min(max(firing_count, 0), saturation_count) —
-                  update_rule_stats validation 변경 없음, modifier 안전성만 보호
+            - BM: penalty weight = 0.2 (maturity max 20% attenuation)
+            - BN: no boost — maturity_modifier ∈ [0.8, 1.0]
+            - BO: sentinel (created_by_rule == 0) / lookup miss → 1.0
+            - BQ: defensive clamp min(max(firing_count, 0), saturation_count)
 
-        Mapping:
-            firing_count == 0 → 0.8 (PR20-F binary 0.9 자연 만료)
-            firing_count == 1 → 0.9 (PR20-F 중심점 자연 재현)
-            firing_count >= 2 → 1.0 (saturated)
+        Sub-decision A~J (PR29-R §41, precision 부분):
+            - A: observed_precision is None → precision_modifier = 1.0 (PR26-R 보존)
+            - B: precision_modifier = _RULE_STATS_PRECISION_BASE + p × _RULE_STATS_PRECISION_RANGE
+                                    = 0.9 + p × 0.1, range [0.9, 1.0]
+            - C: rule_stats_modifier = maturity_modifier × precision_modifier
+            - D: no boost — rule_stats_modifier ∈ [0.72, 1.0]
+                 (maturity floor 0.8 × precision floor 0.9 = 0.72)
+            - E/F: status (refuted/disputed) dominance is preserved at compose level
+            - G: other modifiers unchanged
+            - H: false_positive_rate ignored (PR29-R OOS)
+            - I: snapshot round-trip preserves observed_precision + computed confidence
+            - J: types.py / __init__.py / rule_output.py unchanged
 
-        핵심 명제 (§38.2):
-            RuleStats modifier is a weak maturity signal, not a rule quality verdict.
-            Continuous refinement separates zero-observation from one-observation
-            without introducing quality judgment.
+        Maturity mapping (PR26-R):
+            firing_count == 0 → 0.8
+            firing_count == 1 → 0.9
+            firing_count >= 2 → 1.0
+
+        Precision mapping (PR29-R):
+            observed_precision is None → 1.0
+            observed_precision p=0.0 → 0.9
+            observed_precision p=0.5 → 0.95
+            observed_precision p=1.0 → 1.0
+
+        Composition examples (§41.11 C):
+            firing 0 + p None → 0.8 × 1.0 = 0.8 (PR26-R 보존)
+            firing 0 + p 0.0 → 0.8 × 0.9 = 0.72
+            firing 1 + p 0.5 → 0.9 × 0.95 = 0.855
+            firing 2 + p 1.0 → 1.0 × 1.0 = 1.0
+
+        핵심 명제 (§41.1):
+            Observed precision is a bounded adjustment signal,
+            not a rule quality verdict.
+
+        보수적 명제:
+            Observed precision is optional evidence for rule maturity,
+            not ground truth.
         """
         if claim.created_by_rule == 0:
             return 1.0
@@ -995,9 +1048,19 @@ class Engine:
             _RULE_STATS_MATURITY_SATURATION_COUNT,
         )
         maturity_ratio = clamped_count / _RULE_STATS_MATURITY_SATURATION_COUNT
-        return 1.0 - (
+        maturity_modifier = 1.0 - (
             (1.0 - maturity_ratio) * _RULE_STATS_MATURITY_PENALTY_WEIGHT
         )
+
+        if stats.observed_precision is None:
+            precision_modifier = 1.0
+        else:
+            precision_modifier = (
+                _RULE_STATS_PRECISION_BASE
+                + stats.observed_precision.value * _RULE_STATS_PRECISION_RANGE
+            )
+
+        return maturity_modifier * precision_modifier
 
     def _validate_hint_evidence_type_values(
         self, types: Iterable[int],
@@ -1160,16 +1223,25 @@ class Engine:
             # avg 0.0 → 1.0 / avg 0.4 → 0.9 / avg 0.8 → 0.8 (PR19-E 중심점) / avg 1.0 → 0.75
             # 핵심: 빈 강도의 contradiction 은 repeated pressure 가 아니다.
 
-        rule_stats_modifier (PR20-F §32 + PR26-R §38, Sub-decision BK~BQ — continuous maturity):
+        rule_stats_modifier (PR20-F §32 + PR26-R §38 + PR29-R §41, Sub-decision BK~BQ + A~J):
             if claim.created_by_rule == 0: → 1.0
             elif (rule_id, rule_version) miss: → 1.0
             else:
-                clamped = min(max(firing_count, 0), 2)         (BQ defensive clamp)
+                # maturity (PR26-R)
+                clamped = min(max(firing_count, 0), 2)
                 maturity_ratio = clamped / 2
-                → 1.0 - (1.0 - maturity_ratio) × _RULE_STATS_MATURITY_PENALTY_WEIGHT (0.2)
-            # firing_count == 0 → 0.8 / firing_count == 1 → 0.9 / firing_count >= 2 → 1.0
-            # 핵심: continuous refinement separates zero-observation from one-observation
-            #       without introducing quality judgment.
+                maturity_modifier = 1.0 - (1.0 - maturity_ratio) × 0.2
+                # precision (PR29-R)
+                if observed_precision is None:
+                    precision_modifier = 1.0
+                else:
+                    precision_modifier = 0.9 + observed_precision.value × 0.1
+                → maturity_modifier × precision_modifier
+            # PR26-R maturity: firing 0 → 0.8 / 1 → 0.9 / 2+ → 1.0
+            # PR29-R precision: None → 1.0 / p=0.0 → 0.9 / p=0.5 → 0.95 / p=1.0 → 1.0
+            # 핵심 (§41.1): Observed precision is a bounded adjustment signal,
+            #               not a rule quality verdict.
+            # range: [0.72, 1.0] (maturity floor 0.8 × precision floor 0.9)
 
         evidence_type_modifier (PR21-L §33.13, Sub-decision AA~AE — caller-registered):
             if not self._hint_evidence_types: → 1.0
