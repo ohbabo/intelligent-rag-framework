@@ -8718,3 +8718,474 @@ Final statement:
   `_RULE_STATS_PRECISION_BASE = 0.9` / `_RULE_STATS_PRECISION_RANGE = 0.1` 신규 private 상수.
   observed_precision None 이면 1.0, value 면 0.9 + p × 0.1.
 - 125차: docs(dev) record `PR_029_OBSERVED_PRECISION_MODIFIER_MVP.md` + Draft PR ready + squash merge.
+
+---
+
+## §42. Consumer Policy Guides MVP
+
+### §42.1 Core proposition
+
+Consumer policy guides define how external consumers should interpret Engine outputs.
+
+This section does not add a new Engine feature.
+It does not change scoring, lifecycle transitions, persistence, rule output parsing, or snapshot shape.
+
+The purpose of this section is to prevent external consumers from misreading Engine outputs as stronger claims than the Engine actually makes.
+
+Core proposition:
+
+```text
+Engine outputs are decision-support signals.
+They are not domain verdicts by themselves.
+```
+
+In particular:
+
+```text
+effective_confidence is not a truth probability.
+RuleStats is not a rule quality verdict.
+observed_precision is a bounded adjustment signal.
+snapshot persistence is state preservation, not re-judgment.
+rule_version pinning is a reproducibility boundary.
+```
+
+---
+
+### §42.2 Scope
+
+This section defines consumer interpretation policy for:
+
+1. `effective_confidence`
+2. modifier composition
+3. claim lifecycle status
+4. snapshot persistence
+5. rule version pinning
+6. observed precision inside `rule_stats`
+7. external report / UI display expectations
+
+This section is intentionally documentation-first.
+
+Expected implementation footprint:
+
+```text
+engine.py       unchanged
+types.py        unchanged
+__init__.py     unchanged
+rule_output.py  unchanged
+```
+
+---
+
+### §42.3 Effective confidence display policy
+
+External consumers MUST NOT display `effective_confidence` as a direct truth probability.
+
+Allowed wording:
+
+```text
+engine confidence
+effective confidence
+computed confidence signal
+evidence-adjusted confidence
+```
+
+Disallowed wording:
+
+```text
+truth probability
+probability that the claim is true
+verified probability
+final correctness probability
+```
+
+Reason:
+
+`effective_confidence` is a composed internal score:
+
+```text
+effective = base × status × freshness × gap × count × rule_stats × evidence_type
+```
+
+Each modifier represents a bounded interpretation signal.
+The final number is useful for ordering, triage, and explanation, but it is not a calibrated statistical probability unless a future calibration layer explicitly defines that contract.
+
+Consumer guidance:
+
+```text
+Use effective_confidence for ranking and explanation.
+Do not present it as mathematically calibrated truth.
+```
+
+---
+
+### §42.4 Modifier strength interpretation policy
+
+External consumers SHOULD understand modifier strength tiers.
+
+Current interpretation strength:
+
+```text
+status        strong
+freshness     medium
+gap           weak
+count         weak
+rule_stats    very weak
+evidence_type very weak
+```
+
+This ordering is semantic, not a public numeric API guarantee.
+
+#### status modifier
+
+`status` is the strongest modifier because lifecycle state carries explicit judgment structure.
+
+Examples:
+
+```text
+refuted  → effective confidence becomes 0.0
+disputed → confidence is strongly reduced
+candidate / confirmed → no direct status penalty
+```
+
+Consumer guidance:
+
+```text
+Always show lifecycle status near effective_confidence.
+Do not show confidence alone without status when the consumer is making a decision.
+```
+
+#### freshness modifier
+
+`freshness` represents recent active contradiction pressure.
+
+It is stronger than gap/count/rule_stats/evidence_type because a recent active contradiction is more decision-relevant than generic incompleteness or weak metadata signals.
+
+Consumer guidance:
+
+```text
+Freshness attenuation means recent active contradiction pressure exists.
+It does not automatically mean the claim is false.
+```
+
+#### gap modifier
+
+`gap` represents incomplete information.
+
+Consumer guidance:
+
+```text
+Unresolved gap means incomplete evidence.
+It does not mean contradiction.
+It does not mean the claim is false.
+```
+
+#### count modifier
+
+`count` represents repeated active contradiction pressure.
+
+Consumer guidance:
+
+```text
+Multiple active contradictions add pressure.
+They still require lifecycle/refutation rules to determine status transitions.
+```
+
+#### rule_stats modifier
+
+`rule_stats` represents bounded maturity and observed precision adjustment.
+
+Consumer guidance:
+
+```text
+RuleStats is not a rule quality verdict.
+It is a weak no-boost adjustment signal.
+```
+
+#### evidence_type modifier
+
+`evidence_type` represents weak evidence-role adjustment.
+
+Consumer guidance:
+
+```text
+Evidence type should influence confidence weakly.
+It should not override lifecycle or contradiction semantics.
+```
+
+---
+
+### §42.5 Lifecycle interpretation policy
+
+External consumers MUST interpret claim lifecycle status separately from effective confidence.
+
+Current lifecycle meanings:
+
+```text
+candidate  = claim exists, not yet confirmed or refuted
+confirmed  = required gaps were resolved under the confirmation rule
+disputed   = confirmed claim has active contradiction pressure requiring review
+refuted    = explicit refutation condition was satisfied
+```
+
+Consumer MUST NOT collapse lifecycle states into a simple true/false boolean.
+
+Disallowed simplifications:
+
+```text
+confirmed = absolutely true
+candidate = probably false
+disputed  = false
+refuted   = deleted / irrelevant
+```
+
+Allowed interpretation:
+
+```text
+confirmed = currently confirmed under Engine rules
+candidate = pending / not fully resolved
+disputed  = needs review because contradiction pressure exists
+refuted   = refuted under explicit contradiction/refutation rules
+```
+
+Consumer guidance:
+
+```text
+Lifecycle status explains judgment state.
+Effective confidence explains score pressure.
+Both should be displayed together.
+```
+
+---
+
+### §42.6 Snapshot external storage policy
+
+Snapshot persistence preserves Engine state.
+
+It does not re-run rules.
+It does not re-score from raw inputs.
+It does not reconstruct history from external storage.
+It restores the state represented by the snapshot.
+
+Consumer guidance:
+
+```text
+Treat snapshot as state preservation.
+Do not treat snapshot load as fresh analysis.
+```
+
+External storage systems SHOULD store at least:
+
+```text
+snapshot.schema_version
+snapshot creation time in the external system
+producer application version, if available
+storage migration metadata, if any
+```
+
+The Engine snapshot schema version remains the Engine's compatibility boundary.
+
+Consumer systems MUST NOT silently rewrite Engine snapshots into a different semantic shape without owning that transformation outside the Engine contract.
+
+---
+
+### §42.7 Rule version pinning display policy
+
+Rule version pinning exists to preserve reproducibility of rule-produced claims.
+
+Consumer guidance:
+
+```text
+When showing a claim created by a rule, show or retain the rule version used to produce it.
+```
+
+Recommended external report fields:
+
+```text
+claim_id
+rule_id
+rule_version
+effective_confidence
+lifecycle_status
+relevant evidence summary
+active contradiction summary, if any
+```
+
+Rule version SHOULD NOT be interpreted as rule quality.
+
+Disallowed interpretation:
+
+```text
+higher rule_version = better rule
+newer rule_version = more correct claim
+```
+
+Allowed interpretation:
+
+```text
+rule_version identifies which rule definition produced the claim.
+```
+
+---
+
+### §42.8 Observed precision interpretation policy
+
+`observed_precision` is used only as a bounded adjustment signal inside `rule_stats`.
+
+Current precision modifier:
+
+```text
+None -> 1.0
+p    -> 0.9 + p × 0.1
+```
+
+Therefore:
+
+```text
+p = 0.0 -> 0.9
+p = 0.5 -> 0.95
+p = 1.0 -> 1.0
+```
+
+This is no-boost.
+
+It can reduce confidence weakly, but it cannot raise confidence above the base path.
+
+Consumer MUST NOT interpret `observed_precision` as a direct rule quality verdict.
+
+Disallowed wording:
+
+```text
+this rule is correct
+this rule is wrong
+this rule has proven quality
+this rule is validated
+```
+
+Allowed wording:
+
+```text
+observed precision adjustment
+bounded rule_stats adjustment
+weak historical signal
+```
+
+Core boundary:
+
+```text
+Observed precision is a bounded adjustment signal, not a rule quality verdict.
+```
+
+---
+
+### §42.9 Consumer report policy
+
+External reports SHOULD separate these layers:
+
+```text
+1. Claim text
+2. Lifecycle status
+3. Effective confidence
+4. Important modifier pressures
+5. Evidence summary
+6. Contradiction / gap summary
+7. Rule id and rule version
+8. Snapshot/schema metadata, when relevant
+```
+
+External reports SHOULD NOT collapse all Engine output into a single severity label.
+
+For example, the following mapping is out of scope:
+
+```text
+effective_confidence -> CVSS
+effective_confidence -> exploitability
+effective_confidence -> business risk
+effective_confidence -> incident severity
+```
+
+Such mappings require domain-specific adapters and are not part of the Engine core contract.
+
+---
+
+### §42.10 Out of scope
+
+The following are explicitly out of scope for PR30-P:
+
+```text
+file IO inside Engine
+database schema
+external storage implementation
+CVSS mapping
+business severity mapping
+domain taxonomy
+Cerberus-specific adapter
+false_positive_rate activation
+rule quality verdict
+snapshot schema v3 bump
+formula shape change
+new public API
+new lifecycle status
+new modifier
+```
+
+---
+
+### §42.11 Invariants
+
+PR30-P preserves the following invariants:
+
+1. Engine scoring formula is unchanged.
+
+```text
+effective = base × status × freshness × gap × count × rule_stats × evidence_type
+```
+
+2. `engine.py` is unchanged.
+
+3. `types.py` is unchanged.
+
+4. `__init__.py` is unchanged.
+
+5. `rule_output.py` is unchanged.
+
+6. Snapshot schema version remains unchanged.
+
+7. Claim lifecycle semantics are unchanged.
+
+8. Refutation semantics are unchanged.
+
+9. Contradiction semantics are unchanged.
+
+10. Rule version pinning semantics are unchanged.
+
+11. `observed_precision` remains a bounded no-boost adjustment signal.
+
+12. `false_positive_rate` remains ignored.
+
+13. Consumer policy guides do not introduce a Cerberus-specific adapter.
+
+14. Consumer policy guides do not define a domain severity taxonomy.
+
+15. Consumer policy guides do not convert `effective_confidence` into a calibrated truth probability.
+
+---
+
+### §42.12 Test expectation
+
+PR30-P is a boundary/spec PR.
+
+Expected test behavior:
+
+```text
+new consumer policy guide tests should pass immediately
+existing regression tests remain unchanged
+no implementation commit is required
+```
+
+The test suite should verify that current public behavior already satisfies the consumer policy guide contract.
+
+구현 단계 (127/129차) — **3-commit cycle (128차 skip 권고, PR27-P / PR28-O 패턴)**:
+- 127차: tests — consumer policy guide usage invariants 잠금 (8~15 tests, all-pass 예상).
+  현재 public behavior 가 이미 §42 정책과 충돌 없음을 검증.
+- 128차: **skip** — PR30-P 본질은 "엔진을 더 만들지 않고 외부 사용 해석 경계를 명문화". docstring 보강 필요 시 129차 docs(dev) 와 함께 묶거나 별도 PR.
+- 129차: docs(dev) record `PR_030_CONSUMER_POLICY_GUIDES_MVP.md` + Draft PR ready + squash merge.
