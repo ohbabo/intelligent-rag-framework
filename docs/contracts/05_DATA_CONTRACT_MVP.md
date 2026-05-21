@@ -7587,3 +7587,357 @@ PR26-R:
 구현 단계 (111/112차) — **테스트 먼저 잠금 → 구현** 순서:
 - 111차: tests (위 48 invariant) — 일부 fail (continuous expected 값 / `_RULE_STATS_MATURITY_*` 미존재 / `_rule_stats_modifier_for_claim` 본문 binary 그대로), 다수 pass (PR1~PR25-T 의 다른 modifier / state / snapshot / lifecycle / public namespace 보존)
 - 112차: `_RULE_STATS_MATURITY_PENALTY_WEIGHT` + `_RULE_STATS_MATURITY_SATURATION_COUNT` 신규 + `_rule_stats_modifier_for_claim` 본문 교체 (continuous + defensive clamp) + 구 `_RULE_STATS_PENALTY_MODIFIER` / `_RULE_STATS_MIN_FIRING_COUNT` 제거 + §38.9 자연 만료 테스트 (firing_count == 0 만, PR20-F 0.9 → PR26-R 0.8) expected 갱신 — 111차 테스트 통과로 입증
+
+---
+
+## 39. External integration spec MVP
+
+### 39.1 Core proposition
+
+External integration is a call-boundary contract, not a new engine feature.
+
+The Engine already owns the internal judgment state:
+
+```text
+Claim
+Evidence
+Gap
+RuleStats
+contradictions
+gap resolutions
+hint evidence type set
+lifecycle history
+effective confidence
+snapshot / migration
+```
+
+PR27-P defines how an external consumer may use that state safely.
+
+The external consumer may be a product adapter, CLI wrapper, web backend, report generator, or a Cerberus-side integration layer such as `cerberus_client`.
+
+The consumer must not reinterpret the Engine's internal lifecycle or modifier semantics.
+
+```text
+Engine responsibility:
+  - preserve judgment state
+  - apply lifecycle transitions
+  - apply registered rules
+  - compute effective confidence
+  - serialize / restore state through snapshot
+
+Consumer responsibility:
+  - collect raw data
+  - normalize domain input before registration
+  - decide when to call Engine APIs
+  - persist snapshots outside the Engine
+  - render reports
+  - own domain taxonomies such as Evidence.type meaning
+```
+
+The Engine is not a database, not a report renderer, and not a domain-specific security scanner.
+
+---
+
+### 39.2 Integration boundary
+
+The external integration boundary is the point where caller-owned observations become Engine-owned state.
+
+```text
+consumer raw input
+  -> caller normalization
+  -> Engine registration
+  -> Engine judgment state
+  -> Engine query output
+  -> caller report / storage / action
+```
+
+Allowed direction:
+
+```text
+caller data -> Engine state -> Engine query -> caller interpretation
+```
+
+Not allowed:
+
+```text
+caller mutates Engine internals directly
+caller rewrites snapshot internals as business logic
+caller treats effective_confidence as a final vulnerability verdict
+caller assumes Evidence.type taxonomy is framework-owned
+```
+
+The Engine exposes APIs. It does not expose a mutable internal object graph as an integration surface.
+
+---
+
+### 39.3 Recommended call order
+
+A consumer SHOULD integrate the Engine in the following order.
+
+```text
+1. Create or restore Engine
+2. Register caller-owned hint evidence types if needed
+3. Register claims
+4. Register evidence
+5. Register gaps
+6. Register rules / fire rules when rule-based claims are needed
+7. Register contradictions / contradiction resolutions
+8. Apply lifecycle transitions
+9. Query effective confidence
+10. Export snapshot
+```
+
+The order is not a universal workflow requirement, but it is the safest default integration discipline.
+
+Minimal new Engine session:
+
+```text
+engine = Engine()
+
+engine.register_hint_evidence_types(...)
+claim_id = engine.add_claim(...)
+evidence_id = engine.add_evidence(...)
+gap_id = engine.add_gap(...)
+
+engine.register_contradiction(...)
+engine.dispute_claim_if_ready(...)
+engine.refute_disputed_claim_if_ready(...)
+score = engine.compute_effective_confidence(claim_id)
+
+snapshot = engine.to_snapshot()
+```
+
+Restored session:
+
+```text
+engine = Engine.from_snapshot(snapshot)
+
+score = engine.compute_effective_confidence(claim_id)
+history = engine.claim_lifecycle_history(claim_id)
+
+snapshot = engine.to_snapshot()
+```
+
+Restore MUST NOT imply re-judgment.
+
+This preserves PR17 and PR18-K:
+
+```text
+persistence is state preservation, not re-judgment
+migration preserves compatibility, not truth
+```
+
+---
+
+### 39.4 Snapshot handoff boundary
+
+The snapshot is a JSON-compatible representation of Engine state.
+
+The snapshot is suitable for:
+
+```text
+file storage
+database JSON column
+network transfer
+test fixture
+integration checkpoint
+```
+
+The snapshot is not:
+
+```text
+a public database schema
+a reporting schema
+a domain event stream
+a vulnerability finding format
+a caller-editable policy object
+```
+
+A consumer MAY store the snapshot.
+
+A consumer MUST NOT depend on undocumented internal ordering, helper names, or private constants inside the snapshot.
+
+The only stable snapshot contract is:
+
+```text
+Engine.to_snapshot()
+Engine.from_snapshot(snapshot)
+round-trip query identity
+schema_version compatibility through migration
+```
+
+The consumer owns where the snapshot is stored.
+
+The Engine owns how the snapshot is interpreted.
+
+---
+
+### 39.5 Effective confidence consumption
+
+`compute_effective_confidence(claim_id)` returns the Engine's current effective confidence for a Claim.
+
+It is not a final report verdict.
+
+Allowed use:
+
+```text
+effective_confidence -> report input
+effective_confidence -> triage ranking input
+effective_confidence -> audit explanation input
+effective_confidence -> downstream policy input
+```
+
+Not allowed:
+
+```text
+effective_confidence == vulnerability confirmed
+effective_confidence == exploitability score
+effective_confidence == CVSS
+effective_confidence == business severity
+effective_confidence == remediation priority by itself
+```
+
+The consumer may combine effective confidence with caller-owned context:
+
+```text
+asset criticality
+business exposure
+customer scope
+manual analyst judgment
+legal authorization boundary
+scanner phase
+operator notes
+```
+
+But that combination is outside the Engine.
+
+The Engine only promises the current 7-modifier formula shape:
+
+```text
+effective = base
+          × status
+          × freshness
+          × gap
+          × count
+          × rule_stats
+          × evidence_type
+```
+
+The Engine does not promise that this score alone is a complete security decision.
+
+---
+
+### 39.6 Evidence.type integration boundary
+
+The framework does not own the Evidence.type taxonomy.
+
+The caller owns the meaning of type IDs.
+
+The Engine only owns the registered hint evidence type set.
+
+Allowed:
+
+```text
+consumer defines:
+  10 = banner_hint
+  11 = cpe_mapper_hint
+  12 = api_enrichment_hint
+
+consumer calls:
+  register_hint_evidence_types({10, 11, 12})
+```
+
+Not allowed:
+
+```text
+framework assumes 10 means banner_hint
+framework ships built-in HINT enum
+consumer expects unregistered hint IDs to be accepted
+consumer passes strings or partial invalid values
+```
+
+PR21-L, PR22-S, and PR25-T define the completed boundary:
+
+```text
+register
+unregister
+clear
+strict validation
+all-or-nothing mutation
+unknown unregister no-op
+taxonomy ownership outside framework
+```
+
+PR27-P does not change Evidence.type scoring.
+
+---
+
+### 39.7 Framework responsibility vs consumer responsibility
+
+| Area                   | Framework responsibility                 | Consumer responsibility                       |
+| ---------------------- | ---------------------------------------- | --------------------------------------------- |
+| Raw tool output        | none                                     | collect and parse                             |
+| Domain normalization   | none                                     | map input into Claim / Evidence / Gap         |
+| Claim lifecycle        | own transitions                          | call transition APIs intentionally            |
+| Contradictions         | store registered contradiction relations | decide which evidence contradicts which claim |
+| Gap resolution         | preserve resolution state                | decide when a gap is resolved                 |
+| Evidence.type meaning  | none                                     | define taxonomy                               |
+| Hint evidence type set | store and validate registered IDs        | choose which IDs are hint-like                |
+| Effective confidence   | compute formula                          | interpret in product/report context           |
+| Persistence            | snapshot round-trip                      | file/DB/network storage                       |
+| Migration              | schema compatibility                     | provide snapshot to restore                   |
+| Report rendering       | none                                     | render user-facing report                     |
+
+The framework must stay domain-light.
+
+The consumer may be domain-heavy.
+
+This separation prevents the framework from becoming Cerberus-specific while still allowing Cerberus to use it safely.
+
+---
+
+### 39.8 MVP invariants
+
+PR27-P locks the following invariants.
+
+1. External integration does not add a new lifecycle state.
+2. External integration does not change the 7-modifier formula.
+3. External integration does not change snapshot schema version.
+4. External integration does not make Evidence.type taxonomy framework-owned.
+5. External integration does not expose private constants as public API.
+6. External integration does not make `compute_effective_confidence` a final vulnerability verdict.
+7. External integration does not require file IO inside Engine.
+8. External integration does not require a Cerberus-specific adapter inside the framework.
+9. Snapshot restore remains state restoration, not re-judgment.
+10. Consumer-owned report interpretation remains outside Engine.
+
+---
+
+### 39.9 Out of scope
+
+The following are out of scope for PR27-P.
+
+```text
+Cerberus-specific adapter implementation
+file IO wrapper
+database persistence layer
+report schema
+finding schema
+CVSS / EPSS / KEV integration
+domain taxonomy for Evidence.type
+public config object
+new modifier
+new lifecycle transition
+new snapshot schema version
+LLM integration
+tool execution
+```
+
+PR27-P is intentionally a boundary spec.
+
+The goal is to make future integration safer without making the Engine larger.
+
+구현 단계 (115/117차) — **3-commit cycle (116차 skip 권고)**:
+- 115차: tests — usage pattern 잠금 (8~12 tests, public API 만으로 가능함을 검증). 코드 변경 없음, 기존 969 회귀 0.
+- 116차: **skip** — PR27-P 의 본질은 "엔진을 더 만들지 않는 경계". docstring 보강이 필요하면 117차 docs(dev) 와 함께 묶거나 별도 PR 로 분리.
+- 117차: docs(dev) record `PR_027_EXTERNAL_INTEGRATION_SPEC_MVP.md` + Draft PR ready + squash merge.
