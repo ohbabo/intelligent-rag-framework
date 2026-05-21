@@ -10320,7 +10320,7 @@ H. OOS / no API change boundary
 2. **Shape B frozenset** — `effective_breakdown(claim_id).keys() == EFFECTIVE_BREAKDOWN_KEYS` (9 keys, 6 boolean pressure flags).
 3. **Shape C frozenset** — each event dict in lifecycle list has keys exactly `LIFECYCLE_EVENT_KEYS` (5 keys).
 4. **Shape D frozenset** — `evidence_contradiction(claim_id).keys() == EVIDENCE_CONTRADICTION_KEYS` (5 keys).
-5. **Shape E frozenset** — `rule_pinning(claim_id).keys() == RULE_PINNING_KEYS` (9 keys). For rule_id=0 path, `has_rule_binding=False` and rule-specific fields are `None` / `0`.
+5. **Shape E frozenset** — `rule_pinning(claim_id).keys() == RULE_PINNING_KEYS` (8 keys). For rule_id=0 path, `has_rule_binding=False` and rule-specific fields are `None` / `0`.
 6. **Shape F frozenset** — `snapshot_metadata(engine).keys() == SNAPSHOT_METADATA_KEYS` (8 keys). `schema_version` field always equals 2.
 7. **Assembly purity** — each shape can be assembled using only existing public Engine APIs (`get_claim`, `evidences_for_claim`, `gaps_for_claim`, `gap_resolution`, `contradictions_for_claim`, `active_contradictions_for_claim`, `resolved_contradictions_for_claim`, `claim_lifecycle_history`, `get_rule`, `get_rule_stats`, `compute_effective_confidence`, `to_snapshot`).
 8. **No report helper method exists** — `Engine.claim_report`, `Engine.report`, `Engine.summary`, `Engine.breakdown`, `Engine.render` do not exist. `"claim_report"`, `"report"`, `"summary"`, `"breakdown"`, `"render"` are not in `ragcore.__all__`.
