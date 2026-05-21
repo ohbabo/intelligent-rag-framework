@@ -194,17 +194,23 @@ class TestRuleStatsModifierSentinelAndLookup:
 class TestRuleStatsModifierThreshold:
     """§32.12 invariants 5~9 — Sub-decision W (threshold=2) + X (no boost)."""
 
-    # invariant 5 ★ — 의도 fail (현재 코드 1.0, 88차 후 0.9)
+    # invariant 5 ★ — PR26-R §38 자연 만료 (PR20-F binary 0.9 → continuous 0.8)
     def test_firing_count_zero_applies_penalty(self) -> None:
-        """register_rule 직후 firing_count = 0 → modifier = 0.9."""
+        """register_rule 직후 firing_count = 0 → modifier = 0.8.
+
+        PR26-R §38.6 (BM): maturity_ratio 0.0 → 1.0 - 1.0 × 0.2 = 0.8.
+        의미 (firing_count < 2 → attenuation) 보존, 강도만 정밀화.
+        PR20-F binary 0.9 가 firing_count == 0 일 때 자연 만료 — 0회 관측은
+        1회 관측보다 더 미성숙.
+        """
         engine = Engine()
         _register_rule(engine, rule_id=1, rule_version=1)
         _, claim_id = _claim_with_rule(
             engine, rule_id=1, rule_version=1, base_confidence=1.0,
         )
         result = engine.compute_effective_confidence(claim_id)
-        # base 1.0 × all_other 1.0 × rule_stats 0.9 = 0.9
-        assert result.value == pytest.approx(0.9)
+        # base 1.0 × all_other 1.0 × rule_stats 0.8 (PR26-R continuous, firing 0) = 0.8
+        assert result.value == pytest.approx(0.8)
 
     # invariant 6 ★
     def test_firing_count_one_applies_penalty(self) -> None:
