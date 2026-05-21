@@ -240,8 +240,21 @@ class TestComputeEffectiveConfidence:
         # 강한 evidence가 들어왔지만 stub은 여전히 base_confidence
         assert engine.compute_effective_confidence(c) == ScoreValue(0.50)
 
-    def test_stub_ignores_rule_stats_in_mvp(self) -> None:
-        """RuleStats가 어떻게 갱신돼도 stub은 base_confidence만."""
+    def test_rule_stats_modifier_after_pr29r_refinement(self) -> None:
+        """PR20-F binary → PR26-R continuous maturity → PR29-R observed_precision composition.
+
+        PR2 stub 시대의 "RuleStats 무시" 가정은 PR20-F / PR26-R / PR29-R 으로
+        자연 만료. 현재 effective = base × maturity × precision (no boost).
+
+        - firing_count=100 → maturity 1.0 (saturated, PR26-R)
+        - observed_precision=0.9 → precision_modifier 0.9 + 0.9 × 0.1 = 0.99 (PR29-R)
+        - rule_stats_modifier = 1.0 × 0.99 = 0.99
+        - effective = 0.60 × 0.99 = 0.594
+
+        PR29-R 핵심 명제 보존: "Observed precision is a bounded adjustment signal,
+        not a rule quality verdict." — modifier 가 base 를 boost 하지 않고
+        오직 약하게 감쇠만 한다 (no boost, range [0.72, 1.0]).
+        """
         engine = Engine()
         _register(engine, rule_id=1, rule_version=1, prior_confidence=0.5)
         e = _entity(engine)
@@ -255,7 +268,8 @@ class TestComputeEffectiveConfidence:
             firing_delta=100, true_delta=90,
             observed_precision=ScoreValue(0.9),
         )
-        assert engine.compute_effective_confidence(c) == ScoreValue(0.60)
+        # base 0.60 × maturity 1.0 × precision 0.99 = 0.594
+        assert engine.compute_effective_confidence(c) == ScoreValue(0.594)
 
 
 class TestNamingTriangleSeparation:
