@@ -8316,3 +8316,405 @@ Rule version pinning is integration stability, not rule quality judgment.
 - 119차: tests — version-specific RuleDefinition / RuleStats / Claim pinning behavior 잠금 (10~14 tests). 현재 구조상 대부분 all-pass 예상 (RuleDefinition / RuleStats 이미 `(rule_id, rule_version)` key, Claim 도 `created_by_rule_version` field 존재).
 - 120차: **skip 가능** — 119차 all-pass 시 구현 차수 불필요. 일부 fail 발생 시에만 minimal implementation.
 - 121차: docs(dev) record `PR_028_RULE_VERSION_PINNING_MVP.md` + Draft PR ready + squash merge.
+
+---
+
+## §41. PR29-R — Observed Precision Modifier MVP
+
+### §41.1 Purpose
+
+PR29-R refines the existing RuleStats modifier by optionally using
+`RuleStats.observed_precision`.
+
+This PR does not redefine RuleStats as a rule quality verdict.
+
+The purpose is narrow:
+
+- preserve the existing 7-modifier formula shape
+- preserve PR26-R firing_count-based maturity semantics
+- optionally apply observed precision as a bounded no-boost adjustment signal
+- keep rule judgment, lifecycle judgment, and contradiction judgment unchanged
+
+Core statement:
+
+> Observed precision is a bounded adjustment signal, not a rule quality verdict.
+
+More conservative statement:
+
+> Observed precision is optional evidence for rule maturity, not ground truth.
+
+---
+
+### §41.2 Background
+
+PR20-F introduced RuleStats as a maturity signal.
+
+PR26-R refined the maturity signal from binary behavior into a small continuous tier:
+
+```text
+firing_count < 0  -> 0.8
+firing_count == 0 -> 0.8
+firing_count == 1 -> 0.9
+firing_count >= 2 -> 1.0
+```
+
+However, `RuleStats` already contains:
+
+```text
+observed_precision: ScoreValue | None
+false_positive_rate: ScoreValue | None
+```
+
+PR29-R only decides how to connect `observed_precision`.
+
+It does not use `false_positive_rate` yet.
+
+---
+
+### §41.3 Non-goals
+
+PR29-R explicitly does not do the following:
+
+* does not turn RuleStats into a rule quality verdict
+* does not auto-disable rules
+* does not change rule firing behavior
+* does not change lifecycle transitions
+* does not change contradiction/refutation semantics
+* does not change evidence type semantics
+* does not change `Claim`, `Evidence`, `Gap`, or `RuleStats` dataclass fields
+* does not add a new public enum
+* does not add a built-in HINT enum
+* does not change snapshot `schema_version`
+* does not use `false_positive_rate`
+* does not boost effective confidence above the existing base confidence
+* does not introduce observed precision aggregation policy
+* does not introduce time decay, freshness weighting, or rule quality scoring
+
+---
+
+### §41.4 Formula Shape
+
+The public formula shape remains unchanged:
+
+```text
+effective = base
+          × status
+          × freshness
+          × gap
+          × count
+          × rule_stats
+          × evidence_type
+```
+
+PR29-R only refines the internal meaning of `rule_stats`.
+
+Before PR29-R:
+
+```text
+rule_stats_modifier = maturity_modifier
+```
+
+After PR29-R:
+
+```text
+rule_stats_modifier = maturity_modifier × precision_modifier
+```
+
+Both modifiers must stay inside `[0.0, 1.0]`.
+
+No component may boost confidence.
+
+---
+
+### §41.5 Maturity Modifier
+
+The PR26-R maturity modifier remains unchanged:
+
+```text
+firing_count < 0  -> 0.8
+firing_count == 0 -> 0.8
+firing_count == 1 -> 0.9
+firing_count >= 2 -> 1.0
+```
+
+This means PR29-R must not regress the PR26-R maturity behavior.
+
+---
+
+### §41.6 Precision Modifier
+
+If `observed_precision is None`, precision must not affect the result.
+
+```text
+precision_modifier = 1.0
+```
+
+If `observed_precision` exists, let:
+
+```text
+p = observed_precision.value
+```
+
+Then:
+
+```text
+precision_modifier = 0.9 + (p × 0.1)
+```
+
+Expected range:
+
+```text
+p = 0.0 -> 0.9
+p = 0.5 -> 0.95
+p = 1.0 -> 1.0
+```
+
+This means:
+
+* low observed precision weakly attenuates confidence
+* high observed precision removes that attenuation
+* observed precision never boosts confidence
+* observed precision never replaces maturity
+* observed precision never overrides lifecycle status
+
+---
+
+### §41.7 No-Boost Rule
+
+PR29-R preserves the project-wide no-boost principle.
+
+Even if:
+
+```text
+observed_precision = 1.0
+```
+
+the best possible precision modifier is:
+
+```text
+1.0
+```
+
+Therefore the result can only be equal to or lower than the previous confidence path.
+
+It must never exceed the base confidence path.
+
+---
+
+### §41.8 Interaction With Existing Modifiers
+
+Observed precision is subordinate to the existing composition.
+
+Examples:
+
+```text
+confirmed + no gaps + no contradictions + mature rule + precision 1.0
+=> no attenuation from rule_stats
+
+confirmed + no gaps + no contradictions + mature rule + precision 0.0
+=> weak rule_stats attenuation
+
+disputed + high precision
+=> still disputed attenuation applies
+
+refuted + high precision
+=> still effective confidence is 0.0
+
+unresolved gaps + high precision
+=> gap attenuation still applies
+
+unknown evidence type + high precision
+=> evidence_type attenuation still applies
+```
+
+Observed precision cannot cancel status, gap, count, freshness, or evidence type penalties.
+
+---
+
+### §41.9 Snapshot Compatibility
+
+PR29-R does not change snapshot schema.
+
+```text
+schema_version = 2
+```
+
+The existing RuleStats snapshot shape is preserved.
+
+Round-trip behavior must preserve:
+
+* firing_count
+* observed_precision
+* false_positive_rate
+* computed effective confidence after restore
+
+No migration is required.
+
+---
+
+### §41.10 Implementation Boundary
+
+Expected implementation target:
+
+```text
+ragcore/engine.py
+```
+
+Expected unchanged files:
+
+```text
+types.py
+__init__.py
+rule_output.py
+```
+
+Expected unchanged semantics:
+
+```text
+lifecycle transitions
+refutation behavior
+contradiction registration/resolution
+gap modifier
+count modifier
+freshness modifier
+evidence type modifier
+rule version pinning
+external consumer call-boundary spec
+snapshot schema_version
+```
+
+---
+
+### §41.11 Required Invariants
+
+PR29-R must lock the following invariants.
+
+#### A. None preserves PR26-R
+
+If `observed_precision is None`, the result must match PR26-R behavior exactly.
+
+```text
+firing_count 0 -> 0.8
+firing_count 1 -> 0.9
+firing_count 2 -> 1.0
+```
+
+#### B. Precision modifier range
+
+```text
+observed_precision 0.0 -> precision_modifier 0.9
+observed_precision 0.5 -> precision_modifier 0.95
+observed_precision 1.0 -> precision_modifier 1.0
+```
+
+#### C. Maturity × precision composition
+
+```text
+firing_count 0, precision 0.0 -> 0.8 × 0.9 = 0.72
+firing_count 1, precision 0.5 -> 0.9 × 0.95 = 0.855
+firing_count 2, precision 1.0 -> 1.0 × 1.0 = 1.0
+```
+
+#### D. No boost
+
+The rule_stats modifier must never exceed `1.0`.
+
+#### E. Refuted dominance
+
+If claim status is refuted, observed precision must not matter.
+
+```text
+effective = 0.0
+```
+
+#### F. Disputed dominance preserved
+
+If claim status is disputed, observed precision can only multiply after disputed attenuation.
+
+It cannot erase disputed status.
+
+#### G. Other modifiers preserved
+
+Observed precision must not change:
+
+```text
+freshness modifier
+gap modifier
+count modifier
+evidence_type modifier
+```
+
+#### H. false_positive_rate ignored
+
+`false_positive_rate` remains unused in PR29-R.
+
+Changing `false_positive_rate` alone must not change effective confidence.
+
+#### I. Snapshot round-trip
+
+After `to_snapshot()` and `from_snapshot()`:
+
+```text
+observed_precision is preserved
+effective confidence is identical
+schema_version remains 2
+```
+
+#### J. Public namespace unchanged
+
+No new public constants, enums, or exports are added.
+
+---
+
+### §41.12 Expected Test Pattern
+
+PR29-R is expected to produce a mixed test-first pattern.
+
+Some invariants should already pass:
+
+```text
+types.py unchanged
+RuleStats fields already exist
+snapshot schema_version remains 2
+false_positive_rate ignored
+lifecycle/refute/contradiction semantics unchanged
+```
+
+Some invariants should fail before implementation:
+
+```text
+observed_precision 0.0 should apply extra attenuation
+observed_precision 0.5 should apply extra attenuation
+maturity × precision composition should apply
+snapshot restore should preserve the new computed behavior
+```
+
+Expected implementation should be minimal.
+
+---
+
+### §41.13 Final Lock
+
+PR29-R is not a quality scoring PR.
+
+It is not a rule verdict PR.
+
+It is a bounded connection PR:
+
+```text
+existing RuleStats.observed_precision
+-> no-boost precision modifier
+-> internal refinement of rule_stats modifier
+```
+
+Final statement:
+
+> Observed precision can reduce uncertainty attenuation, but it cannot increase trust beyond the existing no-boost confidence path.
+
+구현 단계 (123/124/125차) — **4-commit cycle, 124차 implementation 예상**:
+- 123차: tests — observed_precision modifier 의 invariants 잠금 (예상 ~25 tests, mixed fail pattern).
+  현재 engine 은 observed_precision 을 modifier 에 사용하지 않으므로 일부 fail 예상.
+- 124차: feat(engine) — `_rule_stats_modifier_for_claim` 본문 확장 (maturity × precision_modifier).
+  `_RULE_STATS_PRECISION_BASE = 0.9` / `_RULE_STATS_PRECISION_RANGE = 0.1` 신규 private 상수.
+  observed_precision None 이면 1.0, value 면 0.9 + p × 0.1.
+- 125차: docs(dev) record `PR_029_OBSERVED_PRECISION_MODIFIER_MVP.md` + Draft PR ready + squash merge.
