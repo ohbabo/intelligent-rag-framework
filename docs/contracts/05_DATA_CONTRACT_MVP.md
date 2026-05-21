@@ -7941,3 +7941,378 @@ The goal is to make future integration safer without making the Engine larger.
 - 115차: tests — usage pattern 잠금 (8~12 tests, public API 만으로 가능함을 검증). 코드 변경 없음, 기존 969 회귀 0.
 - 116차: **skip** — PR27-P 의 본질은 "엔진을 더 만들지 않는 경계". docstring 보강이 필요하면 117차 docs(dev) 와 함께 묶거나 별도 PR 로 분리.
 - 117차: docs(dev) record `PR_027_EXTERNAL_INTEGRATION_SPEC_MVP.md` + Draft PR ready + squash merge.
+
+---
+
+## 40. Rule version pinning MVP
+
+### 40.1 Core proposition
+
+Rule version pinning is integration stability, not rule quality judgment.
+
+The Engine already stores rule identity as a pair:
+
+```text
+(rule_id, rule_version)
+```
+
+A Claim also stores the rule identity that created it:
+
+```text
+Claim.created_by_rule
+Claim.created_by_rule_version
+```
+
+PR28-O defines the meaning of that pair as a pinned integration boundary.
+
+Once a Claim is created, its rule identity is fixed.
+
+Later registration, update, or interpretation of another rule version MUST NOT change what rule version that Claim belongs to.
+
+```text
+Claim.created_by_rule + Claim.created_by_rule_version
+= the rule version pinned at claim creation time
+```
+
+This is not a rule quality verdict.
+
+This is not a rule maturity score.
+
+This is not a new lifecycle transition.
+
+This is a stability contract for external consumers, snapshots, reports, and rule evolution.
+
+---
+
+### 40.2 Why rule version pinning exists
+
+External consumers may evolve rules over time.
+
+Example:
+
+```text
+rule_id = 100
+version = 1  -> old SSH weak-banner rule
+version = 2  -> revised SSH weak-banner rule
+version = 3  -> stricter SSH weak-banner rule
+```
+
+If a Claim was created by `(100, 1)`, that Claim must remain tied to `(100, 1)`.
+
+It must not silently become a `(100, 2)` Claim just because a newer rule version exists.
+
+This protects:
+
+```text
+snapshot replay
+report reproducibility
+audit trail clarity
+external consumer debugging
+rule migration safety
+long-running product integration
+```
+
+A report generated from old Engine state must be able to say:
+
+```text
+This claim came from rule_id=100, rule_version=1.
+```
+
+not merely:
+
+```text
+This claim came from rule_id=100.
+```
+
+---
+
+### 40.3 Rule identity boundary
+
+Rule identity is the pair:
+
+```text
+(rule_id, rule_version)
+```
+
+Not:
+
+```text
+rule_id alone
+```
+
+The Engine already uses this pair for:
+
+```text
+RuleDefinition storage
+RuleStats storage
+Claim creation metadata
+rule_stats modifier lookup
+snapshot persistence
+```
+
+PR28-O locks the interpretation:
+
+```text
+same rule_id + different version = different rule identity
+```
+
+Therefore:
+
+```text
+(100, 1) != (100, 2)
+```
+
+Even when both versions describe the same broad domain idea.
+
+---
+
+### 40.4 Claim pinning rule
+
+A Claim pins its creating rule version at creation time.
+
+```text
+Claim.created_by_rule
+Claim.created_by_rule_version
+```
+
+These fields are part of Claim state.
+
+They are not dynamically resolved against the latest rule registry.
+
+Allowed:
+
+```text
+claim created with rule_id=100, rule_version=1
+later register rule_id=100, rule_version=2
+claim still belongs to rule_id=100, rule_version=1
+```
+
+Not allowed:
+
+```text
+claim silently shifts to rule_version=2
+compute_effective_confidence uses latest registered version instead of pinned version
+snapshot restore rewrites claim rule_version
+external consumer reports only rule_id and drops rule_version
+```
+
+---
+
+### 40.5 RuleStats pinning
+
+RuleStats is also keyed by:
+
+```text
+(rule_id, rule_version)
+```
+
+Updating stats for one version MUST NOT update stats for another version.
+
+Allowed:
+
+```text
+update_rule_stats(100, 1, firing_delta=1)
+```
+
+affects:
+
+```text
+RuleStats(rule_id=100, rule_version=1)
+```
+
+Not:
+
+```text
+RuleStats(rule_id=100, rule_version=2)
+```
+
+The rule_stats modifier for a Claim must use the Claim's pinned pair:
+
+```text
+(claim.created_by_rule, claim.created_by_rule_version)
+```
+
+It must not search for:
+
+```text
+latest version for same rule_id
+highest registered rule_version
+most mature registered version
+best observed precision version
+```
+
+Those policies are external migration decisions and are out of scope.
+
+---
+
+### 40.6 Snapshot and report boundary
+
+Snapshots preserve pinned rule identity.
+
+A snapshot round-trip must preserve:
+
+```text
+Claim.created_by_rule
+Claim.created_by_rule_version
+RuleDefinition keyed by (rule_id, rule_version)
+RuleStats keyed by (rule_id, rule_version)
+```
+
+External reports SHOULD include both:
+
+```text
+rule_id
+rule_version
+```
+
+A consumer MAY display a user-friendly rule name outside the Engine.
+
+But the Engine-level reproducibility key remains:
+
+```text
+(rule_id, rule_version)
+```
+
+The snapshot is not a rule migration tool.
+
+Restoring a snapshot MUST NOT upgrade Claims to newer rule versions.
+
+This preserves the PR17 principle:
+
+```text
+Persistence is state preservation, not re-judgment.
+```
+
+---
+
+### 40.7 External consumer responsibility
+
+The framework owns pinned rule identity storage and lookup.
+
+The external consumer owns rule evolution policy.
+
+Framework responsibility:
+
+```text
+store RuleDefinition by (rule_id, rule_version)
+store RuleStats by (rule_id, rule_version)
+store Claim.created_by_rule_version
+compute rule_stats modifier from the pinned pair
+preserve pinned pair through snapshot round-trip
+```
+
+Consumer responsibility:
+
+```text
+decide when to introduce a new rule_version
+decide whether old claims should be migrated, superseded, or left as historical
+decide how to display rule names in reports
+decide whether a new scan should use old or new rule versions
+decide whether a product adapter maps domain rule names to numeric ids
+```
+
+The Engine does not decide rule migration policy.
+
+---
+
+### 40.8 What PR28-O does not mean
+
+Rule version pinning does not mean:
+
+```text
+newer rule version is better
+older rule version is worse
+rule_version implies maturity
+rule_version implies precision
+rule_version implies vulnerability severity
+rule_version implies lifecycle status
+rule_version implies confidence boost
+```
+
+Rule quality remains separate.
+
+Rule maturity remains separate.
+
+RuleStats modifier remains a weak maturity signal, not a rule quality verdict.
+
+PR28-O only says:
+
+```text
+a Claim must remain tied to the exact rule version that created it
+```
+
+---
+
+### 40.9 MVP invariants
+
+PR28-O locks the following invariants.
+
+1. Rule identity is `(rule_id, rule_version)`, not `rule_id` alone.
+2. Same `rule_id` with different `rule_version` is a distinct rule identity.
+3. Claim stores the rule version pinned at creation time.
+4. A Claim does not automatically move to a newer rule version.
+5. RuleStats updates for one version do not affect another version.
+6. `compute_effective_confidence` uses the Claim's pinned rule pair for rule_stats modifier.
+7. Snapshot round-trip preserves Claim rule pinning.
+8. Snapshot round-trip preserves version-specific RuleStats.
+9. External reports should use `rule_id + rule_version` for reproducibility.
+10. Rule version pinning is not rule quality judgment.
+11. Rule version pinning does not change lifecycle behavior.
+12. Rule version pinning does not change the 7-modifier formula shape.
+13. Rule version pinning does not require snapshot schema bump.
+14. Rule version pinning does not require `types.py` changes.
+
+---
+
+### 40.10 Out of scope
+
+The following are out of scope for PR28-O.
+
+```text
+automatic claim migration to newer rule version
+superseded / retracted lifecycle state
+rule quality verdict
+observed_precision modifier
+false_positive_rate modifier
+latest-version lookup policy
+rule alias registry
+rule name registry
+rule deprecation enforcement
+snapshot schema bump
+new dataclass field
+new lifecycle transition
+new modifier
+public migration API
+Cerberus-specific rule adapter
+```
+
+Future PRs may define migration or supersession policies.
+
+PR28-O does not.
+
+---
+
+### 40.11 Final statement
+
+PR28-O pins rule version identity as an integration stability boundary.
+
+The Engine must preserve:
+
+```text
+which exact rule version produced this Claim
+```
+
+External consumers may evolve rule sets over time.
+
+The Engine must not silently reinterpret historical Claims as if they came from newer rule versions.
+
+Core statement:
+
+```text
+Rule version pinning is integration stability, not rule quality judgment.
+```
+
+구현 단계 (119/121차) — **3-commit cycle 가능 (120차 skip 후보)**:
+- 119차: tests — version-specific RuleDefinition / RuleStats / Claim pinning behavior 잠금 (10~14 tests). 현재 구조상 대부분 all-pass 예상 (RuleDefinition / RuleStats 이미 `(rule_id, rule_version)` key, Claim 도 `created_by_rule_version` field 존재).
+- 120차: **skip 가능** — 119차 all-pass 시 구현 차수 불필요. 일부 fail 발생 시에만 minimal implementation.
+- 121차: docs(dev) record `PR_028_RULE_VERSION_PINNING_MVP.md` + Draft PR ready + squash merge.
