@@ -9710,3 +9710,643 @@ The test suite should verify that AI consumers can follow each recipe using only
   현재 public surface 가 이미 §43 6 scenarios 와 일치함을 검증.
 - 132차: **skip** — PR31-S 본질은 "엔진을 더 만들지 않고 외부 사용 recipe 를 명문화". method rename / alias / API surface 정리는 별도 PR.
 - 133차: docs(dev) record `PR_031_AI_READABLE_USAGE_RECIPE_MVP.md` + Draft PR ready + squash merge.
+
+---
+
+## §44. Report Surface MVP
+
+### §44.1 Core proposition
+
+Report surface defines the canonical shape of consumer-side reports assembled from existing public Engine APIs.
+
+This section does not add a new Engine feature.
+It does not change scoring, lifecycle transitions, persistence, rule output parsing, snapshot shape, or any public API.
+
+The purpose of this section is to make the existing public Engine surface **renderable** by an external consumer (human-facing report, AI-readable summary, JSON dump) without inventing per-consumer shapes that drift apart.
+
+Core proposition:
+
+```text
+PR27-P §39  call boundary    (how to call the Engine)
+PR30-P §42  read boundary    (how to read Engine outputs)
+PR31-S §43  usage recipe     (what order to call methods in)
+PR32-V §44  report surface   (what shape the result should take)
+```
+
+§43 answered "in what order should I call the Engine."
+§44 answers "in what shape should I render the result."
+
+> **§44 is a shape spec, not a new API.**
+
+The Engine does not produce these report dicts itself. The consumer assembles them by calling existing public methods (`get_claim`, `evidences_for_claim`, `compute_effective_confidence`, `to_snapshot`, etc.) and arranging the values into the §44 canonical shape.
+
+---
+
+### §44.2 Report shape overview
+
+§44 locks six canonical report shapes. Each shape is a Python dict with a frozen required key set. The consumer may add extra keys (consumer metadata), but the required keys must be present.
+
+| Shape | Letter | Purpose                                                  |
+| ----- | ------ | -------------------------------------------------------- |
+| A     | A      | claim_summary — one-line claim status + score            |
+| B     | B      | effective_breakdown — base/effective + modifier pressure |
+| C     | C      | lifecycle — claim status transition history              |
+| D     | D      | evidence_contradiction — evidence/contradiction counts   |
+| E     | E      | rule_pinning — rule_id / rule_version + rule_stats       |
+| F     | F      | snapshot_metadata — engine-wide state summary            |
+
+Each shape subsection (§44.3 ~ §44.8) defines:
+
+```text
+Purpose
+Required keys (name + type)
+Assembly source (which public methods produce the value)
+Forbidden keys (what must NOT appear)
+Frozenset key set (test invariant)
+```
+
+§44 does not define rendering format (markdown / HTML / TUI). Only the data shape is locked.
+
+---
+
+### §44.3 Shape A — claim_summary
+
+Purpose:
+
+```text
+One-line claim status + score. The "header" shape for any claim report.
+```
+
+Required keys:
+
+```text
+claim_id                     int
+subject_id                   int
+claim_type                   int
+status                       int   (one of CLAIM_STATUS_CANDIDATE / CONFIRMED / DISPUTED / REFUTED)
+base_confidence              float
+effective_confidence         float
+created_by_rule              int
+created_by_rule_version      int
+```
+
+Assembly source:
+
+```text
+claim = engine.get_claim(claim_id)
+score = engine.compute_effective_confidence(claim_id)
+
+{
+    "claim_id":                claim.id,
+    "subject_id":              claim.subject_id,
+    "claim_type":              claim.type,
+    "status":                  claim.status,
+    "base_confidence":         claim.base_confidence.value,
+    "effective_confidence":    score.value,
+    "created_by_rule":         claim.created_by_rule,
+    "created_by_rule_version": claim.created_by_rule_version,
+}
+```
+
+Forbidden keys:
+
+```text
+truth_probability            (§42.10 — no calibrated truth probability)
+verdict                      (§42.9 — verdict is consumer responsibility)
+severity                     (§42.9 — severity is consumer responsibility)
+fixed                        (§42.9 — remediation status is consumer responsibility)
+```
+
+Meaning:
+
+```text
+status and effective_confidence are SEPARATE signals (§42.3 / §42.2).
+A claim_summary with status=CONFIRMED and effective_confidence=0.8
+is the correct shape — neither field implies absolute truth.
+```
+
+§44 boundary category:
+
+```text
+A. claim_summary report shape boundary
+```
+
+---
+
+### §44.4 Shape B — effective_breakdown
+
+Purpose:
+
+```text
+Why is the effective confidence what it is? What modifier surfaces
+are putting pressure on the score?
+```
+
+Required keys:
+
+```text
+claim_id                       int
+base_confidence                float
+effective_confidence           float
+has_status_attenuation         bool    (status in {DISPUTED, REFUTED})
+has_unresolved_gaps            bool    (any gaps_for_claim without gap_resolution)
+has_active_contradictions      bool    (active_contradictions_for_claim non-empty)
+has_repeated_pressure          bool    (active_contradictions_for_claim length >= 2)
+has_rule_binding               bool    (created_by_rule != 0)
+has_hint_evidence              bool    (any evidence.type in snapshot["hint_evidence_types"])
+```
+
+Assembly source:
+
+```text
+claim = engine.get_claim(claim_id)
+score = engine.compute_effective_confidence(claim_id)
+gaps  = engine.gaps_for_claim(claim_id)
+active = engine.active_contradictions_for_claim(claim_id)
+evidences = engine.evidences_for_claim(claim_id)
+snapshot = engine.to_snapshot()
+
+hint_set = set(snapshot["hint_evidence_types"])
+
+{
+    "claim_id":                  claim.id,
+    "base_confidence":           claim.base_confidence.value,
+    "effective_confidence":      score.value,
+    "has_status_attenuation":    claim.status in {CLAIM_STATUS_DISPUTED, CLAIM_STATUS_REFUTED},
+    "has_unresolved_gaps":       any(engine.gap_resolution(g.id) is None for g in gaps),
+    "has_active_contradictions": len(active) > 0,
+    "has_repeated_pressure":     len(active) >= 2,
+    "has_rule_binding":          claim.created_by_rule != 0,
+    "has_hint_evidence":         any(ev.type in hint_set for ev in evidences),
+}
+```
+
+Forbidden keys:
+
+```text
+status_modifier_value          (modifier values are not exposed by Engine)
+freshness_modifier_value
+gap_modifier_value
+count_modifier_value
+rule_stats_modifier_value
+evidence_type_modifier_value
+truth_probability
+verdict
+```
+
+Meaning:
+
+```text
+effective_breakdown does NOT expose exact modifier values.
+It exposes boolean pressure flags only. The consumer learns "yes,
+attenuation pressure exists from gap" without learning "the gap
+modifier was 0.7." Exact values are internal to the Engine's
+formula and may evolve under modifier refinement PRs (PR23-M /
+PR24-N / PR26-R / PR29-R precedent).
+
+Pressure flags are stable; modifier values are not.
+```
+
+§44 boundary category:
+
+```text
+B. effective_breakdown report shape boundary
+```
+
+---
+
+### §44.5 Shape C — lifecycle
+
+Purpose:
+
+```text
+Audit history of claim status transitions.
+```
+
+Required keys (one per event):
+
+```text
+seq               int
+claim_id          int
+from_status       int   (one of CLAIM_STATUS_*)
+to_status         int   (one of CLAIM_STATUS_*)
+transition        str   (private audit label, not a public constant)
+```
+
+Assembly source:
+
+```text
+events = engine.claim_lifecycle_history(claim_id)
+
+[
+    {
+        "seq":         ev.seq,
+        "claim_id":    ev.claim_id,
+        "from_status": ev.from_status,
+        "to_status":   ev.to_status,
+        "transition":  ev.transition,
+    }
+    for ev in events
+]
+```
+
+Forbidden keys:
+
+```text
+timestamp                  (PR10-B §23 — seq is per-engine monotonic, not wall-clock)
+wall_clock                 (no wall-clock timestamps in engine)
+reviewer                   (consumer responsibility)
+review_note                (consumer responsibility)
+```
+
+Meaning:
+
+```text
+Lifecycle history is per-engine monotonic via `seq`. Two events with
+seq=1 from different engine instances are not comparable. This shape
+preserves the PR10-B audit boundary without leaking timestamps the
+Engine does not own.
+
+The transition string is a private audit label. Consumers should
+display it for audit, not branch on it as policy.
+```
+
+§44 boundary category:
+
+```text
+C. lifecycle report shape boundary
+```
+
+---
+
+### §44.6 Shape D — evidence_contradiction
+
+Purpose:
+
+```text
+How many evidences and contradictions back / oppose this claim?
+```
+
+Required keys:
+
+```text
+claim_id                          int
+evidence_count                    int
+contradiction_count               int   (total registered contradictions)
+active_contradiction_count        int
+resolved_contradiction_count      int
+```
+
+Assembly source:
+
+```text
+{
+    "claim_id":                     claim_id,
+    "evidence_count":               len(engine.evidences_for_claim(claim_id)),
+    "contradiction_count":          len(engine.contradictions_for_claim(claim_id)),
+    "active_contradiction_count":   len(engine.active_contradictions_for_claim(claim_id)),
+    "resolved_contradiction_count": len(engine.resolved_contradictions_for_claim(claim_id)),
+}
+```
+
+Forbidden keys:
+
+```text
+evidence_strength_sum         (modifier-level math is not stable shape)
+contradiction_strength_sum    (modifier-level math is not stable shape)
+evidence_ids                  (rendering layer responsibility, not summary shape)
+contradiction_ids             (rendering layer responsibility, not summary shape)
+```
+
+Meaning:
+
+```text
+evidence_contradiction is a counts shape. It tells the consumer
+"there are N evidences and M contradictions, of which K are active."
+For detail-level rendering (which specific evidence_id, which strength),
+the consumer should call evidences_for_claim / contradictions_for_claim
+directly. The §44 shape stays small and stable.
+```
+
+§44 boundary category:
+
+```text
+D. evidence_contradiction report shape boundary
+```
+
+---
+
+### §44.7 Shape E — rule_pinning
+
+Purpose:
+
+```text
+Which rule (and rule_version) created this claim? What are the
+rule's current operating stats?
+```
+
+Required keys:
+
+```text
+claim_id                  int
+rule_id                   int
+rule_version              int
+has_rule_binding          bool    (rule_id != 0)
+rule_maturity             int | None   (None if rule_id == 0)
+firing_count              int     (0 if no rule_stats yet)
+observed_precision        float | None   (None if rule_stats absent or unset)
+prior_confidence          float | None   (None if rule_id == 0)
+```
+
+Assembly source:
+
+```text
+claim = engine.get_claim(claim_id)
+
+if claim.created_by_rule == 0:
+    rule_pinning = {
+        "claim_id":           claim.id,
+        "rule_id":             0,
+        "rule_version":        0,
+        "has_rule_binding":    False,
+        "rule_maturity":       None,
+        "firing_count":        0,
+        "observed_precision":  None,
+        "prior_confidence":    None,
+    }
+else:
+    rule = engine.get_rule(claim.created_by_rule, claim.created_by_rule_version)
+    try:
+        stats = engine.get_rule_stats(claim.created_by_rule, claim.created_by_rule_version)
+        firing_count = stats.firing_count
+        observed_precision = (
+            stats.observed_precision.value
+            if stats.observed_precision is not None else None
+        )
+    except KeyError:
+        firing_count = 0
+        observed_precision = None
+
+    rule_pinning = {
+        "claim_id":           claim.id,
+        "rule_id":             claim.created_by_rule,
+        "rule_version":        claim.created_by_rule_version,
+        "has_rule_binding":    True,
+        "rule_maturity":       rule.maturity,
+        "firing_count":        firing_count,
+        "observed_precision":  observed_precision,
+        "prior_confidence":    rule.prior_confidence.value,
+    }
+```
+
+Forbidden keys:
+
+```text
+false_positive_rate           (§41.3 / §42.10 — OOS, ignored modifier)
+confirmed_true_count          (§41.13 — OOS, not a quality verdict input)
+confirmed_false_count         (§41.13 — OOS, not a quality verdict input)
+rule_quality_score            (§41.1 / §42.10 — no quality verdict)
+```
+
+Meaning:
+
+```text
+rule_pinning surfaces the (rule_id, rule_version) reproducibility
+pair (§42.7) and the bounded observed_precision adjustment signal
+(§42.8). It deliberately omits false_positive_rate and
+confirmed_true/false_count fields, which remain OOS per PR29-R
+§41.3 / §41.13 and PR30-P §42.10 H.
+
+A null prior_confidence with rule_id=0 indicates "no rule binding"
+— this is the rule_id=0 path used in §43 Recipe A.
+```
+
+§44 boundary category:
+
+```text
+E. rule_pinning report shape boundary
+```
+
+---
+
+### §44.8 Shape F — snapshot_metadata
+
+Purpose:
+
+```text
+Engine-wide state summary. How big is the snapshot? What schema
+version? How many of each kind of entity?
+```
+
+Required keys:
+
+```text
+schema_version              int    (must equal 2)
+claims_count                int
+evidences_count             int
+gaps_count                  int
+rules_count                 int
+rule_stats_count            int
+hint_evidence_types_count   int
+lifecycle_events_count      int
+```
+
+Assembly source:
+
+```text
+snapshot = engine.to_snapshot()
+
+{
+    "schema_version":            snapshot["schema_version"],
+    "claims_count":              len(snapshot["claims"]),
+    "evidences_count":           len(snapshot["evidences"]),
+    "gaps_count":                len(snapshot["gaps"]),
+    "rules_count":               len(snapshot["rule_definitions"]),
+    "rule_stats_count":          len(snapshot["rule_stats"]),
+    "hint_evidence_types_count": len(snapshot["hint_evidence_types"]),
+    "lifecycle_events_count":    len(snapshot["claim_lifecycle_events"]),
+}
+```
+
+Forbidden keys:
+
+```text
+snapshot_size_bytes           (rendering layer responsibility, not shape)
+file_path                     (Engine does not own file IO, §42.10)
+saved_at                      (no wall-clock timestamps)
+schema_migration_log          (§32 / §42.6 — caller-side audit, not shape)
+```
+
+Meaning:
+
+```text
+snapshot_metadata is a state-summary shape, not a snapshot dump.
+It tells the consumer "the engine has N claims and M evidences and
+schema_version is still 2." For full snapshot handoff between
+processes, the consumer should still use to_snapshot() / from_snapshot()
+directly (per §39.4 / §42.6).
+
+Required schema_version == 2 verifies that the consumer is reading a
+PR21-L+ snapshot. If a future PR bumps to v3, this invariant fails
+loudly and the consumer must intentionally upgrade.
+```
+
+§44 boundary category:
+
+```text
+F. snapshot_metadata report shape boundary
+```
+
+---
+
+### §44.9 Report assembly recipe
+
+A canonical claim report combines multiple shapes for a single claim:
+
+```text
+claim_report(claim_id) = {
+    "summary":              claim_summary(claim_id),       # Shape A
+    "breakdown":            effective_breakdown(claim_id), # Shape B
+    "lifecycle":            lifecycle(claim_id),           # Shape C (list)
+    "evidence_contradiction": evidence_contradiction(claim_id),  # Shape D
+    "rule_pinning":         rule_pinning(claim_id),        # Shape E
+}
+```
+
+A canonical engine report combines Shape F alone:
+
+```text
+engine_report(engine) = snapshot_metadata(engine)
+```
+
+The consumer is not required to combine shapes in this exact way — these are recommendations. What is required is that each individual shape, when produced, matches the §44.3 ~ §44.8 frozen key sets.
+
+Assembly invariant:
+
+```text
+Each shape can be assembled using only existing public Engine APIs.
+No method named Engine.claim_report / Engine.report / Engine.summary /
+Engine.breakdown exists. The consumer assembles the dict.
+```
+
+This preserves Sub-decision D (engine.py / types.py / __init__.py /
+rule_output.py unchanged) and PR31-S method surface freeze
+(`ragcore.__all__` frozenset of 49 symbols from PR30-P main `60bf492`).
+
+§44 boundary category:
+
+```text
+G. report assembly mental model boundary
+```
+
+---
+
+### §44.10 AI consumer report rendering checklist
+
+After assembling any §44 shape, the AI consumer should re-check before rendering:
+
+```text
+[ ] required key set matches the frozenset for that shape           (§44.3 ~ §44.8)
+[ ] no forbidden key is present                                     (per-shape forbidden list)
+[ ] no truth_probability / verdict / severity field is fabricated   (§42.9 / §42.10)
+[ ] no modifier value is exposed beyond pressure flags              (§44.4 forbidden)
+[ ] no false_positive_rate / confirmed_true/false_count is exposed  (§44.7 forbidden)
+[ ] no wall-clock timestamp is fabricated                           (§44.5 / §44.8 forbidden)
+[ ] snapshot_metadata.schema_version equals 2                       (§44.8 required)
+[ ] Engine.claim_report / Engine.report / Engine.summary do NOT exist (§44.9)
+[ ] the rendered output preserves the §42 read policy wording        (§42.3 / §42.6 / §42.7 / §42.8)
+[ ] the rendered output does not collapse status + score into one number (§42.2 / §42.3)
+```
+
+If any item is violated by the consumer's rendered output, the consumer has crossed the §44 boundary, not the framework.
+
+---
+
+### §44.11 Out of scope
+
+§44 explicitly does not add:
+
+```text
+new public API
+Engine.claim_report / Engine.report / Engine.summary / Engine.breakdown
+method renaming
+deprecated alias
+__all__ change
+new enum
+new modifier
+new lifecycle state
+file IO wrapper
+rendering format (markdown / HTML / TUI / TTY color)
+localization
+exact modifier values in any shape
+truth probability / verdict / severity fields
+wall-clock timestamps
+false_positive_rate / confirmed_true_count / confirmed_false_count exposure
+rule quality verdict
+LLM-generated narrative summary
+visualization library binding
+```
+
+Sub-decision D is preserved:
+
+```text
+ragcore/engine.py        — no change
+ragcore/types.py         — no change
+ragcore/__init__.py      — no change
+ragcore/rule_output.py   — no change
+```
+
+PR31-S method surface freeze is preserved:
+
+```text
+ragcore.__all__ frozenset of 49 symbols (PR30-P main 60bf492) unchanged
+no recipe helper method exists
+no report helper method exists
+```
+
+§44 boundary category:
+
+```text
+H. OOS / no API change boundary
+```
+
+---
+
+### §44.12 Invariants
+
+§44 locks the following report shape invariants (verified by 135차 test-first, all-pass expected):
+
+1. **Shape A frozenset** — `claim_summary(claim_id).keys() == CLAIM_SUMMARY_KEYS` (8 keys).
+2. **Shape B frozenset** — `effective_breakdown(claim_id).keys() == EFFECTIVE_BREAKDOWN_KEYS` (9 keys, 6 boolean pressure flags).
+3. **Shape C frozenset** — each event dict in lifecycle list has keys exactly `LIFECYCLE_EVENT_KEYS` (5 keys).
+4. **Shape D frozenset** — `evidence_contradiction(claim_id).keys() == EVIDENCE_CONTRADICTION_KEYS` (5 keys).
+5. **Shape E frozenset** — `rule_pinning(claim_id).keys() == RULE_PINNING_KEYS` (8 keys). For rule_id=0 path, `has_rule_binding=False` and rule-specific fields are `None` / `0`.
+6. **Shape F frozenset** — `snapshot_metadata(engine).keys() == SNAPSHOT_METADATA_KEYS` (8 keys). `schema_version` field always equals 2.
+7. **Assembly purity** — each shape can be assembled using only existing public Engine APIs (`get_claim`, `evidences_for_claim`, `gaps_for_claim`, `gap_resolution`, `contradictions_for_claim`, `active_contradictions_for_claim`, `resolved_contradictions_for_claim`, `claim_lifecycle_history`, `get_rule`, `get_rule_stats`, `compute_effective_confidence`, `to_snapshot`).
+8. **No report helper method exists** — `Engine.claim_report`, `Engine.report`, `Engine.summary`, `Engine.breakdown`, `Engine.render` do not exist. `"claim_report"`, `"report"`, `"summary"`, `"breakdown"`, `"render"` are not in `ragcore.__all__`.
+9. **Forbidden key invariant** — for each shape, none of the §44.3~§44.8 forbidden keys appear (truth_probability / verdict / severity / fixed / modifier values / false_positive_rate / wall-clock timestamps / file_path).
+10. **PR30-P method surface freeze preserved** — `frozenset(ragcore.__all__)` remains equal to the PR30-P baseline frozenset locked by PR31-S.
+
+If any shape invariant fails, the canonical report shape is no longer reproducible — that is the regression signal §44 is designed to surface.
+
+---
+
+### §44.13 Constraints on 135/137차
+
+135/137차 should treat §44 as a shape-locking spec, not a feature spec:
+
+```text
+test invariants should pass immediately
+no engine implementation change is required
+no public API change is required
+no snapshot schema change is required (still v2)
+all 10 shape invariants should be locked in one test module
+```
+
+The test suite should verify that consumers can assemble each §44 shape from the existing public Engine API, producing dicts that exactly match the frozenset key sets.
+
+구현 단계 (135/137차) — **3-commit cycle (136차 skip 권고, PR27-P / PR28-O / PR30-P / PR31-S 패턴)**:
+- 135차: tests — report shape invariants 잠금 (15~25 tests, all-pass 예상).
+  consumer-side assembly helper 가 6 shapes 를 현재 public API 만으로 만들 수 있음을 검증.
+- 136차: **skip** — PR32-V 본질은 "엔진을 더 만들지 않고 consumer-side canonical report shape 를 명문화". Engine.claim_report 추가는 PR33-M method surface 정리에서 별도 결정.
+- 137차: docs(dev) record `PR_032_REPORT_SURFACE_MVP.md` + Draft PR ready + squash merge.
