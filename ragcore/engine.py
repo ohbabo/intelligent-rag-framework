@@ -221,11 +221,20 @@ class Engine:
     # ---- Entity / Observation / Claim / Evidence ---------------------------
 
     def add_entity(self, entity_type: int, flags: int = 0) -> int:
+        """Add an Entity (subject of claims) and return its assigned entity_id.
+
+        ``entity_type`` 은 caller-domain 정수. framework 가 의미 미소유.
+        """
         entity_id = self._allocate_id("entity")
         self._entities[entity_id] = Entity(id=entity_id, type=entity_type, flags=flags)
         return entity_id
 
     def get_entity(self, entity_id: int) -> Entity:
+        """Return the Entity for ``entity_id``.
+
+        Raises:
+            KeyError: unknown entity_id.
+        """
         return self._entities[entity_id]
 
     def add_observation(
@@ -235,6 +244,14 @@ class Engine:
         observation_type: int,
         source_type: int = 0,
     ) -> int:
+        """Add an Observation tied to ``entity_id`` and return its observation_id.
+
+        ``raw_ref_id`` 는 caller-side raw data store 의 식별자. framework 는
+        raw 데이터를 들고 있지 않다 (외부 통합 경계 §39).
+
+        Raises:
+            KeyError: unknown entity_id.
+        """
         if entity_id not in self._entities:
             raise KeyError(f"unknown entity_id: {entity_id}")
         obs_id = self._allocate_id("observation")
@@ -248,6 +265,11 @@ class Engine:
         return obs_id
 
     def get_observation(self, observation_id: int) -> Observation:
+        """Return the Observation for ``observation_id``.
+
+        Raises:
+            KeyError: unknown observation_id.
+        """
         return self._observations[observation_id]
 
     def add_claim(
@@ -288,6 +310,13 @@ class Engine:
         return claim_id
 
     def get_claim(self, claim_id: int) -> Claim:
+        """Return the Claim for ``claim_id``.
+
+        Read-only: lifecycle 전이를 일으키지 않는다 (§42.3 / §43.9).
+
+        Raises:
+            KeyError: unknown claim_id.
+        """
         return self._claims[claim_id]
 
     def add_evidence(
@@ -297,6 +326,16 @@ class Engine:
         evidence_type: int,
         strength: float,
     ) -> int:
+        """Add an Evidence supporting ``claim_id`` and return its evidence_id.
+
+        ``evidence_type`` 은 caller-domain 정수 — framework 는 Evidence.type
+        의 의미를 소유하지 않는다 (Sub-decision AF). hint 인지 여부는
+        ``register_hint_evidence_types`` 로 caller 가 등록한 set 에 의해
+        결정 (PR21-L / PR22-S / PR25-T).
+
+        Raises:
+            KeyError: unknown claim_id.
+        """
         if claim_id not in self._claims:
             raise KeyError(f"unknown claim_id: {claim_id}")
         evidence_id = self._allocate_id("evidence")
@@ -310,9 +349,22 @@ class Engine:
         return evidence_id
 
     def get_evidence(self, evidence_id: int) -> Evidence:
+        """Return the Evidence for ``evidence_id``.
+
+        Raises:
+            KeyError: unknown evidence_id.
+        """
         return self._evidences[evidence_id]
 
     def evidences_for_claim(self, claim_id: int) -> list[Evidence]:
+        """Return all Evidences supporting ``claim_id`` in insertion order.
+
+        contradiction 으로 등록된 evidence 는 별도 ``contradictions_for_claim``
+        으로 조회한다 — 같은 evidence_id 가 양쪽에 등록될 수 있다 (PR19 §31).
+
+        Raises:
+            KeyError: unknown claim_id.
+        """
         if claim_id not in self._claims:
             raise KeyError(f"unknown claim_id: {claim_id}")
         return [ev for ev in self._evidences.values() if ev.claim_id == claim_id]
@@ -329,6 +381,16 @@ class Engine:
         rule_id: int,
         reason_code: int,
     ) -> int:
+        """Add a cross-kind Relation linking ``(from_kind, from_id)`` -> ``(to_kind, to_id)``.
+
+        IDs are kind-independent in this framework (entity:1 and claim:1
+        are distinct), so a Relation carries both kind discriminators to
+        remain unambiguous about what it connects.
+
+        Raises:
+            KeyError: unknown from-side or to-side reference.
+            ValueError: unknown kind constant (from ``_storage_for_kind``).
+        """
         # _storage_for_kind raises ValueError on unknown kind.
         if not self._id_exists(from_kind, from_id):
             raise KeyError(
@@ -352,6 +414,11 @@ class Engine:
         return relation_id
 
     def get_relation(self, relation_id: int) -> Relation:
+        """Return the Relation for ``relation_id``.
+
+        Raises:
+            KeyError: unknown relation_id.
+        """
         return self._relations[relation_id]
 
     def add_gap(
@@ -408,6 +475,11 @@ class Engine:
         return gap_id
 
     def get_gap(self, gap_id: int) -> Gap:
+        """Return the Gap for ``gap_id``.
+
+        Raises:
+            KeyError: unknown gap_id.
+        """
         return self._gaps[gap_id]
 
     def gaps_for_claim(self, claim_id: int) -> list[Gap]:
@@ -923,6 +995,15 @@ class Engine:
         )
 
     def get_rule(self, rule_id: int, rule_version: int) -> RuleDefinition:
+        """Return the RuleDefinition for the ``(rule_id, rule_version)`` pair.
+
+        PR28-O §40 — ``rule_id`` and ``rule_version`` 은 joint identity.
+        ``(R, 1)`` 로 핀된 claim 은 v1 RuleDefinition 으로 계속 resolve 되어야
+        하며 나중에 등록된 v2 로 silently 갈아탈 수 없다.
+
+        Raises:
+            KeyError: unknown ``(rule_id, rule_version)`` pair.
+        """
         key = (rule_id, rule_version)
         if key not in self._rule_definitions:
             raise KeyError(
@@ -931,6 +1012,16 @@ class Engine:
         return self._rule_definitions[key]
 
     def get_rule_stats(self, rule_id: int, rule_version: int) -> RuleStats:
+        """Return the RuleStats for the ``(rule_id, rule_version)`` pair.
+
+        PR29-R §41 — RuleStats 는 ``firing_count`` 와 (옵션) ``observed_precision``
+        을 누적한다. pair 가 없으면 KeyError. consumer 는 "stats 미등록" 상태를
+        ``firing_count=0`` / ``observed_precision=None`` 으로 해석해야 한다
+        (§44.7 rule_pinning shape 가 이 분기를 명시).
+
+        Raises:
+            KeyError: unknown ``(rule_id, rule_version)`` pair.
+        """
         key = (rule_id, rule_version)
         if key not in self._rule_stats:
             raise KeyError(

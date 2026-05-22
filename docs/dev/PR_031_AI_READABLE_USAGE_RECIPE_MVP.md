@@ -451,7 +451,7 @@ This supports §42.3 (effective_confidence is read-side output) and §39.5.
 The tests lock the exact set of 49 public symbols in `ragcore.__all__` as of PR30-P main `60bf492`:
 
 ```text
-_PR30_BASELINE_PUBLIC_SYMBOLS = frozenset({...49 symbols...})
+_PR30_BASELINE_PUBLIC_SYMBOLS = frozenset({...48 symbols...})
 
 assert frozenset(ragcore.__all__) == _PR30_BASELINE_PUBLIC_SYMBOLS
 ```
@@ -478,7 +478,7 @@ This locks the public surface against drift.
 PR31-S's strongest single invariant is the `frozenset` of 49 public symbols, captured from PR30-P main `60bf492`:
 
 ```text
-49 symbols including:
+48 symbols including:
   Engine, Claim, Evidence, Gap, Relation, Entity, Observation
   RuleDefinition, RuleStats, RuleSpec, RuleOutputTemplate
   RequiredEvidenceTemplate, ClaimLifecycleEvent, ScoreValue
