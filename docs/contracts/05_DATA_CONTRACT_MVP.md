@@ -10897,3 +10897,653 @@ If 139차+ scope selection appears to drift toward judgment semantics, the chang
 - **Scope B**: 139차 test-first 갱신, 140차 feat impl (P4 rename), 141차 docs(dev) record
 - **Scope C**: 사용자 명시 sub-decision 필요, 별도 cycle 계획
 - **Scope D-only**: 139차 docs(dev) record (audit only, no execution)
+
+---
+
+## §46. Internal Optimization Audit Boundary
+
+### §46.1 Core proposition
+
+```text
+PR34-O is an internal optimization/refactor PR.
+It may reorganize engine.py internals,
+but it must not change public API surface,
+report shape, snapshot schema, lifecycle semantics,
+or effective confidence judgment semantics.
+```
+
+PR34-O is the first PR that may touch engine.py *internals* (private helpers, private state organization, modifier helper composition, snapshot helper extraction) without touching the public surface. PR33-M operated in the surface domain. PR34-O operates in the internal domain.
+
+141차 enters PR34-O as **audit-first**. The audit produces a snapshot of engine.py internal structure and classifies optimization candidates as **proposals**. The audit does not execute any optimization.
+
+142차+ will execute scope based on audit findings.
+
+> **141차 is a read-only internal audit step.**
+> **It records the current engine.py structure and proposes options.**
+> **It does not change Engine state, public surface, frozensets, key sets, snapshot schema, modifier formula, or any test invariant.**
+
+---
+
+### §46.2 Audit boundary
+
+PR34-O may touch (internal domain):
+
+```text
+engine.py private helper organization
+engine.py private state grouping
+engine.py modifier helper signatures (private, _*)
+engine.py snapshot serialization helper extraction
+engine.py private constant grouping / ordering
+engine.py defensive check helper consolidation
+engine.py method body refactoring (without behavior change)
+engine.py source layout / section comments
+```
+
+PR34-O must not touch (surface or semantic domain):
+
+```text
+public API surface (PR31-S _PR30_BASELINE_PUBLIC_SYMBOLS preserved)
+public method names / signatures (PR31-S frozenset preserved)
+public report shape (PR32-V *_KEYS preserved)
+__all__ contents (PR33-M P3 ordering preserved)
+docstring contents (PR33-M P1 coverage preserved)
+snapshot schema_version (still 2, no v3 bump)
+7-modifier composition formula
+modifier value behavior (PR23-M / PR24-N / PR26-R / PR29-R)
+lifecycle transition rules
+effective_confidence computation output
+rule_output parsing logic
+contradiction registration / resolution logic
+types.py
+rule_output.py
+test files (no new test, no test modification)
+```
+
+If any item in the second list would be affected, the change does not belong in PR34-O.
+
+---
+
+### §46.3 141차 audit scope
+
+141차 (this section) is in scope:
+
+```text
+engine.py LOC and class layout snapshot
+private state attribute inventory (17 dicts/counters)
+private helper grouping by purpose
+modifier helper signature / return type consistency
+snapshot / restore (to_snapshot / from_snapshot) symmetry
+duplicate code pattern enumeration (KeyError checks)
+method length distribution
+private module constant grouping
+optimization candidate enumeration (O1 ~ On — proposals only)
+audit-only invariants (read-only verification)
+constraints on 142차+ (scope selection framework)
+```
+
+141차 is out of scope:
+
+```text
+any source file modification in ragcore/
+any test file modification
+any test addition
+private helper rename / signature change (executed)
+private constant rename / regrouping (executed)
+modifier helper signature consistency fix (executed)
+snapshot helper extraction (executed)
+method body refactor (executed)
+compute_effective_confidence split (executed)
+defensive check helper consolidation (executed)
+```
+
+---
+
+### §46.4 engine.py structure snapshot (141차 timing)
+
+Recorded against main `2f89ba4` (PR33-M merged) at audit time:
+
+```text
+ragcore/engine.py                 1696 LOC
+ragcore/types.py                   176 LOC
+ragcore/rule_output.py             198 LOC
+ragcore/__init__.py                116 LOC
+Engine class total methods          50 (public + private + dunder)
+Engine public methods               40
+Engine private methods              31 (incl. 22 dunder inherited)
+Engine real private methods          9 (non-dunder)
+Engine private state attributes     17 (set in __init__)
+Engine module private constants     17 (UPPER_CASE)
+```
+
+`engine.py` is the dominant file by LOC (≈ 77% of the framework's ragcore/ implementation excluding tests).
+
+---
+
+### §46.5 Private state attribute inventory
+
+17 private state attributes initialized in `Engine.__init__`:
+
+| Attribute                       | Type          | Snapshot field         | Purpose                                          |
+| ------------------------------- | ------------- | ---------------------- | ------------------------------------------------ |
+| `_next_id`                      | dict[str,int] | next_id                | per-kind monotonic id counter                    |
+| `_lifecycle_seq`                | int           | lifecycle_seq          | per-engine lifecycle event monotonic counter     |
+| `_entities`                     | dict[int,...] | entities               | entity_id → Entity                                |
+| `_observations`                 | dict[int,...] | observations           | observation_id → Observation                      |
+| `_claims`                       | dict[int,...] | claims                 | claim_id → Claim                                  |
+| `_evidences`                    | dict[int,...] | evidences              | evidence_id → Evidence                            |
+| `_relations`                    | dict[int,...] | relations              | relation_id → Relation                            |
+| `_gaps`                         | dict[int,...] | gaps                   | gap_id → Gap                                      |
+| `_rule_definitions`             | dict          | rule_definitions       | (rule_id, version) → RuleDefinition               |
+| `_rule_stats`                   | dict          | rule_stats             | (rule_id, version) → RuleStats                    |
+| `_gap_dedup_index`              | dict          | gap_dedup_index        | (subject_id, rule_id, gap_type, req_ev_type) → gap_id |
+| `_claim_gap_refs`               | dict          | claim_gap_refs         | claim_id → set[gap_id]                            |
+| `_gap_resolutions`              | dict          | gap_resolutions        | gap_id → evidence_id                              |
+| `_contradictions`               | dict          | contradictions         | claim_id → set[evidence_id] (registered)          |
+| `_resolved_contradictions`      | dict          | resolved_contradictions | claim_id → set[evidence_id] (resolved)            |
+| `_claim_lifecycle_events`       | list          | claim_lifecycle_events | append-only lifecycle audit log                   |
+| `_hint_evidence_types`          | set           | hint_evidence_types    | caller-registered hint evidence_type IDs          |
+
+Observation:
+
+```text
+All 17 state attributes have a 1:1 mapping to a snapshot field.
+to_snapshot() returns 18 keys (17 state + schema_version).
+The naming is consistent (plural for collections, singular counters
+prefixed with _next_/_lifecycle_).
+Grouping in __init__ is logical (counters → entity-kind dicts →
+rule dicts → gap/contradiction dicts → audit log → hint set).
+```
+
+---
+
+### §46.6 Private helper grouping (real private methods, 9 total)
+
+The 9 non-dunder private methods group by purpose:
+
+| Group               | Count | Methods                                                                                    |
+| ------------------- | ----: | ------------------------------------------------------------------------------------------ |
+| id_management       |     3 | `_allocate_id`, `_id_exists`, `_storage_for_kind`                                          |
+| modifier_helper     |     4 | `_count_modifier_for_claim`, `_evidence_type_modifier_for_claim`, `_gap_modifier_for_claim`, `_rule_stats_modifier_for_claim` |
+| lifecycle_audit     |     1 | `_record_claim_lifecycle_transition`                                                       |
+| evidence_helper     |     1 | `_validate_hint_evidence_type_values`                                                      |
+
+Observations:
+
+```text
+- 4 modifier helpers exist, but the formula has 7 modifiers (status,
+  freshness, gap, count, rule_stats, evidence_type, and a base path).
+  Status and freshness modifiers are inlined in
+  compute_effective_confidence rather than extracted.
+- id_management group is well-organized (3 cohesive helpers).
+- _validate_hint_evidence_type_values is the largest private helper
+  (37 LOC), used by 3 public methods (register/unregister/clear
+  hint evidence types).
+```
+
+---
+
+### §46.7 Modifier helper consistency observations
+
+The 4 extracted modifier helpers have inconsistent signatures:
+
+| Helper                                  | First arg            | Returns |
+| --------------------------------------- | -------------------- | ------- |
+| `_gap_modifier_for_claim`                | `claim_id: int`     | float   |
+| `_count_modifier_for_claim`              | `claim_id: int`     | float   |
+| `_evidence_type_modifier_for_claim`      | `claim_id: int`     | float   |
+| `_rule_stats_modifier_for_claim`         | `claim: Claim`      | float   |
+
+**Asymmetry: `_rule_stats_modifier_for_claim` takes a `Claim` object directly, while the other three take `claim_id`.**
+
+Reason: `_rule_stats_modifier_for_claim` needs `claim.created_by_rule` and `claim.created_by_rule_version` to look up rule_stats. The other three look up state by `claim_id` via internal dicts.
+
+Both signatures work. The asymmetry is internal-only (no public API impact). It is a candidate for normalization in §46.12 (proposal O2).
+
+Also observed:
+
+```text
+status modifier — inlined as constant lookup in compute_effective_confidence
+                  no helper extraction
+freshness modifier — inlined formula in compute_effective_confidence
+                     no helper extraction
+                     uses _FRESHNESS_PENALTY_WEIGHT and evidence_freshness
+                     (public read-side method)
+```
+
+If symmetry is desired, two more helpers (`_status_modifier_for_claim`, `_freshness_modifier_for_claim`) would bring the count to 7 (matching the formula). This is candidate O3.
+
+---
+
+### §46.8 Snapshot / restore symmetry observations
+
+```text
+to_snapshot       LOC ≈ 32
+from_snapshot     LOC ≈ 57
+```
+
+Asymmetry: `from_snapshot` is roughly 1.8× the size of `to_snapshot`. Reason:
+
+```text
+to_snapshot   — straight dict construction from in-memory state
+                each state attr → one snapshot key
+                no validation needed (engine state is already valid)
+
+from_snapshot — must reconstruct Claim / Evidence / Gap / etc. dataclasses
+                from dicts, handle nested types (ScoreValue),
+                validate schema_version, restore set[int] from list[int],
+                restore tuple keys (rule_id, version) from list[list[int]]
+```
+
+The asymmetry is functional, not accidental. But the inline reconstruction is dense (≈ 57 LOC in one method). Candidate O7 proposes extracting per-kind deserializer helpers (`_load_entities`, `_load_claims`, etc.) for readability without changing snapshot shape.
+
+`schema_version` validation is at the top of `from_snapshot` (PR21-L v1 → v2 migration locked). No v3 path exists; future schema bump requires explicit code addition.
+
+---
+
+### §46.9 Duplicate code pattern observations
+
+The `raise KeyError` pattern occurs 30 times in engine.py. Of these, 28 follow the precise template:
+
+```text
+if <kind>_id not in self._<storage>:
+    raise KeyError(f"unknown <kind>_id: {<kind>_id}")
+```
+
+Distribution by storage:
+
+| Storage                | Check count | Pattern                                |
+| ---------------------- | ----------: | -------------------------------------- |
+| `_claims`              |          18 | `if claim_id not in self._claims:`     |
+| `_evidences`           |           4 | `if evidence_id not in self._evidences:` |
+| `_entities`            |           2 | `if entity_id not in self._entities:` (one is `subject_id`) |
+| `_gaps`                |           1 | `if gap_id not in self._gaps:`          |
+| `_rule_definitions`    |           1 | `if (rule_id, version) not in ...:`     |
+| `_rule_stats`          |           2 | `if (rule_id, version) not in ...:`     |
+
+**Heaviest duplication: `_claims` (18 occurrences).**
+
+The check appears in nearly every method that takes `claim_id` (add_evidence, add_gap, register_contradiction, dispute_claim_if_ready, refute_claim_if_ready, confirm_claim_if_ready, evidences_for_claim, contradictions_for_claim, active_contradictions_for_claim, resolved_contradictions_for_claim, claim_lifecycle_history, compute_effective_confidence, etc.).
+
+Candidate O1 proposes extracting a single `_assert_claim_exists(claim_id)` helper (and similar for the other 4 storages). Risk: low (no behavior change, only structural dedup).
+
+---
+
+### §46.10 Method length distribution
+
+| Length range | Method count | Notes                                              |
+| ------------ | -----------: | -------------------------------------------------- |
+| 1–5 LOC      |            2 | tiny accessors (get_relation / get_gap)            |
+| 6–15 LOC     |           13 | typical add_/get_ methods                          |
+| 16–30 LOC    |           19 | typical _if_ready lifecycle transitions            |
+| 31–60 LOC    |           14 | mid-complexity (add_gap, add_relation, etc.)       |
+| 61–120 LOC   |            2 | compute_effective_confidence (110), _rule_stats_modifier_for_claim (76) |
+| 121+ LOC     |            0 | none                                                |
+
+Total: 50 methods (excluding inherited dunder).
+
+Top 5 longest methods:
+
+| Rank | LOC | Method                                            |
+| ---- | --: | ------------------------------------------------- |
+| 1    | 110 | `compute_effective_confidence`                    |
+| 2    |  76 | `_rule_stats_modifier_for_claim`                  |
+| 3    |  56 | `from_snapshot`                                   |
+| 4    |  52 | `add_gap`                                          |
+| 5    |  48 | `refute_disputed_claim_if_ready_by_freshness`     |
+
+Observations:
+
+```text
+- No method exceeds 120 LOC.
+- compute_effective_confidence is the formula orchestrator;
+  its length reflects 7-modifier composition + extensive docstring
+  with PR-trail annotations. Splitting may improve readability but
+  carries change risk.
+- _rule_stats_modifier_for_claim is the second longest (76 LOC)
+  because PR29-R added precision modifier on top of PR26-R maturity
+  modifier, with bounded clamp logic and detailed comment block.
+- add_gap (52 LOC) handles PR4 dedup index updates, which is
+  intrinsically multi-step.
+```
+
+---
+
+### §46.11 Private constant grouping
+
+17 module-level private constants, currently in source order:
+
+```text
+_REFUTATION_STRENGTH_THRESHOLD              (1)  refutation_helper
+_STATUS_MODIFIER_CANDIDATE                  (1)  status
+_STATUS_MODIFIER_CONFIRMED                  (1)  status
+_STATUS_MODIFIER_DISPUTED                   (1)  status
+_STATUS_MODIFIER_REFUTED                    (1)  status
+_FRESHNESS_PENALTY_WEIGHT                   (1)  freshness
+_GAP_TIER_ZERO_UNRESOLVED_MODIFIER          (1)  gap
+_GAP_TIER_ONE_UNRESOLVED_MODIFIER           (1)  gap
+_GAP_TIER_TWO_UNRESOLVED_MODIFIER           (1)  gap
+_GAP_TIER_THREE_OR_MORE_UNRESOLVED_MODIFIER (1)  gap
+_COUNT_STRENGTH_PENALTY_WEIGHT              (1)  count
+_RULE_STATS_MATURITY_PENALTY_WEIGHT         (1)  rule_stats
+_RULE_STATS_MATURITY_SATURATION_COUNT       (1)  rule_stats
+_RULE_STATS_PRECISION_BASE                  (1)  rule_stats
+_RULE_STATS_PRECISION_RANGE                 (1)  rule_stats
+_EVIDENCE_TYPE_PENALTY_MODIFIER             (1)  evidence_type
+_CURRENT_SNAPSHOT_SCHEMA_VERSION            (1)  snapshot
+```
+
+8 logical groups:
+
+| Group              | Count | Constants                                                        |
+| ------------------ | ----: | ---------------------------------------------------------------- |
+| refutation_helper  |     1 | `_REFUTATION_STRENGTH_THRESHOLD`                                 |
+| status             |     4 | `_STATUS_MODIFIER_CANDIDATE` / CONFIRMED / DISPUTED / REFUTED    |
+| freshness          |     1 | `_FRESHNESS_PENALTY_WEIGHT`                                      |
+| gap                |     4 | `_GAP_TIER_*_UNRESOLVED_MODIFIER`                                |
+| count              |     1 | `_COUNT_STRENGTH_PENALTY_WEIGHT`                                 |
+| rule_stats         |     4 | `_RULE_STATS_MATURITY_PENALTY_WEIGHT` / SATURATION / PRECISION_BASE / RANGE |
+| evidence_type      |     1 | `_EVIDENCE_TYPE_PENALTY_MODIFIER`                                |
+| snapshot           |     1 | `_CURRENT_SNAPSHOT_SCHEMA_VERSION`                               |
+
+Observations:
+
+```text
+- Constants already loosely follow formula order (status → freshness
+  → gap → count → rule_stats → evidence_type) but with refutation_helper
+  prepended and snapshot appended.
+- Inline section comments would make the grouping visible at the
+  top of engine.py without changing values.
+- The status / freshness / count / evidence_type groups each have
+  a single PENALTY/MODIFIER constant. The gap and rule_stats groups
+  have multiple constants reflecting their tier / composition
+  structure (PR23-M tier, PR29-R maturity + precision).
+```
+
+---
+
+### §46.12 Optimization candidates (O1 ~ O8, proposal only)
+
+The audit proposes 8 optimization candidates. **None are decisions.** 142차+ will pick a scope and execute (or reject).
+
+**O1 — Defensive check helper extraction (low risk)**
+
+```text
+Extract:
+  _assert_claim_exists(claim_id)
+  _assert_evidence_exists(evidence_id)
+  _assert_entity_exists(entity_id)
+  _assert_gap_exists(gap_id)
+  _assert_rule_pair_exists(rule_id, rule_version)
+  _assert_rule_stats_pair_exists(rule_id, rule_version)
+
+Reduces 28 duplicate `if X not in self._Y: raise KeyError(...)` patterns
+to 6 helpers, each used multiple times.
+
+Risk:        low (no behavior change, structural dedup only)
+Frozenset:   unchanged
+Tests:       unchanged (existing KeyError semantics preserved)
+LOC impact:  -50 ~ -80 lines net
+```
+
+**O2 — Modifier helper signature consistency (low-medium risk)**
+
+```text
+Normalize the 4 modifier helpers to a common signature:
+
+  Option 2A — all take claim_id:
+    _rule_stats_modifier_for_claim(self, claim: Claim)
+      -> _rule_stats_modifier_for_claim(self, claim_id: int)
+    (resolves claim internally via self._claims[claim_id])
+
+  Option 2B — all take Claim:
+    _gap_modifier_for_claim(self, claim_id: int)
+      -> _gap_modifier_for_claim(self, claim: Claim)
+    _count_modifier_for_claim(self, claim_id: int)
+      -> _count_modifier_for_claim(self, claim: Claim)
+    _evidence_type_modifier_for_claim(self, claim_id: int)
+      -> _evidence_type_modifier_for_claim(self, claim: Claim)
+    (resolves claim_id internally)
+
+Risk:        low-medium (private signature change, but private only)
+Frozenset:   unchanged (private helpers, not in __all__)
+Tests:       unchanged (private helpers not tested directly)
+Note:        Option 2B is cheaper (existing call sites in
+             compute_effective_confidence already hold claim object)
+```
+
+**O3 — Extract status and freshness modifier helpers (low risk)**
+
+```text
+Extract two new private helpers:
+  _status_modifier_for_claim(self, claim: Claim) -> float
+  _freshness_modifier_for_claim(self, claim_id: int) -> float
+
+Brings the modifier helper count to 6 (gap + count + rule_stats +
+evidence_type + status + freshness) — still 1 short of 7 because base
+is not a modifier (it is the multiplicand).
+
+Risk:        low (refactor only, formula values preserved)
+Frozenset:   unchanged
+Tests:       unchanged (formula outputs preserved bit-for-bit)
+LOC impact:  +20 ~ +30 lines in helpers, -10 lines in
+             compute_effective_confidence; net moderate increase but
+             clearer separation
+```
+
+**O4 — Private constant grouping comments (trivial)**
+
+```text
+Add inline section comments to engine.py module-level constants:
+
+  # ---- Refutation helper ----
+  _REFUTATION_STRENGTH_THRESHOLD = ...
+
+  # ---- Status modifier (PR11-D §24.3) ----
+  _STATUS_MODIFIER_CANDIDATE = 1.0
+  _STATUS_MODIFIER_CONFIRMED = 1.0
+  _STATUS_MODIFIER_DISPUTED = 0.5
+  _STATUS_MODIFIER_REFUTED = 0.0
+
+  # ---- Freshness modifier (PR11-C §24.4) ----
+  _FRESHNESS_PENALTY_WEIGHT = 0.5
+
+  ... etc
+
+Risk:        trivial (comment-only)
+Frozenset:   unchanged
+Tests:       unchanged
+LOC impact:  +8 ~ +10 comment lines
+```
+
+**O5 — Constant ordering by formula sequence (trivial)**
+
+```text
+Reorder the 17 constants to match formula order strictly:
+  status → freshness → gap → count → rule_stats → evidence_type
+  → (other) refutation_helper, snapshot
+
+Risk:        trivial (cosmetic)
+Frozenset:   unchanged
+Tests:       unchanged
+LOC impact:  0 (reorder only)
+Note:        Could be combined with O4 in one commit.
+```
+
+**O6 — compute_effective_confidence method split (medium risk)**
+
+```text
+The 110-LOC compute_effective_confidence orchestrates 7-modifier
+composition. Possible split:
+
+  def compute_effective_confidence(self, claim_id: int) -> ScoreValue:
+      """public entry — read-side"""
+      claim = self._claims[...]
+      return self._compose_effective_confidence(claim)
+
+  def _compose_effective_confidence(self, claim: Claim) -> ScoreValue:
+      """formula composition — internal"""
+      base = ...
+      status = self._status_modifier_for_claim(claim)
+      freshness = self._freshness_modifier_for_claim(claim.id)
+      gap = self._gap_modifier_for_claim(claim.id)
+      count = self._count_modifier_for_claim(claim.id)
+      rule_stats = self._rule_stats_modifier_for_claim(claim)
+      evidence_type = self._evidence_type_modifier_for_claim(claim.id)
+      return ScoreValue(base * status * ... * evidence_type)
+
+Risk:        medium (control flow change, need test verification)
+Frozenset:   unchanged
+Tests:       unchanged (output bit-for-bit identical, all 1089 must
+             still pass)
+LOC impact:  -50 ~ -70 lines in compute_effective_confidence,
+             +20 lines in _compose_effective_confidence;
+             net moderate decrease in longest-method size
+Depends:     O2 + O3 (for signature consistency)
+```
+
+**O7 — from_snapshot per-kind deserialization helper extraction (medium risk)**
+
+```text
+Currently from_snapshot reconstructs all 17 state attrs inline (57 LOC).
+Possible split:
+
+  _load_entities(snapshot["entities"]) -> dict[int, Entity]
+  _load_observations(snapshot["observations"]) -> dict[int, Observation]
+  _load_claims(snapshot["claims"]) -> dict[int, Claim]
+  ... (one per kind)
+  _load_hint_evidence_types(snapshot["hint_evidence_types"]) -> set[int]
+  _load_rule_definitions(snapshot["rule_definitions"]) -> dict[tuple, RuleDefinition]
+  _load_rule_stats(snapshot["rule_stats"]) -> dict[tuple, RuleStats]
+
+Risk:        medium (snapshot logic sensitive; round-trip invariants
+             must hold)
+Frozenset:   unchanged
+Tests:       unchanged (snapshot round-trip tests verify identity)
+LOC impact:  +50 ~ +80 lines in helpers, -40 lines in from_snapshot;
+             net moderate increase but per-kind testability
+Depends:     none
+```
+
+**O8 — engine.py source section comments + import review (low risk)**
+
+```text
+Add section banner comments to engine.py for navigation:
+
+  # =========================================================
+  # Engine — Module private constants
+  # =========================================================
+  ...
+  # =========================================================
+  # Engine — Public API: Entity / Observation CRUD
+  # =========================================================
+  ...
+  # =========================================================
+  # Engine — Public API: Claim lifecycle
+  # =========================================================
+  ...
+
+Also: review engine.py imports for unused / redundant entries.
+
+Risk:        low (comments + import tidying only)
+Frozenset:   unchanged
+Tests:       unchanged
+LOC impact:  +15 ~ +20 comment lines
+```
+
+Risk summary:
+
+```text
+O1 / O4 / O5 / O8   trivial / low   structural / cosmetic / dedup
+O2 / O3             low / low       private signature consistency
+O6 / O7             medium / medium method body refactor
+```
+
+---
+
+### §46.13 Audit-only invariants (141차 verification)
+
+141차 audit verifies the following read-only invariants:
+
+```text
+ragcore/engine.py LOC                 1696
+Engine class real method count         50
+Engine public method count             40
+Engine real private method count        9
+Engine private state attribute count   17
+Engine module private constants        17
+to_snapshot field count                18 (17 state + schema_version)
+from_snapshot LOC                      57
+to_snapshot LOC                        32
+duplicate KeyError check count         28
+test suite (existing)                  1089 passing
+public symbols                         48 (PR33-M baseline preserved)
+schema_version                          2
+```
+
+These are descriptive snapshots, not new test invariants. They are not added to the test suite. The existing PR31-S frozenset, PR32-V key sets, and PR33-M docstring coverage continue to lock the surface.
+
+---
+
+### §46.14 Out of scope + Constraints on 142차+
+
+141차 explicitly does not:
+
+```text
+modify any source file in ragcore/
+modify any test file
+add new tests
+execute any of the O1 ~ O8 proposals
+shift PR31-S _PR30_BASELINE_PUBLIC_SYMBOLS frozenset
+shift PR32-V *_KEYS frozensets
+bump snapshot schema_version
+change 7-modifier formula
+change modifier values
+change lifecycle transitions
+change rule_output parsing
+modify types.py
+modify rule_output.py
+```
+
+142차+ scope selection:
+
+```text
+Scope O-low   — execute O1 + O4 + O5 + O8 (trivial / low risk only)
+                no signature changes, no method splits
+                cycle: 2-commit (audit + execute + docs(dev) in one go,
+                                  or 3-commit with verification차)
+                
+Scope O-mid   — execute O1 + O4 + O5 + O8 + O2 + O3
+                adds modifier helper signature consistency + status/freshness
+                helper extraction
+                cycle: 3-commit (audit + execute + docs(dev))
+                
+Scope O-high  — execute O1 + O2 + O3 + O4 + O5 + O6 + O7 + O8
+                adds method body refactor (compute_effective_confidence split
+                + from_snapshot deserializer extraction)
+                cycle: 4-commit (audit + test-verify + execute + docs(dev))
+                
+Scope O-only  — accept nothing, close PR34-O after audit
+                cycle: 141차 + 142차 docs(dev) only (no execution)
+                Future PR picks up specific O candidates as standalone
+                changes
+```
+
+142차+ commits are written against the same `feat/internal-optimization-audit` branch (or a follow-up branch if the user chooses to split). The PR record file is written in the final 차수 and notes which O candidates were executed vs declined.
+
+The framing sentence remains:
+
+```text
+PR34-O is an internal optimization/refactor PR.
+It may reorganize engine.py internals,
+but it must not change public API surface,
+report shape, snapshot schema, lifecycle semantics,
+or effective confidence judgment semantics.
+```
+
+If 142차+ scope selection appears to drift toward surface or semantic domain, the change should be moved to a different PR (P4 rename → surface PR; modifier value change → R-fpr or Q track; lifecycle change → G track; etc.).
+
+구현 단계 (142차+ — 미정, audit 결과 따라 결정):
+- **Scope O-low**:  142차 implement O1+O4+O5+O8, 143차 docs(dev) record
+- **Scope O-mid**:  142차 implement O1~O5+O8, 143차 docs(dev) record (or 142차 implement + 143차 verify + 144차 docs(dev))
+- **Scope O-high**: 142차 test-verify spec, 143차 feat impl (O1~O8), 144차 docs(dev) record
+- **Scope O-only**: 142차 docs(dev) record (audit only, no execution)

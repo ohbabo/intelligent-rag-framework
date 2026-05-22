@@ -33,12 +33,32 @@ from ragcore.types import (
     ScoreValue,
 )
 
+# ============================================================================
+# Module-level private constants
+# ----------------------------------------------------------------------------
+# Order follows the 7-modifier composition formula:
+#
+#   effective = base
+#             × status        (4-state modifier)
+#             × freshness     (most-recent contradiction strength weight)
+#             × gap           (unresolved gap count tier)
+#             × count         (repeated-pressure strength averaging)
+#             × rule_stats    (maturity × observed_precision)
+#             × evidence_type (caller-registered hint set)
+#
+# Bookended by the refutation-helper threshold (top) and snapshot schema
+# version (bottom). All constants are Engine-internal — never exported via
+# __all__, never part of the public API surface (PR31-S frozenset).
+# ============================================================================
+
+# ---- Refutation helper ----
 # PR10-A §22.5 (Sub-decision G): strength-based refutation threshold for
 # disputed → refuted. Engine 내부 private — public export 안 함.
 # 미래 정책 (freshness / RuleStats / 가중합) 도입 시 자연스럽게 조정/대체.
 _REFUTATION_STRENGTH_THRESHOLD = 0.8
 
-# PR11-D §24.8: status-only effective confidence multipliers.
+# ---- Status modifier (PR11-D §24.8) ----
+# Status-only effective confidence multipliers.
 # Engine 내부 private — public export 안 함.
 # 미래 정책 (gap / contradiction / freshness / RuleStats) 도입 시
 # modifier 분해 가능 (예: status × gap × contradiction).
@@ -54,13 +74,15 @@ _STATUS_TO_MODIFIER: dict[int, float] = {
     CLAIM_STATUS_REFUTED: _STATUS_MODIFIER_REFUTED,
 }
 
-# PR11-C §26: freshness modifier 의 strength → penalty 가중치.
+# ---- Freshness modifier (PR11-C §26) ----
+# freshness modifier 의 strength → penalty 가중치.
 # effective = base × status_modifier × (1.0 - most_recent.strength × WEIGHT)
 # Engine 내부 private — public export 안 함.
 # 0.5 의 의미: "가장 최근 active contradiction 의 strength 가 1.0 이면 modifier 0.5"
 _FRESHNESS_PENALTY_WEIGHT = 0.5
 
-# PR12-D §28 + PR23-M §35: gap modifier — count-tier (was binary 0.8).
+# ---- Gap modifier (PR12-D §28 + PR23-M §35) ----
+# gap modifier — count-tier (was binary 0.8).
 # effective = base × status × freshness × gap × count × rule_stats × evidence_type
 # unresolved gap count → tier:
 #   0 → 1.0 (gap 없음 또는 모두 resolved, PR12-D Sub-decision T 정신 보존)
@@ -76,7 +98,8 @@ _GAP_TIER_ONE_UNRESOLVED_MODIFIER = 0.9
 _GAP_TIER_TWO_UNRESOLVED_MODIFIER = 0.8
 _GAP_TIER_THREE_OR_MORE_UNRESOLVED_MODIFIER = 0.7
 
-# PR19-E §31 + PR24-N §36: count modifier — strength averaging (was binary 0.8).
+# ---- Count modifier (PR19-E §31 + PR24-N §36) ----
+# count modifier — strength averaging (was binary 0.8).
 # effective = base × status × freshness × gap × count × rule_stats × evidence_type
 #
 # PR19-E (binary, 제거됨):
@@ -98,7 +121,8 @@ _GAP_TIER_THREE_OR_MORE_UNRESOLVED_MODIFIER = 0.7
 # Sub-decision AZ: 구 _COUNT_PENALTY_MODIFIER 제거, 신규 weight 도입.
 _COUNT_STRENGTH_PENALTY_WEIGHT = 0.25
 
-# PR20-F §32 + PR26-R §38: rule_stats modifier — continuous maturity signal.
+# ---- Rule_stats modifier — maturity part (PR20-F §32 + PR26-R §38) ----
+# rule_stats modifier — continuous maturity signal.
 # effective = base × status × freshness × gap × count × rule_stats × evidence_type
 #
 # PR20-F (binary, 제거됨):
@@ -127,7 +151,8 @@ _COUNT_STRENGTH_PENALTY_WEIGHT = 0.25
 _RULE_STATS_MATURITY_PENALTY_WEIGHT = 0.2
 _RULE_STATS_MATURITY_SATURATION_COUNT = 2
 
-# PR29-R §41: observed_precision modifier — bounded no-boost adjustment signal.
+# ---- Rule_stats modifier — precision part (PR29-R §41) ----
+# observed_precision modifier — bounded no-boost adjustment signal.
 #
 # rule_stats_modifier = maturity_modifier × precision_modifier
 #
@@ -150,7 +175,8 @@ _RULE_STATS_MATURITY_SATURATION_COUNT = 2
 _RULE_STATS_PRECISION_BASE = 0.9
 _RULE_STATS_PRECISION_RANGE = 0.1
 
-# PR21-L §33: evidence_type modifier — caller-registered weak source-quality.
+# ---- Evidence_type modifier (PR21-L §33) ----
+# evidence_type modifier — caller-registered weak source-quality.
 # effective = base × status × freshness × gap × count × rule_stats × evidence_type
 # direct evidence 전부 caller-registered hint set 에 포함되면 0.9, 그 외 → 1.0.
 # Engine 내부 private — public export 안 함.
@@ -159,13 +185,41 @@ _RULE_STATS_PRECISION_RANGE = 0.1
 # 0.9 (PR20-F rule_stats 와 동일 강도 — 가장 약한 modifier 자리).
 _EVIDENCE_TYPE_PENALTY_MODIFIER = 0.9
 
-# PR18-K §30 + PR21-L §33: snapshot schema version + migration framework.
+# ---- Snapshot schema (PR18-K §30 + PR21-L §33) ----
+# snapshot schema version + migration framework.
 # Engine 내부 private — public export 안 함.
 # PR21-L 에서 hint_evidence_types engine state 추가 → schema v1 → v2 bump.
 # 미래 schema 변경 시 두 상수 업데이트 + migration step (예: _v2_to_v3) 추가.
 _CURRENT_SNAPSHOT_SCHEMA_VERSION = 2
 _SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS: frozenset[int] = frozenset({1, 2})
 
+
+# ============================================================================
+# class Engine — judgment core (domain-light)
+# ----------------------------------------------------------------------------
+# Public method layout (section markers below match this order):
+#
+#   Defensive existence checks (private)
+#   Entity / Observation / Claim / Evidence
+#   Relation / Gap
+#   Gap resolution                       (PR5 §17)
+#   Claim lifecycle                      (PR6 §18)
+#   Claim refutation                     (PR7 §19)
+#   Disputed lifecycle                   (PR8 §20)
+#   Disputed resolution                  (PR9-A §21)
+#   Disputed refutation                  (PR10-A §22)
+#   Lifecycle history                    (PR10-B §23)
+#   Evidence freshness                   (PR11-A §25)
+#   Freshness-aware refutation           (PR11-B §27)
+#   Rule registry
+#   Modifier helpers (private)           (PR34-O §46 O2 + O3)
+#   Persistence snapshot                 (PR17 §29)
+#
+# All public methods are part of the PR31-S frozen API surface
+# (ragcore.__all__ baseline). Private helpers (_*) may be reorganized
+# under PR34-O §46 internal optimization constraints — they do not
+# affect the public surface or judgment semantics.
+# ============================================================================
 
 class Engine:
     def __init__(self) -> None:
@@ -218,6 +272,43 @@ class Engine:
     def _id_exists(self, kind: int, target_id: int) -> bool:
         return target_id in self._storage_for_kind(kind)
 
+    # ---- Defensive existence checks (private — PR34-O §46 O1) -------------
+    #
+    # Centralize the `if X not in self._storage: raise KeyError(...)` pattern
+    # so individual public methods don't repeat it. Each helper preserves the
+    # exact error message format the original inline check produced. No
+    # behavior change — these are dedup helpers only.
+
+    def _assert_entity_exists(self, entity_id: int) -> None:
+        if entity_id not in self._entities:
+            raise KeyError(f"unknown entity_id: {entity_id}")
+
+    def _assert_claim_exists(self, claim_id: int) -> None:
+        if claim_id not in self._claims:
+            raise KeyError(f"unknown claim_id: {claim_id}")
+
+    def _assert_evidence_exists(self, evidence_id: int) -> None:
+        if evidence_id not in self._evidences:
+            raise KeyError(f"unknown evidence_id: {evidence_id}")
+
+    def _assert_gap_exists(self, gap_id: int) -> None:
+        if gap_id not in self._gaps:
+            raise KeyError(f"unknown gap_id: {gap_id}")
+
+    def _assert_rule_pair_exists(self, rule_id: int, rule_version: int) -> None:
+        key = (rule_id, rule_version)
+        if key not in self._rule_definitions:
+            raise KeyError(
+                f"unknown rule: rule_id={rule_id}, version={rule_version}"
+            )
+
+    def _assert_rule_stats_pair_exists(self, rule_id: int, rule_version: int) -> None:
+        key = (rule_id, rule_version)
+        if key not in self._rule_stats:
+            raise KeyError(
+                f"unknown rule: rule_id={rule_id}, version={rule_version}"
+            )
+
     # ---- Entity / Observation / Claim / Evidence ---------------------------
 
     def add_entity(self, entity_type: int, flags: int = 0) -> int:
@@ -252,8 +343,7 @@ class Engine:
         Raises:
             KeyError: unknown entity_id.
         """
-        if entity_id not in self._entities:
-            raise KeyError(f"unknown entity_id: {entity_id}")
+        self._assert_entity_exists(entity_id)
         obs_id = self._allocate_id("observation")
         self._observations[obs_id] = Observation(
             id=obs_id,
@@ -294,6 +384,8 @@ class Engine:
         강제하지 않는다 (advisory). Rule Engine 단계에서 strict 옵션 도입.
         """
         if subject_id not in self._entities:
+            # subject_id uses a distinct error label vs add_evidence/add_observation
+            # entity_id callers, so keep this inline (helper handles entity_id label).
             raise KeyError(f"unknown subject_id (entity): {subject_id}")
         claim_id = self._allocate_id("claim")
         self._claims[claim_id] = Claim(
@@ -336,8 +428,7 @@ class Engine:
         Raises:
             KeyError: unknown claim_id.
         """
-        if claim_id not in self._claims:
-            raise KeyError(f"unknown claim_id: {claim_id}")
+        self._assert_claim_exists(claim_id)
         evidence_id = self._allocate_id("evidence")
         self._evidences[evidence_id] = Evidence(
             id=evidence_id,
@@ -365,8 +456,7 @@ class Engine:
         Raises:
             KeyError: unknown claim_id.
         """
-        if claim_id not in self._claims:
-            raise KeyError(f"unknown claim_id: {claim_id}")
+        self._assert_claim_exists(claim_id)
         return [ev for ev in self._evidences.values() if ev.claim_id == claim_id]
 
     # ---- Relation / Gap ----------------------------------------------------
@@ -444,8 +534,7 @@ class Engine:
         Raises:
             KeyError: ``claim_id`` 가 engine 에 없음.
         """
-        if claim_id not in self._claims:
-            raise KeyError(f"unknown claim_id: {claim_id}")
+        self._assert_claim_exists(claim_id)
 
         # severity 검증은 dedup 분기 전에 한다. severity 는 dedup key 가 아니지만,
         # 입력 검증 의미 (ScoreValue 의 [0.0, 1.0] 검증) 는 dedup hit/miss 모두에서
@@ -491,8 +580,7 @@ class Engine:
         dedup 으로 reuse 된 gap 도 포함된다. 반환 순서는 gap_id 오름차순
         (결정적).
         """
-        if claim_id not in self._claims:
-            raise KeyError(f"unknown claim_id: {claim_id}")
+        self._assert_claim_exists(claim_id)
         gap_ids = self._claim_gap_refs.get(claim_id, set())
         return sorted(
             (self._gaps[gid] for gid in gap_ids),
@@ -515,8 +603,7 @@ class Engine:
         Raises:
             KeyError: unknown evidence_id.
         """
-        if evidence_id not in self._evidences:
-            raise KeyError(f"unknown evidence_id: {evidence_id}")
+        self._assert_evidence_exists(evidence_id)
         evidence = self._evidences[evidence_id]
         newly_resolved: list[int] = []
         for gap in self.gaps_for_claim(evidence.claim_id):
@@ -535,8 +622,7 @@ class Engine:
         Raises:
             KeyError: unknown gap_id.
         """
-        if gap_id not in self._gaps:
-            raise KeyError(f"unknown gap_id: {gap_id}")
+        self._assert_gap_exists(gap_id)
         return self._gap_resolutions.get(gap_id)
 
     # ---- Claim lifecycle (PR6 §18) ----------------------------------------
@@ -561,8 +647,7 @@ class Engine:
             Resolved 의 truth-source 는 PR5 §17 의 ``_gap_resolutions`` (gap_id →
             evidence_id). Gap dataclass 에는 status 필드가 없다.
         """
-        if claim_id not in self._claims:
-            raise KeyError(f"unknown claim_id: {claim_id}")
+        self._assert_claim_exists(claim_id)
         claim = self._claims[claim_id]
         if claim.status != CLAIM_STATUS_CANDIDATE:
             return False
@@ -596,10 +681,8 @@ class Engine:
               (데이터 등록과 lifecycle 결정은 분리).
             - No semantic inference — 호출자 책임.
         """
-        if claim_id not in self._claims:
-            raise KeyError(f"unknown claim_id: {claim_id}")
-        if evidence_id not in self._evidences:
-            raise KeyError(f"unknown evidence_id: {evidence_id}")
+        self._assert_claim_exists(claim_id)
+        self._assert_evidence_exists(evidence_id)
         bucket = self._contradictions.setdefault(claim_id, set())
         if evidence_id in bucket:
             return False
@@ -615,8 +698,7 @@ class Engine:
         Raises:
             KeyError: unknown claim_id.
         """
-        if claim_id not in self._claims:
-            raise KeyError(f"unknown claim_id: {claim_id}")
+        self._assert_claim_exists(claim_id)
         return tuple(sorted(self._contradictions.get(claim_id, set())))
 
     def refute_claim_if_ready(self, claim_id: int) -> bool:
@@ -637,8 +719,7 @@ class Engine:
             Gap 상태 (unresolved / resolved) 는 이 결정에 영향 없음 — §19.2 핵심
             명제: "증거 부족 ≠ 반박, 반박은 명시적 contradiction 만이 trigger".
         """
-        if claim_id not in self._claims:
-            raise KeyError(f"unknown claim_id: {claim_id}")
+        self._assert_claim_exists(claim_id)
         claim = self._claims[claim_id]
         if claim.status != CLAIM_STATUS_CANDIDATE:
             return False
@@ -673,8 +754,7 @@ class Engine:
             금지) 의 대안 — contradiction 으로 confirmed 가 흔들릴 때 별도
             상태로 격리.
         """
-        if claim_id not in self._claims:
-            raise KeyError(f"unknown claim_id: {claim_id}")
+        self._assert_claim_exists(claim_id)
         claim = self._claims[claim_id]
         if claim.status != CLAIM_STATUS_CONFIRMED:
             return False
@@ -708,10 +788,8 @@ class Engine:
             - ``_contradictions`` 원본 entry 는 **삭제하지 않는다** (audit 보존).
             - Target claim status 무관 (데이터 등록, PR7 §19.6 일관).
         """
-        if claim_id not in self._claims:
-            raise KeyError(f"unknown claim_id: {claim_id}")
-        if evidence_id not in self._evidences:
-            raise KeyError(f"unknown evidence_id: {evidence_id}")
+        self._assert_claim_exists(claim_id)
+        self._assert_evidence_exists(evidence_id)
         contras = self._contradictions.get(claim_id, set())
         if evidence_id not in contras:
             raise ValueError(
@@ -733,8 +811,7 @@ class Engine:
         Raises:
             KeyError: unknown claim_id.
         """
-        if claim_id not in self._claims:
-            raise KeyError(f"unknown claim_id: {claim_id}")
+        self._assert_claim_exists(claim_id)
         return tuple(sorted(self._resolved_contradictions.get(claim_id, set())))
 
     def active_contradictions_for_claim(self, claim_id: int) -> tuple[int, ...]:
@@ -748,8 +825,7 @@ class Engine:
         Raises:
             KeyError: unknown claim_id.
         """
-        if claim_id not in self._claims:
-            raise KeyError(f"unknown claim_id: {claim_id}")
+        self._assert_claim_exists(claim_id)
         contras = self._contradictions.get(claim_id, set())
         resolved = self._resolved_contradictions.get(claim_id, set())
         return tuple(sorted(contras - resolved))
@@ -772,8 +848,7 @@ class Engine:
             API 이름 ``resolve_*`` 는 PR10+ 에서 ``disputed → refuted`` 같은
             확장이 들어올 수 있는 자리를 남겨둔 것 (§21.6 Notes).
         """
-        if claim_id not in self._claims:
-            raise KeyError(f"unknown claim_id: {claim_id}")
+        self._assert_claim_exists(claim_id)
         claim = self._claims[claim_id]
         if claim.status != CLAIM_STATUS_DISPUTED:
             return False
@@ -813,8 +888,7 @@ class Engine:
               만 다른 sibling. 결과 status 는 같은 ``CLAIM_STATUS_REFUTED``.
               path 구분은 lifecycle history 영역 (PR10-B+).
         """
-        if claim_id not in self._claims:
-            raise KeyError(f"unknown claim_id: {claim_id}")
+        self._assert_claim_exists(claim_id)
         claim = self._claims[claim_id]
         if claim.status != CLAIM_STATUS_DISPUTED:
             return False
@@ -873,8 +947,7 @@ class Engine:
             seq 는 engine-local monotonic. 서로 다른 claim 의 history 를 합쳐서
             정렬해도 의미가 있다 (cross-claim 순서 표현).
         """
-        if claim_id not in self._claims:
-            raise KeyError(f"unknown claim_id: {claim_id}")
+        self._assert_claim_exists(claim_id)
         return tuple(self._claim_lifecycle_events.get(claim_id, ()))
 
     # ---- Evidence freshness (PR11-A §25) ----------------------------------
@@ -895,8 +968,7 @@ class Engine:
             wall-clock 안 봄 (PR10-A / PR10-B 정신 일관). engine-local 의미만
             가짐 (cross-engine 비교 무의미).
         """
-        if evidence_id not in self._evidences:
-            raise KeyError(f"unknown evidence_id: {evidence_id}")
+        self._assert_evidence_exists(evidence_id)
         return evidence_id
 
     def active_contradictions_by_freshness(
@@ -918,8 +990,7 @@ class Engine:
         Raises:
             KeyError: unknown claim_id.
         """
-        if claim_id not in self._claims:
-            raise KeyError(f"unknown claim_id: {claim_id}")
+        self._assert_claim_exists(claim_id)
         contras = self._contradictions.get(claim_id, set())
         resolved = self._resolved_contradictions.get(claim_id, set())
         return tuple(sorted(contras - resolved, reverse=True))
@@ -956,8 +1027,7 @@ class Engine:
             - PR10-A ``refute_disputed_claim_if_ready`` 의 의미 / 시그니처
               변경 없음.
         """
-        if claim_id not in self._claims:
-            raise KeyError(f"unknown claim_id: {claim_id}")
+        self._assert_claim_exists(claim_id)
         claim = self._claims[claim_id]
         if claim.status != CLAIM_STATUS_DISPUTED:
             return False
@@ -1004,12 +1074,8 @@ class Engine:
         Raises:
             KeyError: unknown ``(rule_id, rule_version)`` pair.
         """
-        key = (rule_id, rule_version)
-        if key not in self._rule_definitions:
-            raise KeyError(
-                f"unknown rule: rule_id={rule_id}, version={rule_version}"
-            )
-        return self._rule_definitions[key]
+        self._assert_rule_pair_exists(rule_id, rule_version)
+        return self._rule_definitions[(rule_id, rule_version)]
 
     def get_rule_stats(self, rule_id: int, rule_version: int) -> RuleStats:
         """Return the RuleStats for the ``(rule_id, rule_version)`` pair.
@@ -1022,12 +1088,37 @@ class Engine:
         Raises:
             KeyError: unknown ``(rule_id, rule_version)`` pair.
         """
-        key = (rule_id, rule_version)
-        if key not in self._rule_stats:
-            raise KeyError(
-                f"unknown rule: rule_id={rule_id}, version={rule_version}"
-            )
-        return self._rule_stats[key]
+        self._assert_rule_stats_pair_exists(rule_id, rule_version)
+        return self._rule_stats[(rule_id, rule_version)]
+
+    # ---- Modifier helpers (private — PR34-O §46 O2 + O3) -----------------
+    #
+    # All 6 modifier helpers share the same signature:
+    #     _<name>_modifier_for_claim(self, claim_id: int) -> float
+    #
+    # status / freshness were inlined in compute_effective_confidence before
+    # PR34-O §46 O3 extracted them for symmetry with the existing four
+    # (gap / count / rule_stats / evidence_type).
+
+    def _status_modifier_for_claim(self, claim_id: int) -> float:
+        """PR11-D §24.8 — status-only effective confidence multiplier.
+
+        4-state mapping (status modifier 강 — 0.0 / 0.5 / 1.0).
+        """
+        return _STATUS_TO_MODIFIER[self._claims[claim_id].status]
+
+    def _freshness_modifier_for_claim(self, claim_id: int) -> float:
+        """PR11-C §26 — most-recent active contradiction strength weight.
+
+        active contradictions 없으면 1.0. 있으면
+        ``1.0 - most_recent.strength × _FRESHNESS_PENALTY_WEIGHT``
+        (Sub-decision O — 가장 최근 1개만 사용).
+        """
+        active = self.active_contradictions_by_freshness(claim_id)
+        if not active:
+            return 1.0
+        most_recent_evidence = self._evidences[active[0]]
+        return 1.0 - most_recent_evidence.strength.value * _FRESHNESS_PENALTY_WEIGHT
 
     def _gap_modifier_for_claim(self, claim_id: int) -> float:
         """PR12-D §28 + PR23-M §35 — count-tier weak attenuation.
@@ -1076,7 +1167,7 @@ class Engine:
         ) / len(active)
         return 1.0 - average_strength * _COUNT_STRENGTH_PENALTY_WEIGHT
 
-    def _rule_stats_modifier_for_claim(self, claim: Claim) -> float:
+    def _rule_stats_modifier_for_claim(self, claim_id: int) -> float:
         """PR20-F §32 + PR26-R §38 + PR29-R §41 — continuous maturity × bounded precision.
 
         PR29-R refines rule_stats_modifier internally:
@@ -1128,6 +1219,7 @@ class Engine:
             Observed precision is optional evidence for rule maturity,
             not ground truth.
         """
+        claim = self._claims[claim_id]
         if claim.created_by_rule == 0:
             return 1.0
         key = (claim.created_by_rule, claim.created_by_rule_version)
@@ -1355,36 +1447,16 @@ class Engine:
         Raises:
             KeyError: unknown claim_id.
         """
-        if claim_id not in self._claims:
-            raise KeyError(f"unknown claim_id: {claim_id}")
+        self._assert_claim_exists(claim_id)
         claim = self._claims[claim_id]
-        status_modifier = _STATUS_TO_MODIFIER[claim.status]
-
-        active = self.active_contradictions_by_freshness(claim_id)
-        if not active:
-            freshness_modifier = 1.0
-        else:
-            most_recent_evidence = self._evidences[active[0]]
-            freshness_modifier = (
-                1.0
-                - most_recent_evidence.strength.value * _FRESHNESS_PENALTY_WEIGHT
-            )
-
-        gap_modifier = self._gap_modifier_for_claim(claim_id)
-
-        count_modifier = self._count_modifier_for_claim(claim_id)
-
-        rule_stats_modifier = self._rule_stats_modifier_for_claim(claim)
-        evidence_type_modifier = self._evidence_type_modifier_for_claim(claim_id)
-
         return ScoreValue(
             claim.base_confidence.value
-            * status_modifier
-            * freshness_modifier
-            * gap_modifier
-            * count_modifier
-            * rule_stats_modifier
-            * evidence_type_modifier
+            * self._status_modifier_for_claim(claim_id)
+            * self._freshness_modifier_for_claim(claim_id)
+            * self._gap_modifier_for_claim(claim_id)
+            * self._count_modifier_for_claim(claim_id)
+            * self._rule_stats_modifier_for_claim(claim_id)
+            * self._evidence_type_modifier_for_claim(claim_id)
         )
 
     def update_rule_stats(
@@ -1404,11 +1476,8 @@ class Engine:
         precision/fpr 인자가 None이면 "변경 안 함" (기존 값 유지). 명시적으로
         nullify 하려면 별도 API가 필요 (MVP 미포함).
         """
+        self._assert_rule_stats_pair_exists(rule_id, rule_version)
         key = (rule_id, rule_version)
-        if key not in self._rule_stats:
-            raise KeyError(
-                f"unknown rule: rule_id={rule_id}, version={rule_version}"
-            )
         current = self._rule_stats[key]
         self._rule_stats[key] = RuleStats(
             rule_id=current.rule_id,
