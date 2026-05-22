@@ -9196,6 +9196,8 @@ The test suite should verify that current public behavior already satisfies the 
 
 ### §43.1 Core proposition
 
+> **Quick entry point:** see `README.md` *Quickstart* for the minimal usage example. §43 below documents the 6 canonical scenarios in detail.
+
 AI-readable usage recipe defines the canonical call sequence that an external AI consumer (LLM-driven agent, code-generation tool, or automation script) should follow when using the Engine.
 
 This section does not add a new Engine feature.
@@ -9716,6 +9718,8 @@ The test suite should verify that AI consumers can follow each recipe using only
 ## §44. Report Surface MVP
 
 ### §44.1 Core proposition
+
+> **Quick entry point:** see `README.md` *Quickstart* for the minimal usage example. §44 below documents the 6 canonical report shapes in detail.
 
 Report surface defines the canonical shape of consumer-side reports assembled from existing public Engine APIs.
 
@@ -12005,6 +12009,8 @@ The §46.12 enumeration itself is not amended (historical record); §47.11 super
 
 ### §48.1 Core statement
 
+> **Quick entry point:** see `README.md` *Stability & Evolvability* for the consumer-facing summary. §48 below documents the freeze in detail.
+
 ```text
 PR36-PKG freezes the Engine method surface as a stable package boundary.
 
@@ -12390,6 +12396,8 @@ If 148차 / 149차 reveal an unexpected coupling that would require a method sur
 ## §49. Integration Readiness Boundary
 
 ### §49.1 Core statement
+
+> **Quick entry point:** see `README.md` *Stability & Evolvability* + *Persistence Boundary* for the consumer-facing summary. §49 below documents the integration readiness boundary in detail.
 
 ```text
 Algorithm can evolve. Integration boundary must be complete.
