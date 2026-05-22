@@ -11998,3 +11998,389 @@ The §46.12 enumeration itself is not amended (historical record); §47.11 super
 - 145차: refactor(engine): execute PR35-O7 S1 + S2 (4 helper 추가 + from_snapshot rewrite).
   1089 tests 모두 통과 유지 필수.
 - 146차: docs(dev) record `PR_035_SNAPSHOT_RESTORE_REFACTOR_MVP.md` + Draft → Ready + squash merge.
+
+---
+
+## §48. Engine Method Surface Freeze MVP
+
+### §48.1 Core statement
+
+```text
+PR36-PKG freezes the Engine method surface as a stable package boundary.
+
+It does not freeze the internal judgment mathematics.
+
+Future engine updates may refine scoring, modifiers, thresholds, and
+judgment policies based on Cerberus runtime feedback, but those updates
+must preserve the public method structure used by external consumers.
+```
+
+> **The engine is allowed to become smarter without forcing consumers to rewrite their integration code.**
+
+PR36-PKG separates two kinds of stability:
+
+```text
+- Stable forever:   public method names, signatures, return shapes,
+                    snapshot I/O contract, report key surface,
+                    lifecycle API shape, package import surface.
+
+- Allowed to evolve: modifier strength, modifier composition details,
+                    threshold policy, contradiction scoring,
+                    freshness policy, gap severity policy, RuleStats
+                    interpretation, evidence_type interpretation,
+                    effective confidence calibration.
+```
+
+Packaging is a *distribution boundary*, not a new engine feature. PR36-PKG documents and locks that boundary so external consumers (Cerberus first, future AI consumers and adapters second) can call the engine through a contract that does not silently shift under their feet.
+
+---
+
+### §48.2 Method surface freeze
+
+The public Engine method surface — names, signatures, parameter order, return shapes, exception types — is frozen by PR36-PKG.
+
+Frozen items (after PR1 ~ PR35-O7 baseline, main `8dd0535`):
+
+```text
+import surface:
+  ragcore.__all__                                 48 public symbols
+  from ragcore import Engine                      primary entrypoint
+
+Engine public methods (40 methods, PR33-M docstring 40/40):
+  add_entity / add_observation / add_claim / add_evidence / add_relation / add_gap
+  get_entity / get_observation / get_claim / get_evidence / get_relation / get_gap
+  get_rule / get_rule_stats
+  evidences_for_claim / gaps_for_claim
+  gap_resolution / resolve_gaps_for_evidence
+  contradictions_for_claim / active_contradictions_for_claim /
+  resolved_contradictions_for_claim
+  register_contradiction / register_contradiction_resolution
+  confirm_claim_if_ready / dispute_claim_if_ready /
+  refute_claim_if_ready / resolve_disputed_claim_if_ready /
+  refute_disputed_claim_if_ready / refute_disputed_claim_if_ready_by_freshness
+  claim_lifecycle_history
+  evidence_freshness / active_contradictions_by_freshness
+  register_rule / update_rule_stats
+  register_hint_evidence_types / unregister_hint_evidence_types / clear_hint_evidence_types
+  compute_effective_confidence
+  to_snapshot / from_snapshot
+
+report shape (PR32-V §44 — 6 frozen key sets):
+  CLAIM_SUMMARY_KEYS / EFFECTIVE_BREAKDOWN_KEYS / LIFECYCLE_EVENT_KEYS /
+  EVIDENCE_CONTRADICTION_KEYS / RULE_PINNING_KEYS / SNAPSHOT_METADATA_KEYS
+```
+
+These names and shapes do not change in any PR labeled "judgment policy update," "algorithm refinement," "modifier evolution," or similar internal-domain PR. They may only change under an explicitly labeled "method surface migration" PR with deprecation cycle and migration guide.
+
+---
+
+### §48.3 Algorithm evolvability
+
+The internal judgment mathematics is *not* frozen by PR36-PKG. Future PRs may refine, recalibrate, or replace internal scoring without changing the method surface.
+
+Areas allowed to evolve in future PRs:
+
+```text
+modifier strength             (e.g., status modifier values, freshness penalty weight)
+modifier composition          (e.g., 7-modifier multiplication order or substitution)
+threshold policy              (e.g., refutation_strength_threshold)
+contradiction scoring         (e.g., how strength averages combine)
+freshness policy              (e.g., most-recent-1 vs most-recent-N)
+gap severity policy           (e.g., 4-tier vs continuous)
+RuleStats interpretation       (e.g., maturity formula, precision formula)
+evidence_type interpretation  (e.g., hint set semantics, weak attenuation)
+effective confidence calibration
+                              (e.g., bounded multiplication vs probabilistic combination)
+new modifier addition          (e.g., 8th modifier — pending §44.5 B / §43.12 invariant 5 update)
+new lifecycle state addition  (G track — superseded / retracted; medium risk, requires §42.2 C update)
+```
+
+Such evolution is welcome. It is the *point* of separating method surface from mathematics.
+
+Future updates that affect output *meaning* (not just numerical values) must be documented as a **judgment policy update** in the contract, not hidden as a refactor. See §48.10.
+
+---
+
+### §48.4 Allowed future engine updates
+
+External consumers (Cerberus first) MAY call the Engine through the frozen method surface and expect their integration code to keep working across:
+
+```text
+- modifier recalibration              (numerical adjustments to modifier values)
+- modifier internal refactor          (PR34-O / PR35-O7 style: helper extraction,
+                                       signature consistency, snapshot symmetry)
+- threshold tuning                    (e.g., refutation strength threshold)
+- new internal helper extraction      (no new public symbols)
+- algorithm replacement                (e.g., different mathematical model
+                                        for the same input/output contract)
+- snapshot internal field addition    (no key removal; consumer-side may ignore unknown keys)
+- snapshot schema_version bump        (v2 → v3 with migration framework — input shape
+                                        change handled by _migrate_snapshot_*)
+- docstring expansion / clarification (PR33-M-style coverage improvement)
+- internal optimization               (PR34-O-style dedup, signature normalization)
+- restore path symmetry               (PR35-O7-style helper completion)
+```
+
+External consumer code SHOULD NOT need to change in response to any of the above.
+
+---
+
+### §48.5 Breaking change boundary
+
+A change is **breaking** under PR36-PKG if it requires consumer code modification beyond importing the new ragcore version.
+
+Breaking changes (NOT allowed under method surface freeze):
+
+```text
+- renaming any public symbol or method
+- removing any public symbol or method
+- changing method signature (parameter order, parameter name, kwarg vs positional)
+- changing return type or return shape
+- changing exception type (e.g., KeyError → ValueError for the same condition)
+- changing snapshot output shape (removing keys, renaming keys, changing key types)
+- changing report key set (PR32-V §44 frozensets)
+- changing __all__ symbol membership
+```
+
+Non-breaking changes (allowed):
+
+```text
+- numerical recalibration that does not change types
+- adding new public methods (additive, no removal)
+- adding new optional kwargs (backward compatible)
+- adding new snapshot keys (consumers ignore unknown keys)
+- adding new report shapes (additive, existing shapes preserved)
+- internal refactors that preserve I/O contract
+- docstring improvements
+- private helper changes
+```
+
+If a future PR's intent matches the breaking list, it is *not* an algorithm update — it is a **method surface migration** and requires:
+
+```text
+- explicit "method surface migration" PR label
+- deprecation cycle (one minor version with both old + new)
+- migration guide section in docs/dev/
+- baseline shift documented in PR31-S _PR30_BASELINE_PUBLIC_SYMBOLS
+- and/or PR32-V *_KEYS frozenset update
+```
+
+PR36-PKG itself is not a method surface migration. It is a freeze declaration.
+
+---
+
+### §48.6 Cerberus consumer stability
+
+PR36-PKG exists so Cerberus can use the engine like this:
+
+```python
+from ragcore import Engine
+
+engine = Engine()
+entity_id = engine.add_entity(entity_type=1)
+claim_id = engine.add_claim(
+    subject_id=entity_id,
+    claim_type=1,
+    rule_id=...,
+    rule_version=...,
+    reason_code=...,
+    base_confidence=...,
+)
+engine.add_evidence(claim_id=claim_id, raw_ref_id=..., evidence_type=..., strength=...)
+engine.confirm_claim_if_ready(claim_id)
+
+score = engine.compute_effective_confidence(claim_id)
+history = engine.claim_lifecycle_history(claim_id)
+snapshot = engine.to_snapshot()
+```
+
+and have this code keep working across future framework PRs that improve:
+
+```text
+- how score is computed internally
+- how lifecycle thresholds are tuned
+- how snapshot is serialized internally
+- how modifier strengths are calibrated
+- how new modifiers are added (additive)
+```
+
+If a future PR breaks this script without an explicit method surface migration, that PR violates §48.
+
+---
+
+### §48.7 Snapshot compatibility
+
+Snapshot output shape is frozen by PR36-PKG. The `to_snapshot()` output dict must remain a superset of the current PR21-L v2 key set:
+
+```text
+schema_version, next_id, lifecycle_seq,
+entities, observations, claims, evidences, relations, gaps,
+rule_definitions, rule_stats,
+gap_dedup_index, claim_gap_refs, gap_resolutions,
+contradictions, resolved_contradictions, claim_lifecycle_events,
+hint_evidence_types
+```
+
+Allowed snapshot evolution:
+
+```text
+- adding new top-level keys (consumers ignore unknown keys via dict.get)
+- schema_version bump (v2 → v3) with migration framework extension
+- internal serialization helper changes (PR35-O7 _restore_dict_* symmetry style)
+```
+
+Disallowed snapshot evolution under freeze:
+
+```text
+- removing existing keys
+- changing existing key types
+- changing existing key semantic meaning
+- silent schema_version bump (consumer must be able to detect via dict["schema_version"])
+```
+
+The migration framework (`_migrate_snapshot_v1_to_v2`, `_migrate_snapshot_to_current`) is the canonical path for accepting older snapshot versions. PR36-PKG preserves this framework.
+
+---
+
+### §48.8 Report surface compatibility
+
+The 6 report shapes locked by PR32-V §44 (A ~ F) are part of the method surface freeze:
+
+```text
+CLAIM_SUMMARY_KEYS                 (Shape A — 8 keys)
+EFFECTIVE_BREAKDOWN_KEYS           (Shape B — 9 keys, 6 pressure flags)
+LIFECYCLE_EVENT_KEYS               (Shape C — 5 keys per event)
+EVIDENCE_CONTRADICTION_KEYS        (Shape D — 5 keys)
+RULE_PINNING_KEYS                  (Shape E — 8 keys)
+SNAPSHOT_METADATA_KEYS             (Shape F — 8 keys)
+```
+
+These frozensets do not change under judgment policy updates. They may only change under an explicit method surface migration PR with the same rigor as §48.5.
+
+Pressure flags (Shape B) remain boolean. They do not become numerical modifier values even if internal modifier calibration changes. The pressure surface is forward-compatible across modifier refinements (PR23-M / PR24-N / PR26-R / PR29-R precedent).
+
+---
+
+### §48.9 Import surface stability
+
+Direct import must remain side-effect free:
+
+```text
+- importing ragcore does not trigger external network calls
+- importing ragcore does not require scanner binaries
+- importing ragcore does not require LLM runtimes
+- importing ragcore does not require Cerberus or any specific consumer
+- importing ragcore does not perform file IO
+- importing ragcore does not require database connection
+```
+
+Engine instantiation must remain cheap:
+
+```text
+- Engine() with no arguments produces an empty, valid Engine
+- Engine() does not load any external state
+- Engine() does not make any external calls
+- Engine.from_snapshot(snapshot) accepts a dict and produces a restored Engine
+  without any external dependency
+```
+
+PR36-PKG locks these properties as part of the import surface.
+
+---
+
+### §48.10 Policy update documentation rule
+
+When a future PR changes judgment output *meaning* — not just numerical values within the same conceptual interpretation — that PR must:
+
+```text
+1. Be labeled as a "judgment policy update" in the contract
+2. Add a new contract section (e.g., §49, §50, ...) documenting:
+   - what changed
+   - why it changed
+   - what previously produced result X now produces result Y
+   - whether existing snapshots remain valid
+   - whether existing report shapes remain valid
+3. Update tests that exercised the prior policy (natural-expiry pattern)
+4. Document the policy update in docs/dev/PR_NNN_*.md
+5. Preserve method surface and report surface (per §48.5)
+```
+
+The framework already has precedent for this:
+
+```text
+PR20-F binary  → PR23-M tier         (gap modifier refinement)
+PR20-F binary  → PR24-N continuous   (count modifier refinement)
+PR20-F binary  → PR26-R continuous   (rule_stats maturity refinement)
+PR29-R         → adds observed_precision composition  (bounded no-boost)
+```
+
+Each was a judgment policy update that preserved method surface. PR36-PKG codifies this pattern.
+
+---
+
+### §48.11 Non-goals
+
+PR36-PKG does not:
+
+```text
+- add new public API
+- rename or remove existing public API
+- change effective_confidence formula
+- change lifecycle transition rules
+- change snapshot schema_version (still 2)
+- change report key sets
+- add Cerberus-specific adapter
+- add CLI execution
+- add scanner orchestration
+- add database storage
+- add file IO inside Engine
+- add LLM integration
+- add network access of any kind
+- claim "production security coverage"
+- claim "Cerberus integration"
+- declare the engine algorithm "complete" or "final"
+```
+
+PR36-PKG only states that *whatever the algorithm becomes*, the *method surface* through which it is called remains stable for consumers.
+
+---
+
+### §48.12 Regression invariants
+
+The package freeze must preserve, at the boundary level:
+
+```text
+existing 1089 tests pass identically
+public symbol count: 48
+unique symbols: 48
+Engine public method count: 40
+no-docstring methods: 0 (PR33-M coverage)
+modifier helper signatures: all (self, claim_id: int) -> float (PR34-O)
+serialize / restore helper symmetry: 6 × 6 (PR35-O7)
+snapshot schema_version: 2
+6 frozen report key sets (PR32-V)
+Sub-decision D preservation (types / rule_output unchanged)
+```
+
+A future PR that breaks any of the above invariants without an explicit method surface migration declaration violates §48 and the corresponding PR is out of bounds.
+
+---
+
+### §48.13 Cycle for PR36-PKG implementation
+
+PR36-PKG is the first framework PR with a *build* step (pyproject.toml). The cycle is 4-차수:
+
+```text
+147차  docs(contract): define engine method surface freeze MVP (§48)
+148차  test(package): lock package import surface invariants
+149차  build(package): add minimal pyproject metadata
+150차  docs(dev): record PR36-PKG engine method surface freeze + ready + squash merge
+```
+
+148차 adds a small import smoke test module (e.g., `tests/test_package_import_surface.py`) that verifies §48.9 import side-effect-free properties.
+
+149차 adds a minimal `pyproject.toml` with packaging metadata bounded by §48.11. Version is `0.1.0` — not `1.0.0` — to avoid implying production readiness.
+
+150차 records the PR + merges. Branch is `feat/engine-method-surface-freeze`.
+
+If 148차 / 149차 reveal an unexpected coupling that would require a method surface change, the PR is paused and the change is moved to a separate "method surface migration" PR (per §48.5).

@@ -3,10 +3,17 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
+# PR36-PKG §48 — distribution boundary, not a new engine feature.
+# version 0.1.0 (NOT 1.0.0): internal judgment mathematics is allowed to
+# evolve (§48.3); only the method surface is frozen (§48.2).
 name = "ragcore"
 version = "0.1.0"
 description = "Intelligent RAG Framework — Python Reference Core"
+readme = "README.md"
 requires-python = ">=3.10"
+authors = [
+    { name = "ohbabo" },
+]
 dependencies = [
     "PyYAML>=6.0",
 ]
