@@ -1565,28 +1565,17 @@ class Engine:
         engine._rule_stats = _restore_dict_tuple(
             snapshot["rule_stats"], _rule_stats_from_dict,
         )
-        engine._gap_dedup_index = {
-            tuple(item["key"]): item["value"] for item in snapshot["gap_dedup_index"]
-        }
-        engine._claim_gap_refs = {
-            item["key"]: set(item["value"]) for item in snapshot["claim_gap_refs"]
-        }
-        engine._gap_resolutions = {
-            item["key"]: item["value"] for item in snapshot["gap_resolutions"]
-        }
-        engine._contradictions = {
-            item["key"]: set(item["value"]) for item in snapshot["contradictions"]
-        }
-        engine._resolved_contradictions = {
-            item["key"]: set(item["value"])
-            for item in snapshot["resolved_contradictions"]
-        }
-        engine._claim_lifecycle_events = {
-            item["key"]: [
-                ClaimLifecycleEvent(**event_dict) for event_dict in item["value"]
-            ]
-            for item in snapshot["claim_lifecycle_events"]
-        }
+        engine._gap_dedup_index = _restore_dict_tuple4_int(snapshot["gap_dedup_index"])
+        engine._claim_gap_refs = _restore_dict_int_set(snapshot["claim_gap_refs"])
+        engine._gap_resolutions = _restore_dict_int_int(snapshot["gap_resolutions"])
+        engine._contradictions = _restore_dict_int_set(snapshot["contradictions"])
+        engine._resolved_contradictions = _restore_dict_int_set(
+            snapshot["resolved_contradictions"],
+        )
+        engine._claim_lifecycle_events = _restore_dict_int_list_dataclass(
+            snapshot["claim_lifecycle_events"],
+            lambda d: ClaimLifecycleEvent(**d),
+        )
         engine._hint_evidence_types = set(snapshot["hint_evidence_types"])
         return engine
 
@@ -1763,3 +1752,49 @@ def _restore_dict_tuple(
 ) -> dict[tuple[int, int], Any]:
     """list of {key: list[2], value: dict} → dict[tuple[int,int], dataclass]."""
     return {tuple(item["key"]): from_dict(item["value"]) for item in items}
+
+
+# PR35-O7 §47 S1 — restore helper symmetry completion.
+# Each helper below mirrors a _serialize_dict_* helper above.
+
+def _restore_dict_tuple4_int(
+    items: list[dict[str, Any]],
+) -> dict[tuple[int, int, int, int], int]:
+    """list of {key: list[4], value: int} → dict[tuple4, int].
+
+    Mirrors _serialize_dict_tuple4_int.
+    """
+    return {tuple(item["key"]): item["value"] for item in items}
+
+
+def _restore_dict_int_set(
+    items: list[dict[str, Any]],
+) -> dict[int, set[int]]:
+    """list of {key: int, value: list[int]} → dict[int, set[int]].
+
+    Mirrors _serialize_dict_int_set.
+    """
+    return {item["key"]: set(item["value"]) for item in items}
+
+
+def _restore_dict_int_int(
+    items: list[dict[str, int]],
+) -> dict[int, int]:
+    """list of {key: int, value: int} → dict[int, int].
+
+    Mirrors _serialize_dict_int_int.
+    """
+    return {item["key"]: item["value"] for item in items}
+
+
+def _restore_dict_int_list_dataclass(
+    items: list[dict[str, Any]], from_dict: Any,
+) -> dict[int, list[Any]]:
+    """list of {key: int, value: list[dict]} → dict[int, list[dataclass]].
+
+    Mirrors _serialize_dict_int_list_dataclass.
+    """
+    return {
+        item["key"]: [from_dict(d) for d in item["value"]]
+        for item in items
+    }
