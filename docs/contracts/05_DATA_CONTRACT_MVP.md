@@ -10350,3 +10350,550 @@ The test suite should verify that consumers can assemble each §44 shape from th
   consumer-side assembly helper 가 6 shapes 를 현재 public API 만으로 만들 수 있음을 검증.
 - 136차: **skip** — PR32-V 본질은 "엔진을 더 만들지 않고 consumer-side canonical report shape 를 명문화". Engine.claim_report 추가는 PR33-M method surface 정리에서 별도 결정.
 - 137차: docs(dev) record `PR_032_REPORT_SURFACE_MVP.md` + Draft PR ready + squash merge.
+
+---
+
+## §45. Method Surface Cleanup Boundary
+
+### §45.1 Core proposition
+
+```text
+PR33-M is a surface cleanup PR.
+It may intentionally shift the frozen method surface baseline,
+but it must not change Engine judgment semantics.
+```
+
+PR33-M is the first PR allowed to intentionally shift the PR31-S `_PR30_BASELINE_PUBLIC_SYMBOLS` frozenset and the PR32-V report key set frozensets. Unlike PR23-M / PR24-N / PR26-R / PR29-R (modifier refinement) or PR27-P / PR30-P / PR31-S / PR32-V (boundary spec), PR33-M is a **surface cleanup** PR.
+
+138차 enters PR33-M as **audit-first**. The audit produces a snapshot of the current public surface and classifies symbols, naming patterns, docstring coverage, and cleanup candidates as **proposals**. The audit does not execute any cleanup.
+
+139차+ will execute scope A (docstring only) / B (docstring + reordering) / C (intentional baseline shift) based on audit findings.
+
+> **138차 is a read-only audit step.**
+> **It records the current state and proposes options.**
+> **It does not change Engine state, public surface, frozensets, key sets, snapshot schema, or any test invariant.**
+
+---
+
+### §45.2 Audit boundary
+
+PR33-M may touch (surface domain):
+
+```text
+method names / signatures (with explicit frozenset baseline shift)
+__all__ contents (add / remove / reorder)
+docstrings
+internal helper organization
+naming consistency adjustments
+thin convenience method introduction (e.g., Engine.claim_report)
+```
+
+PR33-M must not touch (judgment semantics domain):
+
+```text
+7-modifier composition formula
+modifier value behavior (PR23-M / PR24-N / PR26-R / PR29-R decisions)
+lifecycle transition rules (CANDIDATE / CONFIRMED / DISPUTED / REFUTED)
+snapshot schema version (still v2, no v3 bump)
+rule output parsing logic
+contradiction registration / resolution logic
+effective_confidence computation
+status modifier values (0.0 / 0.5 / 1.0)
+freshness / gap / count / rule_stats / evidence_type modifier formulas
+```
+
+If any item in the second list would be affected, the change does not belong in PR33-M.
+
+---
+
+### §45.3 138차 audit scope
+
+138차 (this section) is in scope:
+
+```text
+inventory of ragcore.__all__ public symbols
+grouping by purpose
+Engine public method inventory
+naming pattern survey
+docstring coverage observations
+symbol usage tier classification
+cleanup candidates (proposals only — not decisions)
+meta-observations about prior PR documentation accuracy
+```
+
+138차 is out of scope:
+
+```text
+__all__ symbol add / remove / rename (executed)
+method rename or signature change (executed)
+docstring updates (executed)
+frozenset baseline shift (executed)
+report key set change (executed)
+snapshot schema change
+new test invariant (audit produces findings, not invariants)
+Engine behavior change
+```
+
+---
+
+### §45.4 Current public surface snapshot (138차 timing)
+
+Recorded against main `5c6a05c` (PR32-V merged) at audit time:
+
+```text
+ragcore.__all__              48 symbols
+len(set(ragcore.__all__))    48 (no duplicates)
+Engine public methods        40 (excluding __init__ and _private)
+schema_version               2
+```
+
+**Note:** prior PR commit bodies, PR record markdowns, and memory plans (PR31-S commit body, PR32-V record, pr32_plan, pr33_plan, MEMORY.md Spin-off Projects line) refer to "49 symbols." This is a wording typo dating to PR31-S. The actual count has been 48 throughout PR31-S → PR32-V. The PR31-S frozenset literal in `tests/test_engine_ai_readable_usage_recipe.py` and `tests/test_engine_report_surface.py` correctly contains 48 items — only narrative wording was off. This audit records the correct count.
+
+---
+
+### §45.5 Symbol grouping (12 natural groups)
+
+The 48 symbols fall into 12 natural groups by purpose:
+
+| Group                   | Count | Symbols                                                                    |
+| ----------------------- | ----: | -------------------------------------------------------------------------- |
+| lifecycle_status_enum   |     4 | CLAIM_STATUS_CANDIDATE / CONFIRMED / DISPUTED / REFUTED                    |
+| rule_maturity_enum      |     3 | RULE_MATURITY_DEPRECATED / EXPERIMENTAL / STABLE                           |
+| kind_enum               |     6 | KIND_CLAIM / ENTITY / EVIDENCE / GAP / OBSERVATION / RELATION              |
+| trace_reason_enum       |     4 | TRACE_REASON_MATCH / MISMATCH / MISSING_FIELD / TYPE_MISMATCH              |
+| core_dataclass          |     7 | Claim / ClaimLifecycleEvent / Entity / Evidence / Gap / Observation / Relation |
+| rule_dataclass          |     5 | RequiredEvidenceTemplate / RuleDefinition / RuleOutputTemplate / RuleSpec / RuleStats |
+| trace_dataclass         |     5 | Combinator / CombinatorTrace / FiringTrace / Predicate / PredicateTrace    |
+| value_type              |     1 | ScoreValue                                                                 |
+| engine_class            |     1 | Engine                                                                     |
+| compile_func            |     4 | compile_required_evidence / compile_rule_condition / compile_rule_definition / compile_rule_output |
+| evaluate_func           |     2 | evaluate_condition / evaluate_condition_with_trace                         |
+| fire_func               |     2 | fire_rule / fire_rule_with_trace                                           |
+| load_func               |     3 | load_condition_tree / load_rule_spec / load_rule_spec_from_yaml            |
+| register_func           |     1 | register_rule_spec                                                         |
+
+Sum: 4 + 3 + 6 + 4 + 7 + 5 + 5 + 1 + 1 + 4 + 2 + 2 + 3 + 1 = 48.
+
+Observation:
+
+```text
+The 48 symbols are already well-organized by purpose. No symbol is
+obviously misplaced. The __all__ list is currently alphabetic,
+which mixes the 12 natural groups together.
+```
+
+---
+
+### §45.6 Engine public method naming patterns
+
+The 40 public Engine methods follow 21 naming prefixes:
+
+| Prefix              | Count | Methods                                                                   |
+| ------------------- | ----: | ------------------------------------------------------------------------- |
+| add_                |     6 | add_entity / add_observation / add_claim / add_evidence / add_relation / add_gap |
+| get_                |     8 | get_entity / get_observation / get_claim / get_evidence / get_gap / get_relation / get_rule / get_rule_stats |
+| register_           |     4 | register_rule / register_contradiction / register_contradiction_resolution / register_hint_evidence_types |
+| compute_            |     1 | compute_effective_confidence                                              |
+| resolve_            |     2 | resolve_gaps_for_evidence / resolve_disputed_claim_if_ready               |
+| confirm_            |     1 | confirm_claim_if_ready                                                    |
+| dispute_            |     1 | dispute_claim_if_ready                                                    |
+| refute_             |     3 | refute_claim_if_ready / refute_disputed_claim_if_ready / refute_disputed_claim_if_ready_by_freshness |
+| active_             |     2 | active_contradictions_for_claim / active_contradictions_by_freshness      |
+| contradictions_     |     1 | contradictions_for_claim                                                  |
+| resolved_           |     1 | resolved_contradictions_for_claim                                         |
+| evidence_           |     1 | evidence_freshness                                                        |
+| evidences_          |     1 | evidences_for_claim                                                       |
+| gaps_               |     1 | gaps_for_claim                                                            |
+| gap_                |     1 | gap_resolution                                                            |
+| claim_              |     1 | claim_lifecycle_history                                                   |
+| to_                 |     1 | to_snapshot                                                               |
+| from_               |     1 | from_snapshot                                                             |
+| update_             |     1 | update_rule_stats                                                         |
+| unregister_         |     1 | unregister_hint_evidence_types                                            |
+| clear_              |     1 | clear_hint_evidence_types                                                 |
+
+Total: 40.
+
+Suffix patterns:
+
+```text
+_for_claim     — filters by claim_id (gaps_for_claim, evidences_for_claim,
+                  contradictions_for_claim, active_contradictions_for_claim,
+                  resolved_contradictions_for_claim)
+_if_ready      — conditional lifecycle transition (confirm/dispute/refute/resolve_disputed/
+                  refute_disputed)
+_by_freshness  — freshness-aware variant (active_contradictions_by_freshness,
+                  refute_disputed_claim_if_ready_by_freshness)
+_with_trace    — debug/trace variant (evaluate_condition_with_trace,
+                  fire_rule_with_trace)
+_from_yaml     — alternate input source (load_rule_spec_from_yaml)
+```
+
+---
+
+### §45.7 Naming consistency observations
+
+The audit notes the following naming inconsistencies (observations, not decisions):
+
+```text
+A. evidence_freshness vs evidences_for_claim
+   - "evidence" (singular) vs "evidences" (plural) for related concepts
+   - The singular form is also used in "evidence_id" parameters
+   - Possible cleanup: rename evidence_freshness → freshness_for_evidence
+     to follow the _for_<kind> pattern (would shift frozenset)
+
+B. gap_resolution vs gaps_for_claim
+   - "gap" (singular) for a lookup, "gaps" (plural) for a list query
+   - This pattern is consistent: singular = single item, plural = list
+   - The inconsistency is between gap_resolution and other singular-lookups
+     like get_gap; gap_resolution does not use the get_ prefix
+   - Possible cleanup: rename gap_resolution → get_gap_resolution
+     OR keep as-is (current naming reflects that it returns the resolution
+     evidence_id, not the gap itself)
+
+C. contradictions_for_claim vs active_contradictions_for_claim vs
+   resolved_contradictions_for_claim
+   - Three closely related queries with a consistent _for_claim suffix
+   - Different "filter" prefixes (none / active_ / resolved_)
+   - Consistent and clear
+
+D. active_contradictions_for_claim vs active_contradictions_by_freshness
+   - Same prefix, different suffix
+   - _for_claim filters by claim_id; _by_freshness sorts/filters by freshness
+   - Naming is descriptive but parallel structure is uneven (filter vs sort)
+
+E. refute_disputed_claim_if_ready vs refute_disputed_claim_if_ready_by_freshness
+   - Long names with two distinct modifiers
+   - Both legitimate, but the long form suggests an aliased variant
+   - Possible cleanup: keep both, add docstring cross-references
+
+F. claim_lifecycle_history
+   - Inconsistent with _for_claim suffix pattern
+   - Could be claim_lifecycle_for_claim (redundant) or lifecycle_for_claim
+   - Possible cleanup: keep as-is (claim_ prefix reads naturally as namespacing)
+
+G. confirm/dispute/refute _claim_if_ready
+   - Three lifecycle transitions with consistent prefix and suffix
+   - Clear and parallel
+```
+
+Observation summary:
+
+```text
+Most names are consistent within their group. Cross-group consistency
+is partial. No name is wrong per se — these are matters of taste.
+```
+
+---
+
+### §45.8 Docstring coverage observations
+
+13 out of 40 Engine public methods have no docstring (under `inspect.getdoc`):
+
+```text
+add_entity
+add_observation
+add_evidence
+add_relation
+get_entity
+get_observation
+get_claim
+get_evidence
+get_gap
+get_relation
+get_rule
+get_rule_stats
+evidences_for_claim
+```
+
+Pattern observation:
+
+```text
+The 13 no-docstring methods are mostly:
+  - add_* CRUD inserters (4 of 6 — add_entity / observation / evidence / relation)
+  - get_* lookup methods (8 of 8 — every get_* has no docstring)
+  - evidences_for_claim (1)
+
+These are the most-used and most-self-explanatory methods, but
+"obvious" should still have a one-line docstring for AI-readable
+surface (§43 / §44 spirit).
+
+The remaining 27 methods have docstrings of 80+ chars,
+typically including invariant references (§18.4 / §19.4 / etc.)
+or PR-trail annotations.
+```
+
+Coverage:
+
+```text
+no docstring   13   32.5%
+weak (<80 chr)  0    0.0%
+ok (>=80 chr)  27   67.5%
+```
+
+---
+
+### §45.9 Symbol usage tier classification (proposal)
+
+The audit classifies the 48 symbols into three usage tiers (proposal only, not decision):
+
+| Tier              | Description                                          | Symbols |
+| ----------------- | ---------------------------------------------------- | ------: |
+| Tier 1 — primary  | Used by every consumer (recipe / report assembly)    |      18 |
+| Tier 2 — secondary| Used by rule authors / advanced consumers           |      18 |
+| Tier 3 — leakage  | Possibly internal-leakage / could be re-evaluated   |      12 |
+
+**Tier 1 (primary, 18 symbols):**
+
+```text
+Engine
+ScoreValue
+Claim / Evidence / Gap / Entity / Observation / Relation       (6 core dataclasses)
+ClaimLifecycleEvent
+CLAIM_STATUS_CANDIDATE / CONFIRMED / DISPUTED / REFUTED         (4 lifecycle enum)
+RULE_MATURITY_EXPERIMENTAL / STABLE / DEPRECATED                (3 maturity enum)
+RuleDefinition
+RuleStats
+```
+
+**Tier 2 (secondary, 18 symbols):**
+
+```text
+RuleSpec / RuleOutputTemplate / RequiredEvidenceTemplate        (3 rule template types)
+KIND_CLAIM / ENTITY / EVIDENCE / GAP / OBSERVATION / RELATION   (6 kind enum)
+compile_required_evidence / compile_rule_condition /
+compile_rule_definition / compile_rule_output                    (4 compile_func)
+load_condition_tree / load_rule_spec / load_rule_spec_from_yaml (3 load_func)
+register_rule_spec                                              (1 register_func)
+evaluate_condition                                              (1 evaluate_func)
+```
+
+**Tier 3 (leakage candidates, 12 symbols):**
+
+```text
+Combinator / CombinatorTrace                                    (2 trace dataclass)
+Predicate / PredicateTrace                                      (2 trace dataclass)
+FiringTrace                                                     (1 trace dataclass)
+evaluate_condition_with_trace                                   (1 evaluate_func)
+fire_rule / fire_rule_with_trace                                (2 fire_func)
+TRACE_REASON_MATCH / MISMATCH / MISSING_FIELD / TYPE_MISMATCH   (4 trace reason enum)
+```
+
+Tier 3 reasoning:
+
+```text
+The 12 Tier 3 symbols are all trace / debug related. They expose
+intermediate firing data structures (Predicate, Combinator,
+FiringTrace) and reason codes that are useful for rule authors
+debugging rule firings but are not part of the everyday consumer
+surface.
+
+Open question for 139차+: should Tier 3 stay in __all__ (debug
+exposure is valuable), or move to a sub-module (ragcore.trace)
+for cleaner top-level namespace?
+
+Proposal only — no decision in 138차.
+```
+
+---
+
+### §45.10 Cleanup candidates (proposal — not decided)
+
+The audit proposes the following cleanup candidates. **None are decisions.** 139차+ will pick a scope from A/B/C and execute (or reject).
+
+**Proposal P1 — Docstring backfill (low risk)**
+
+```text
+Add one-line docstrings to the 13 no-docstring Engine methods:
+  add_entity / observation / evidence / relation
+  get_entity / observation / claim / evidence / gap / relation / rule / rule_stats
+  evidences_for_claim
+
+Risk:        none (docstring only)
+Frozenset:   unchanged
+Tests:       unchanged (no test asserts docstring presence)
+```
+
+**Proposal P2 — Documentation count typo fix (low risk)**
+
+```text
+Correct "49 symbols" → "48 symbols" wording in:
+  - PR31-S commit body / PR_031 record / commit body
+  - PR32-V commit body / PR_032 record
+  - pr32_plan / pr33_plan / MEMORY.md
+  - any other narrative reference
+
+Risk:        none (wording correction)
+Frozenset:   unchanged (was always 48)
+Tests:       unchanged
+Note:        commits in main history cannot be amended, but future
+             references can use the correct count
+```
+
+**Proposal P3 — `__all__` natural grouping (low risk)**
+
+```text
+Reorder ragcore.__all__ from alphabetic to the 12 natural groups
+(§45.5). Same 48 symbols, different order.
+
+Risk:        none (frozenset comparison ignores order)
+Frozenset:   unchanged (test_ragcore_all_matches_pr30p_baseline_exactly
+             uses frozenset equality, not list equality)
+Tests:       unchanged
+Bonus:       __all__ list becomes more readable for AI consumers
+```
+
+**Proposal P4 — Naming inconsistency cleanup (medium risk)**
+
+```text
+Rename for consistency (§45.7 A / B):
+  evidence_freshness        → freshness_for_evidence
+  gap_resolution            → get_gap_resolution
+
+Risk:        medium (frozenset shifts — PR31-S baseline must update)
+Frozenset:   PR31-S _PR30_BASELINE_PUBLIC_SYMBOLS shifts
+Tests:       test_engine_ai_readable_usage_recipe.py +
+             test_engine_report_surface.py baseline frozenset must
+             be updated together
+Caller impact: existing rule files and tests that import these names
+              would need updating (search-and-replace)
+Open question: are these renames worth the baseline shift, or is
+              consistency-via-docstring sufficient?
+```
+
+**Proposal P5 — Tier 3 sub-module reorganization (high risk)**
+
+```text
+Move the 12 Tier 3 symbols from ragcore.__all__ to a new namespace:
+  ragcore.trace.Combinator / Predicate / FiringTrace / ...
+  ragcore.trace.TRACE_REASON_*
+  ragcore.trace.evaluate_condition_with_trace / fire_rule_with_trace
+
+Risk:        high (large frozenset shift, import path change, large
+             baseline impact)
+Frozenset:   12 symbols leave top-level __all__
+Tests:       large rewrite of test imports
+Caller impact: substantial — any external caller importing these would
+              break
+Open question: is the cleaner top-level worth the disruption, given
+              ragcore is still small enough that the top-level is
+              comfortable?
+```
+
+**Proposal P6 — Thin convenience method introduction (high risk)**
+
+```text
+Add Engine.claim_report(claim_id) -> dict that bundles §44 shapes
+A~E into one call:
+  {
+      "summary":              claim_summary(claim_id),
+      "breakdown":            effective_breakdown(claim_id),
+      "lifecycle":            lifecycle(claim_id),
+      "evidence_contradiction": evidence_contradiction(claim_id),
+      "rule_pinning":         rule_pinning(claim_id),
+  }
+
+Risk:        high (PR31-S method surface freeze + PR32-V Engine.claim_report
+             absent invariant both shift)
+Frozenset:   ragcore.__all__ unchanged (Engine.claim_report is a method,
+             not a top-level symbol)
+Tests:       PR32-V invariants 8 + 9 must be amended
+             (test_engine_does_not_expose_claim_report_helper fails)
+Open question: was Engine.claim_report's absence in PR32-V a
+              feature or a temporary state? PR32-V's §44.11 explicitly
+              lists it as OOS. Reversing requires sub-decision-level
+              re-evaluation.
+```
+
+Risk summary:
+
+```text
+P1 / P2 / P3    low risk      docstring + wording + ordering
+P4              medium risk   naming consistency, small frozenset shift
+P5 / P6         high risk     structural change, sub-decision impact
+```
+
+---
+
+### §45.11 Audit-only invariants (138차 verification)
+
+138차 audit verifies the following read-only invariants:
+
+```text
+len(ragcore.__all__)           == 48
+len(set(ragcore.__all__))      == 48
+Engine public method count     == 40
+schema_version (snapshot)      == 2
+```
+
+These are descriptive snapshots, not new test invariants. They are not added to the test suite. The existing PR31-S frozenset and PR32-V key sets continue to lock the surface.
+
+---
+
+### §45.12 Out of scope for 138차
+
+138차 explicitly does not:
+
+```text
+modify any source file in ragcore/
+modify any existing test
+add new tests
+change frozensets / key sets
+change snapshot schema
+amend prior PR record files (they remain as historical record;
+                            §45.4 documents the count correction
+                            forward)
+execute any of the P1~P6 proposals
+```
+
+138차 produces only:
+
+```text
+this §45 audit contract section in docs/contracts/05_DATA_CONTRACT_MVP.md
+docs/dev/PR_033_METHOD_SURFACE_AUDIT_MVP.md (in 140차 or later)
+```
+
+---
+
+### §45.13 Constraints on 139차+
+
+After 138차 audit, the user reviews the proposals (§45.10) and selects scope:
+
+```text
+Scope A — accept P1 + P2 + P3 (low risk only)
+          docstring backfill + count typo fix + __all__ reordering
+          cycle: 3-commit (docs(contract) §45 → test/docs(dev))
+          no frozenset shift required
+
+Scope B — accept P1 + P2 + P3 + P4 (low + medium risk)
+          adds naming consistency renames
+          cycle: 4-commit (docs(contract) → test-first → feat impl → docs(dev))
+          frozenset baseline shift required, documented as intentional
+
+Scope C — accept P1 + P2 + P3 + P4 + P5 or P6 (with explicit sub-decision)
+          large structural change
+          cycle: 4-commit minimum, possibly split into sub-PRs
+          sub-decision-level documentation required
+
+Scope D-only — accept nothing, close PR33-M after audit
+              audit is enough for record; cleanup happens in a future PR
+              cycle: 138차 + 139차 docs(dev) only (no execution)
+```
+
+139차+ commits are written against the same `feat/method-surface-audit` branch (or a follow-up branch if the user chooses to split). The PR record file is written in the final 차수 and notes which proposals were executed vs declined.
+
+The framing sentence remains:
+
+```text
+PR33-M is a surface cleanup PR.
+It may intentionally shift the frozen method surface baseline,
+but it must not change Engine judgment semantics.
+```
+
+If 139차+ scope selection appears to drift toward judgment semantics, the change should be moved to a different PR (R-fpr / G / J / Q / S-extension track).
+
+구현 단계 (139차+ — 미정, audit 결과 따라 결정):
+- **Scope A**: 139차 implement P1+P2+P3, 140차 docs(dev) record
+- **Scope B**: 139차 test-first 갱신, 140차 feat impl (P4 rename), 141차 docs(dev) record
+- **Scope C**: 사용자 명시 sub-decision 필요, 별도 cycle 계획
+- **Scope D-only**: 139차 docs(dev) record (audit only, no execution)

@@ -31,7 +31,7 @@ After PR31-S, the framework had:
 PR27-P  documented call boundary  (you CAN call in this order)
 PR30-P  documented read boundary  (this is what the output means)
 PR31-S  documented usage recipe   (these are canonical scenarios)
-PR31-S  method surface freeze     (49 symbols frozen at PR30-P main 60bf492)
+PR31-S  method surface freeze     (48 symbols frozen at PR30-P main 60bf492)
 ```
 
 What was missing was the **visible / reportable surface**. An AI consumer reading PR31-S could see the recipes but had to invent its own report shape — leading to drift across consumers (Cerberus adapter, CLI wrapper, web backend, JSON dump).
@@ -477,7 +477,7 @@ not hasattr(Engine, "report_surface")
    not in ragcore.__all__
 
 frozenset(ragcore.__all__) == _PR30_BASELINE_PUBLIC_SYMBOLS
-   (the PR30-P main 60bf492 frozenset of 49 symbols
+   (the PR30-P main 60bf492 frozenset of 48 symbols
     locked by PR31-S)
 ```
 
