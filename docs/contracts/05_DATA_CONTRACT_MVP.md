@@ -12870,3 +12870,598 @@ V-cerberus prerequisites (from this audit):
 If 152/153차 reveal an unexpected coupling that would require a method
 surface change, the PR is paused and the change is moved to a separate
 "method surface migration" PR (per §48.5).
+
+---
+
+## §50. External Knowledge Adapter Boundary
+
+### Prologue (locked sentences, 2026-05-22)
+
+```text
+§50 defines an External Knowledge Adapter Boundary,
+not a RAG implementation.
+
+ragcore does not require vector DB, embedding, retrieval pipeline,
+domain vocabulary, scanner output format, or storage backend.
+
+External consumers may use vector search, graph search, SQL stores,
+static corpora, manual analyst notes, API signals, hybrid retrieval,
+or no retrieval at all.
+
+The adapter's responsibility is to translate consumer-owned domain
+signals into ragcore Engine method calls.
+
+Engine confidence is not vector similarity, scanner severity, or
+domain score. Those signals must be translated by adapter policy
+before entering Engine.
+```
+
+> **§50 is the contract that lets ragcore stay generic while any external knowledge layer plugs in.**
+
+§50 is informed by PR38-A's `examples/probe/external_consumer_probe.py` (the disposable external-consumer pressure test) and its 8 generic reality-question answers. The probe demonstrated, with a Cerberus SSH finding as the first concrete sample case, that the boundary below is required regardless of which external knowledge layer is used.
+
+---
+
+### §50.1 Core proposition
+
+```text
+External knowledge layers (RAG of any architecture, scanners, APIs,
+analyst notes, static rules, manual injection, hybrid retrieval) are
+consumer-owned. ragcore does not interpret them.
+
+The adapter is the translation layer between consumer-owned signals
+and ragcore Engine method calls.
+
+The adapter is a CONSUMER-SIDE concept. ragcore does not contain an
+adapter implementation. ragcore contains only the public method
+surface that the adapter calls.
+```
+
+---
+
+### §50.2 Scope
+
+§50 covers:
+
+```text
+- which responsibilities live with the consumer (and the adapter)
+- which responsibilities live with ragcore.Engine
+- which translations the adapter MUST perform
+- which integer registries the consumer MUST maintain
+- how raw external references map to Engine raw_ref_id
+- how retrieval / similarity scores translate (never identity)
+- where snapshots are stored (consumer-side)
+- where domain vocabulary lives (consumer-side)
+- the explicit set of Engine method calls the adapter may make
+```
+
+§50 does NOT cover:
+
+```text
+- specific adapter implementation in any language
+- specific RAG architecture
+- specific vector DB / graph DB / SQL choice
+- specific embedding model
+- specific chunking strategy
+- specific corpus format
+- specific storage backend
+- specific domain vocabulary
+- specific integer assignment values
+```
+
+---
+
+### §50.3 Non-goals
+
+§50 must not:
+
+```text
+- freeze vector DB choice
+- freeze embedding model
+- freeze chunking strategy
+- freeze retrieval ranking formula
+- freeze storage backend
+- freeze domain vocabulary
+- freeze security-specific schema
+- freeze Cerberus pipeline stages
+- freeze integer assignment values
+- freeze CanonicalEvidenceAtom final field set
+- freeze EngineInput as a public ragcore class
+- freeze RetrievalResult as a public ragcore class
+- add any class / function / module to ragcore.__all__
+- change Engine method surface (PR36-PKG _LOCKED_* preserved)
+- change snapshot schema (PR21-L v2 preserved)
+- change report frozensets (PR32-V preserved)
+- introduce any Cerberus-specific concept into ragcore core
+```
+
+§50 MAY mention `CanonicalEvidenceAtom`, `RetrievalResult`, `EngineInput` as **conceptual labels** for adapter-side data shapes. These remain consumer-side concepts. They are never imported from `ragcore`. They are never frozen as dataclass fields here.
+
+---
+
+### §50.4 External knowledge source neutrality
+
+ragcore treats all external knowledge sources identically: as opaque sources of signals that the adapter must normalize.
+
+Examples of external knowledge sources (all valid, all equivalent from ragcore's perspective):
+
+```text
+- vector DB retrieval (Pinecone / Weaviate / Chroma / Qdrant / pgvector / FAISS)
+- graph DB traversal (Neo4j / TigerGraph / NetworkX)
+- SQL evidence store
+- document store full-text search
+- BM25 lexical retrieval
+- hybrid retrieval (BM25 + vector reranking)
+- static rule corpus
+- API signal aggregation
+- LLM-generated summary normalization
+- manual analyst notes
+- file system scan output (nmap / nuclei / NSE / Nessus / etc.)
+- no retrieval at all (pure manual entry)
+```
+
+ragcore does not know which of these the consumer uses. The adapter translates whichever source the consumer chose into Engine method calls.
+
+This is the meaning of "RAG-agnostic" in the framework name. The framework is RAG-friendly, not RAG-implementing.
+
+---
+
+### §50.5 Adapter responsibility
+
+The adapter is consumer-owned. The adapter MUST perform:
+
+```text
+1. Maintain consumer-side integer registries
+   (entity_type / claim_type / evidence_type / observation_type /
+    source_type / reason_code)
+
+2. Maintain raw_ref_id resolution strategy
+   (external string identifier → ragcore int)
+
+3. Translate external knowledge results into Engine inputs
+   - retrieval result → Evidence (NOT direct pipe-through)
+   - similarity score → strength (via adapter policy, NOT identity)
+   - severity/score → base_confidence (via adapter policy, NOT identity)
+
+4. Decide granularity per finding type
+   - subject granularity (entity-level vs sub-entity vs endpoint)
+   - evidence granularity (run vs field vs normalized signal)
+
+5. Own consumer-side storage of snapshot dicts
+
+6. Own domain vocabulary
+   - claim semantic mapping ("runs_software" / "is_vulnerable" / ...)
+   - evidence kind mapping ("banner_text" / "api_response" / ...)
+   - never leak domain words into ragcore core
+
+7. Call only ragcore public methods
+   (the 40 frozen methods from PR36-PKG _LOCKED_PUBLIC_METHODS)
+```
+
+The adapter MUST NOT:
+
+```text
+- import ragcore private helpers (_assert_* / _modifier_* / _serialize_*)
+- mutate ragcore internal state directly
+- pass external scores as Engine confidence
+- pass raw retrieval results as Evidence without translation
+- store ragcore snapshot dicts inside ragcore
+- introduce domain vocabulary into ragcore types
+```
+
+---
+
+### §50.6 Consumer-owned registries
+
+The following integer registries are CONSUMER-SIDE. ragcore stores the integers but does not interpret them:
+
+```text
+entity_type        consumer decides what each int means
+                   (e.g., 1 = host, 2 = service, 3 = endpoint, ...)
+observation_type   consumer decides
+                   (e.g., 10 = banner_grab, 11 = api_response, ...)
+source_type         consumer decides
+                   (e.g., 1 = tool_output, 2 = api, 3 = manual, ...)
+claim_type          consumer decides
+                   (e.g., 100 = host_runs_software,
+                    101 = service_listens_on_port, ...)
+evidence_type       consumer decides
+                   (e.g., 20 = service_banner_text,
+                    21 = api_field, ...)
+reason_code         consumer decides
+                   (per claim_type semantics)
+```
+
+ragcore never imposes a mapping. Two different consumers may use different integer assignments — that is allowed and expected.
+
+Adapter MUST document its own mapping for reproducibility but the mapping itself is not part of §50.
+
+---
+
+### §50.7 Raw reference boundary
+
+ragcore.Engine accepts `raw_ref_id: int` in `add_observation` and `add_evidence`. ragcore does not interpret the integer beyond storing it for round-trip purposes.
+
+Consumers naturally have string identifiers, composite keys, hashes, file paths, log spans, or external storage identifiers. The adapter MUST maintain a translation between these and ragcore's int.
+
+Acceptable strategies (adapter's choice):
+
+```text
+- consumer-side int registry (assign new int per new raw reference)
+- hash-to-int helper (stable hash, then truncate / map)
+- external mapping table (DB-backed)
+- timestamp-based int (e.g., Unix epoch)
+- tool-run-id sequencing
+```
+
+ragcore does not specify which strategy. §50 only requires that the adapter has ONE consistent strategy.
+
+PR38-A probe noted this as the single clearest adapter friction point. It is resolved by adapter responsibility, not by changing ragcore.
+
+---
+
+### §50.8 Evidence translation boundary
+
+ragcore.Evidence has the shape:
+
+```text
+(claim_id: int, raw_ref_id: int, evidence_type: int, strength: float)
+```
+
+The adapter MUST decide evidence granularity. Recommended default: **one normalized signal per Evidence row**.
+
+Other granularities are valid (adapter's choice):
+
+```text
+- one tool run → one Evidence (coarse — loses sub-signal nuance)
+- one extracted field → one Evidence (fine — many small evidences)
+- one normalized signal → one Evidence (medium — recommended)
+```
+
+The adapter MUST NOT:
+
+```text
+- emit Engine.add_evidence calls with raw tool output as the strength
+- emit one Evidence per raw_byte
+- bypass the translation step (e.g., directly insert into ragcore's
+  private state)
+```
+
+---
+
+### §50.9 Confidence translation boundary
+
+ragcore.Engine computes effective_confidence as:
+
+```text
+effective = base × status × freshness × gap × count × rule_stats × evidence_type
+```
+
+The adapter sets two inputs:
+
+```text
+- base_confidence (passed to Engine.add_claim)
+- evidence.strength (passed to Engine.add_evidence)
+```
+
+ragcore computes the 6 modifier multipliers internally. The adapter never computes the final score — only inputs.
+
+External signals that the adapter MUST translate (NEVER identity-pipe into Engine):
+
+```text
+- vector similarity (cosine / dot product / normalized) → adapter policy → strength
+- BM25 score → adapter policy → strength
+- scanner severity (low/medium/high/critical) → adapter policy → base_confidence
+- API confidence (e.g., NLP model confidence) → adapter policy → base_confidence
+- retrieval rank position (top-1 vs top-10) → adapter policy → strength
+- domain risk score (CVSS / EPSS) → adapter policy → base_confidence
+```
+
+§50 forbids identity mapping. The adapter MUST have explicit policy (even if simple: "cosine ≥ 0.8 → strength 0.9, else 0.5") and document it.
+
+PR38-A probe observation: a Cerberus banner grab gave base_confidence = 0.9 and evidence.strength = 0.85. Both numbers are adapter policy. Engine knew none of "banner" or "grab" — it received only floats.
+
+---
+
+### §50.10 Retrieval output boundary
+
+If the consumer uses retrieval (vector / graph / SQL / BM25 / hybrid / etc.), the retrieval output MUST pass through the adapter's evidence-atom translation step before becoming Engine input.
+
+Forbidden:
+
+```text
+- direct pipe: vector_db.search(query) → engine.add_evidence(...)
+  with raw similarity as strength
+- direct pipe: graph_db.traverse(...) → engine.add_claim(...)
+  with raw graph score as base_confidence
+- direct pipe: BM25 ranking → strength
+```
+
+Required:
+
+```text
+retrieval_result = consumer_retrieval_layer.query(...)
+evidence_atoms   = adapter.translate(retrieval_result)
+for atom in evidence_atoms:
+    engine.add_evidence(
+        claim_id=...,
+        raw_ref_id=adapter.resolve_raw_ref(atom.source),
+        evidence_type=adapter.classify_evidence_type(atom),
+        strength=adapter.translate_score(atom.similarity),
+    )
+```
+
+The `evidence_atoms`, `consumer_retrieval_layer`, `atom.source`, and `atom.similarity` are adapter-side and consumer-domain concepts. They are NOT in ragcore.
+
+PR38-A probe observation: the strongest single rule the probe revealed.
+
+```text
+similarity score (any kind) is NOT engine confidence.
+```
+
+This is locked in §50 as the single non-negotiable retrieval rule.
+
+---
+
+### §50.11 Snapshot / storage boundary
+
+`Engine.to_snapshot()` returns a JSON-compatible dict.
+
+Storage is consumer-side. Engine never writes to disk, never opens database connections, never calls cloud APIs.
+
+The consumer chooses:
+
+```text
+- JSON file on local disk
+- SQLite row (single dict per row)
+- PostgreSQL JSONB column
+- S3 object
+- Redis key
+- in-memory persistence (per-request engine)
+- no persistence at all (transient computation)
+- versioned storage (snapshot per timestamp)
+- partitioned storage (snapshot per asset)
+```
+
+ragcore does not know which the consumer chose. §50 just affirms that the choice is consumer-side.
+
+This is locked in PR36-PKG §48.9 (import side-effect-free) and PR37 README "Persistence Boundary". §50 references these rather than re-documenting.
+
+---
+
+### §50.12 Domain vocabulary boundary
+
+ragcore types and methods contain ZERO domain-specific vocabulary:
+
+```text
+- no "host" / "service" / "endpoint" in core
+- no "CVE" / "vulnerability" / "patch" in core
+- no "scanner" / "tool" / "scan" in core
+- no "asset" / "remediation" / "report" in core
+- no "policy" / "compliance" / "severity" in core
+- no medical / legal / financial / research vocabulary
+```
+
+The adapter owns ALL domain vocabulary. Domain words live in:
+
+```text
+- the consumer's integer registries (mapping ints to semantic labels)
+- the consumer's adapter code
+- the consumer's storage layer
+- the consumer's UI / report layer
+```
+
+§50 does NOT define a "domain vocabulary registry" inside ragcore. Each consumer defines its own. ragcore stays domain-free.
+
+If a future PR proposes adding domain words to ragcore, it must be rejected unless the words are truly generic (e.g., "claim", "evidence", "gap" — these already exist and are intentionally domain-free).
+
+---
+
+### §50.13 Engine method-call boundary
+
+The adapter may call only the 40 frozen public methods (PR36-PKG `_LOCKED_PUBLIC_METHODS`). Listed for reference:
+
+```text
+Entity / Observation / Claim / Evidence / Relation / Gap (CRUD):
+  add_entity / add_observation / add_claim / add_evidence /
+  add_relation / add_gap
+
+Lookups:
+  get_entity / get_observation / get_claim / get_evidence /
+  get_relation / get_gap / get_rule / get_rule_stats
+
+Filtered queries:
+  evidences_for_claim / gaps_for_claim
+  contradictions_for_claim / active_contradictions_for_claim /
+  resolved_contradictions_for_claim
+
+Gap / resolution:
+  gap_resolution / resolve_gaps_for_evidence
+
+Contradiction registration:
+  register_contradiction / register_contradiction_resolution
+
+Lifecycle transitions:
+  confirm_claim_if_ready / dispute_claim_if_ready /
+  refute_claim_if_ready / resolve_disputed_claim_if_ready /
+  refute_disputed_claim_if_ready /
+  refute_disputed_claim_if_ready_by_freshness
+
+Lifecycle history:
+  claim_lifecycle_history
+
+Freshness:
+  evidence_freshness / active_contradictions_by_freshness
+
+Rule registry:
+  register_rule / update_rule_stats
+
+Hint evidence types:
+  register_hint_evidence_types / unregister_hint_evidence_types /
+  clear_hint_evidence_types
+
+Compute:
+  compute_effective_confidence
+
+Snapshot:
+  to_snapshot / from_snapshot
+```
+
+The adapter MUST NOT:
+
+```text
+- access ragcore private helpers (anything starting with _)
+- import ragcore.engine internal symbols
+- mutate ragcore internal dicts directly
+- bypass the 40 public methods
+```
+
+If a future adapter requires a method not in this set, the requirement must be raised as an explicit "method surface migration" PR (per §48.5), not silently worked around.
+
+---
+
+### §50.14 Cerberus as first sample case
+
+Cerberus is the first concrete external consumer of ragcore. It is referenced throughout PR38-A as a sample, not as a contract.
+
+What §50 inherits from Cerberus pressure:
+
+```text
+- subject granularity question (asset_id vs service_id vs endpoint)
+- claim_type encoding (no native predicate field)
+- raw_ref string-to-int friction
+- banner / tool output evidence granularity
+- snapshot consumer-side storage requirement
+- retrieval translation requirement (Cerberus may use vector RAG)
+```
+
+What §50 does NOT inherit from Cerberus:
+
+```text
+- security domain vocabulary
+- CVE / vulnerability concepts
+- scanner-specific output formats
+- nmap / nuclei / NSE pipeline stages
+- Cerberus-specific severity model
+- Cerberus integer registry values
+- Cerberus storage choices
+```
+
+§50 is what Cerberus must follow. Cerberus is NOT what §50 is for.
+
+Future external consumers (medical / legal / financial / research / others) will face the same boundary and have the same responsibilities. The Cerberus case simply made the pressure visible first.
+
+---
+
+### §50.15 Invariants
+
+§50 locks the following adapter / engine boundary invariants:
+
+```text
+1. ragcore.__all__ contains zero domain-specific symbols
+   (PR36-PKG _LOCKED_PUBLIC_METHODS frozen at 48 / 40 methods)
+
+2. ragcore source code contains zero domain-specific vocabulary
+   (verified by grep — no cerberus / ssh / security / scanner /
+    vulnerability / etc.)
+
+3. The 6 frozen report shapes (PR32-V §44) contain no domain words
+
+4. ragcore does not import any vector DB / embedding / retrieval /
+   storage / network library at module-level
+
+5. Engine() instantiation triggers no external call
+   (PR36-PKG §48.9)
+
+6. to_snapshot() returns a dict; Engine never writes to disk
+   (PR36-PKG §48.9 + PR37 README persistence boundary)
+
+7. Adapter MUST translate external scores via explicit policy
+   (similarity / severity / rank / score → strength / base_confidence)
+   Identity mapping is forbidden.
+
+8. Adapter MUST maintain consumer-side integer registries
+
+9. Adapter MUST resolve raw external references to int raw_ref_id
+
+10. Adapter MUST NOT access ragcore private helpers or internal state
+
+11. The 40 public methods (PR36-PKG _LOCKED_PUBLIC_METHODS) are the
+    only ragcore surface the adapter calls
+
+12. Snapshot storage is consumer-owned
+```
+
+Invariants 1 ~ 6 are already verified by `tests/test_engine_method_surface_freeze.py` (PR36-PKG 148차).
+
+Invariants 7 ~ 12 are documentation-level — they are contract obligations on the adapter (which is consumer-side and outside ragcore), so they are not tested by ragcore's test suite. They are tested by consumer-side integration tests (e.g., V-cerberus PR will verify them in cerberus_client repo).
+
+---
+
+### §50.16 Test expectation
+
+PR38-B is a docs-only PR. The cycle is:
+
+```text
+156차  docs(contract): add §50 External Knowledge Adapter Boundary
+       this commit
+
+157차  (optional) test/docs usage check
+       PR38-A probe file (`examples/probe/external_consumer_probe.py`)
+       continues to execute successfully. No new ragcore test needed.
+
+158차  docs(dev): record PR38-B + ready + squash merge
+```
+
+No new tests added in PR38-B. Reasons:
+
+```text
+- §50 invariants 1~6 are already tested by PR36-PKG 148차 tests
+- §50 invariants 7~12 are consumer-side obligations
+  (V-cerberus PR tests them in cerberus_client)
+- adding new framework-side tests for adapter behavior would risk
+  pulling adapter concepts into ragcore (e.g., test would need a
+  fake "Cerberus" or fake "vector DB" — both violate §50.3)
+```
+
+PR38-B is contract-only. The audit-first pattern is satisfied because PR38-A probe code is the audit target.
+
+### §50.17 Followups after PR38-B
+
+After §50 merges:
+
+```text
+V-cerberus thin adapter PR (cerberus_client repo)
+  - implements §50 obligations from Cerberus side
+  - lives in cerberus_client, not ragcore
+  - framework repo unchanged
+
+(optional) Examples/probe disposal decision
+  - delete examples/probe/external_consumer_probe.py
+  - OR move to docs/archive/
+  - decided by user after V-cerberus first iteration
+  - probe was disposable by design (PR38-A header note)
+
+(future, post-V-cerberus)
+  - real-usage feedback drives modifier calibration
+  - algorithm refinement under PR36-PKG §48.10 policy-update rule
+  - method surface remains frozen
+```
+
+§50 is the last spec PR needed before V-cerberus thin adapter can begin in cerberus_client repo. After V-cerberus first iteration:
+
+```text
+1. Cerberus does not know ragcore internals ✓ (enforced by §50.13)
+2. Cerberus calls only public methods ✓ (enforced by §50.13)
+3. Cerberus finding translated by adapter ✓ (enforced by §50.5 ~ §50.10)
+4. RAG / vector DB / corpus / storage are Cerberus-owned ✓
+   (enforced by §50.4 + §50.11)
+5. ragcore provides judgment state + snapshot only ✓
+   (enforced by §50.13 + PR36-PKG §48.9)
+6. mathematics / algorithm replaceable later ✓
+   (PR36-PKG §48.3 + §48.10)
+7. Engine method surface frozen ✓
+   (PR36-PKG _LOCKED_*)
+```
+
+These 7 conditions form the "Cerberus engine frame" completion criteria (user 2026-05-22). §50 closes 1, 2, 3, 4, 5. PR36-PKG §48 already covers 6, 7. V-cerberus first iteration validates them in practice.
