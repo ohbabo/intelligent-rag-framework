@@ -11547,3 +11547,454 @@ If 142차+ scope selection appears to drift toward surface or semantic domain, t
 - **Scope O-mid**:  142차 implement O1~O5+O8, 143차 docs(dev) record (or 142차 implement + 143차 verify + 144차 docs(dev))
 - **Scope O-high**: 142차 test-verify spec, 143차 feat impl (O1~O8), 144차 docs(dev) record
 - **Scope O-only**: 142차 docs(dev) record (audit only, no execution)
+
+---
+
+## §47. Snapshot Restore Refactor Boundary
+
+### §47.1 Core proposition
+
+```text
+PR35-O7 is a behavior-preserving snapshot restore refactor.
+It extracts per-kind deserialization helpers from from_snapshot
+without changing snapshot output shape or schema_version.
+```
+
+PR35-O7 picks up the deferred O7 candidate from §46.12 and executes it as a standalone PR. It does not touch the schema, the migration framework, the to_snapshot output shape, or any judgment logic. It restructures from_snapshot to mirror to_snapshot's helper-call symmetry.
+
+> **PR35-O7 is a symmetry-completion refactor.**
+> **It adds the missing `_restore_dict_*` helpers parallel to the existing `_serialize_dict_*` helpers.**
+
+PR35-O7 also **retires O6** (compute_effective_confidence split). The retirement reasoning is recorded in §47.11.
+
+144차 enters PR35-O7 as audit-first. The audit measures from_snapshot's current structure, compares it to to_snapshot's symmetry, and proposes the minimal refactor candidates.
+
+145차+ executes the refactor.
+
+---
+
+### §47.2 Audit boundary
+
+PR35-O7 may touch (snapshot restore domain):
+
+```text
+ragcore/engine.py from_snapshot method body
+ragcore/engine.py module-level _restore_dict_* helpers
+ragcore/engine.py module-level _serialize_dict_* helpers (read-only review, no change expected)
+```
+
+PR35-O7 must not touch:
+
+```text
+snapshot schema_version (still 2, no v3 bump)
+to_snapshot output shape (PR32-V snapshot_metadata invariant preserved)
+from_snapshot accepted input shape
+migration framework (_migrate_snapshot_v1_to_v2 / _migrate_snapshot_to_current)
+ScoreValue / Entity / Claim / Evidence / Gap / Relation / Observation /
+  RuleDefinition / RuleStats / ClaimLifecycleEvent dataclass shapes
+lifecycle state re-judgment (no rule firing, no contradiction re-evaluation)
+confidence re-computation (no compute_effective_confidence called during restore)
+public API surface (PR31-S frozenset preserved)
+report shape (PR32-V *_KEYS preserved)
+docstring coverage (PR33-M baseline preserved)
+modifier helper signatures (PR34-O signature consistency preserved)
+types.py
+rule_output.py
+test files (no test addition, no test modification)
+```
+
+If any item in the second list would be affected, the change does not belong in PR35-O7.
+
+---
+
+### §47.3 144차 audit scope
+
+144차 (this section) is in scope:
+
+```text
+from_snapshot body structure measurement (LOC, per-attribute branch count)
+to_snapshot / from_snapshot symmetry comparison
+_serialize_dict_* vs _restore_dict_* helper inventory
+inline dict-comprehension enumeration (sources of asymmetry)
+restore order verification (current order vs to_snapshot key order)
+refactor candidate enumeration (S1~Sn proposals)
+audit-only invariants
+constraints on 145차+
+O6 retirement record (§47.11)
+```
+
+144차 is out of scope:
+
+```text
+any source modification
+any test modification
+adding new _restore_dict_* helpers
+moving inline dict-comprehensions into helpers
+reordering restore sequence
+extracting per-kind helpers (e.g., _load_entities — see §47.8)
+schema_version change
+migration framework change
+```
+
+---
+
+### §47.4 from_snapshot structure snapshot (144차 timing)
+
+Recorded against main `f3dde3a` (PR34-O merged):
+
+```text
+from_snapshot total LOC                 58
+from_snapshot body LOC (excluding docstring): 45
+from_snapshot per-attribute branches:    15
+  - 2 trivial assignments (next_id / lifecycle_seq)
+  - 1 set construction (hint_evidence_types)
+  - 6 _restore_dict_int helper calls (entity-kind dicts)
+  - 2 _restore_dict_tuple helper calls (rule dicts)
+  - 4 inline dict-comprehensions (asymmetry source)
+```
+
+Total state attributes restored: 17 (matches PR34-O §46.5 inventory).
+
+---
+
+### §47.5 to_snapshot / from_snapshot symmetry comparison
+
+```text
+to_snapshot   18 keys, every key uses _serialize_dict_* helper or trivial expr
+              23 LOC body, perfectly symmetric
+
+from_snapshot 17 state attrs + schema_version, 8 attrs use helpers,
+              4 attrs use inline dict-comprehensions, 3 attrs are trivial
+              45 LOC body (1.96x to_snapshot), asymmetric
+```
+
+Helper coverage per state attribute (post-PR34-O):
+
+| State attribute             | to_snapshot helper                          | from_snapshot                         |
+| --------------------------- | ------------------------------------------- | ------------------------------------- |
+| `_entities`                 | `_serialize_dict_int_dataclass`             | `_restore_dict_int`                   |
+| `_observations`             | `_serialize_dict_int_dataclass`             | `_restore_dict_int`                   |
+| `_claims`                   | `_serialize_dict_int_dataclass`             | `_restore_dict_int`                   |
+| `_evidences`                | `_serialize_dict_int_dataclass`             | `_restore_dict_int`                   |
+| `_relations`                | `_serialize_dict_int_dataclass`             | `_restore_dict_int`                   |
+| `_gaps`                     | `_serialize_dict_int_dataclass`             | `_restore_dict_int`                   |
+| `_rule_definitions`         | `_serialize_dict_tuple_dataclass`           | `_restore_dict_tuple`                 |
+| `_rule_stats`               | `_serialize_dict_tuple_dataclass`           | `_restore_dict_tuple`                 |
+| `_gap_dedup_index`          | `_serialize_dict_tuple4_int`                | **inline dict-comprehension**         |
+| `_claim_gap_refs`           | `_serialize_dict_int_set`                   | **inline dict-comprehension**         |
+| `_gap_resolutions`          | `_serialize_dict_int_int`                   | **inline dict-comprehension**         |
+| `_contradictions`           | `_serialize_dict_int_set`                   | **inline dict-comprehension**         |
+| `_resolved_contradictions`  | `_serialize_dict_int_set`                   | **inline dict-comprehension**         |
+| `_claim_lifecycle_events`   | `_serialize_dict_int_list_dataclass`        | **inline dict-comprehension**         |
+| `_hint_evidence_types`      | `sorted(set)` (trivial)                     | `set(...)` (trivial)                  |
+| `_next_id`                  | `dict(sorted(...))` (trivial)               | `dict(...)` (trivial)                 |
+| `_lifecycle_seq`            | direct field (trivial)                      | direct field (trivial)                |
+
+Observation:
+
+```text
+6 _serialize_dict_* helpers exist:
+  _serialize_dict_int_dataclass
+  _serialize_dict_tuple_dataclass
+  _serialize_dict_tuple4_int
+  _serialize_dict_int_set
+  _serialize_dict_int_int
+  _serialize_dict_int_list_dataclass
+
+Only 2 _restore_dict_* helpers exist:
+  _restore_dict_int        (mirrors _serialize_dict_int_dataclass)
+  _restore_dict_tuple      (mirrors _serialize_dict_tuple_dataclass)
+
+4 _restore_dict_* helpers are MISSING:
+  _restore_dict_tuple4_int
+  _restore_dict_int_set
+  _restore_dict_int_int
+  _restore_dict_int_list_dataclass
+```
+
+The asymmetry is not "from_snapshot is structurally different"; it is **"from_snapshot has 4 inline dict-comprehensions where to_snapshot has 4 helper calls."**
+
+---
+
+### §47.6 Asymmetry source (4 inline dict-comprehensions)
+
+The 4 inline dict-comprehensions in from_snapshot (lines 1568–1589 of engine.py at audit time):
+
+```text
+1. _gap_dedup_index (tuple4 keys, int values):
+     engine._gap_dedup_index = {
+         tuple(item["key"]): item["value"]
+         for item in snapshot["gap_dedup_index"]
+     }
+
+2. _claim_gap_refs (int keys, set values):
+     engine._claim_gap_refs = {
+         item["key"]: set(item["value"])
+         for item in snapshot["claim_gap_refs"]
+     }
+
+3. _gap_resolutions (int keys, int values):
+     engine._gap_resolutions = {
+         item["key"]: item["value"]
+         for item in snapshot["gap_resolutions"]
+     }
+
+4. _contradictions / _resolved_contradictions (int keys, set values):
+     same pattern as _claim_gap_refs
+
+5. _claim_lifecycle_events (int keys, list[ClaimLifecycleEvent] values):
+     engine._claim_lifecycle_events = {
+         item["key"]: [ClaimLifecycleEvent(**event_dict) for event_dict in item["value"]]
+         for item in snapshot["claim_lifecycle_events"]
+     }
+```
+
+(Strictly there are 5 inline comprehensions across 4 patterns — `_claim_gap_refs`, `_contradictions`, and `_resolved_contradictions` share the same int→set pattern.)
+
+Each comprehension is a 3–5 LOC block. Replacing all 4 with helper calls would shrink from_snapshot body by ~15 LOC.
+
+---
+
+### §47.7 Existing helper inventory
+
+Module-level `_serialize_dict_*` helpers (6, post-PR34-O):
+
+```text
+_serialize_dict_int_dataclass(d: dict[int, Any]) -> list[dict[str, Any]]
+_serialize_dict_tuple_dataclass(d: dict[tuple[int, int], Any]) -> list[dict[str, Any]]
+_serialize_dict_tuple4_int(d: dict[tuple[int, int, int, int], int]) -> list[dict[str, Any]]
+_serialize_dict_int_set(d: dict[int, set[int]]) -> list[dict[str, Any]]
+_serialize_dict_int_int(d: dict[int, int]) -> list[dict[str, int]]
+_serialize_dict_int_list_dataclass(d: dict[int, list[Any]]) -> list[dict[str, Any]]
+```
+
+Module-level `_restore_dict_*` helpers (2, post-PR34-O):
+
+```text
+_restore_dict_int(items, from_dict) -> dict[int, Any]
+_restore_dict_tuple(items, from_dict) -> dict[tuple[int, int], Any]
+```
+
+Missing (would complete the symmetry):
+
+```text
+_restore_dict_tuple4_int(items) -> dict[tuple[int, int, int, int], int]
+_restore_dict_int_set(items) -> dict[int, set[int]]
+_restore_dict_int_int(items) -> dict[int, int]
+_restore_dict_int_list_dataclass(items, from_dict) -> dict[int, list[Any]]
+```
+
+---
+
+### §47.8 Refactor candidates S1 ~ S2 (proposal only)
+
+The audit proposes 2 refactor candidates. **None are decisions.** 145차 will pick scope and execute (or reject).
+
+**S1 — Add 4 missing `_restore_dict_*` helpers (low risk)**
+
+```text
+Add:
+  _restore_dict_tuple4_int(items)
+    {tuple(item["key"]): item["value"] for item in items}
+
+  _restore_dict_int_set(items)
+    {item["key"]: set(item["value"]) for item in items}
+
+  _restore_dict_int_int(items)
+    {item["key"]: item["value"] for item in items}
+
+  _restore_dict_int_list_dataclass(items, from_dict)
+    {item["key"]: [from_dict(d) for d in item["value"]] for item in items}
+
+Place: directly after _restore_dict_tuple (module-level), in symmetry-order
+       with the _serialize_dict_* helpers.
+
+Risk:        low (pure module-level helper addition, no behavior change)
+Frozenset:   unchanged
+Tests:       unchanged (private module functions, not in __all__)
+LOC impact:  +20 ~ +25 helper lines (module-level)
+```
+
+**S2 — Rewrite from_snapshot body to use the 4 new helpers (low risk)**
+
+```text
+Replace the 4 inline dict-comprehensions in from_snapshot with helper calls:
+
+  engine._gap_dedup_index = _restore_dict_tuple4_int(snapshot["gap_dedup_index"])
+  engine._claim_gap_refs  = _restore_dict_int_set(snapshot["claim_gap_refs"])
+  engine._gap_resolutions = _restore_dict_int_int(snapshot["gap_resolutions"])
+  engine._contradictions  = _restore_dict_int_set(snapshot["contradictions"])
+  engine._resolved_contradictions = _restore_dict_int_set(
+      snapshot["resolved_contradictions"]
+  )
+  engine._claim_lifecycle_events = _restore_dict_int_list_dataclass(
+      snapshot["claim_lifecycle_events"],
+      lambda d: ClaimLifecycleEvent(**d),
+  )
+
+After S1 + S2:
+  - from_snapshot body shrinks from 45 LOC to ~22 LOC
+  - 1 helper call per state attribute (mirrors to_snapshot exactly)
+  - restore order preserved (no reordering)
+
+Risk:        low (per-helper unit is well-defined; round-trip tests
+              already cover the behavior)
+Frozenset:   unchanged
+Tests:       unchanged (1089 round-trip and snapshot tests verify
+              behavior preservation)
+LOC impact:  -15 ~ -20 lines in from_snapshot, +0 in helpers
+             (helpers added in S1)
+```
+
+Risk summary:
+
+```text
+S1 + S2 both low risk
+S1 by itself adds dead helpers (no caller) — only useful with S2
+S2 by itself impossible without S1 — needs the helpers
+=> S1 + S2 are a coupled pair, executed together in 145차
+```
+
+---
+
+### §47.9 Audit-only invariants
+
+144차 audit verifies the following read-only invariants:
+
+```text
+from_snapshot LOC                 58
+from_snapshot body LOC            45
+inline dict-comprehensions         4 patterns (5 occurrences)
+_serialize_dict_* helpers          6
+_restore_dict_* helpers            2
+missing _restore_dict_* helpers    4
+to_snapshot body LOC              23
+to_snapshot / from_snapshot ratio  1.96x (45 / 23)
+restore order matches to_snapshot  yes (verified)
+test suite                       1089 passing
+public symbols                    48 (PR33-M preserved)
+schema_version                     2
+```
+
+These are descriptive snapshots, not new test invariants. They are not added to the test suite. The existing PR17 snapshot round-trip tests + PR32-V snapshot_metadata invariant + 1089 baseline continue to lock the behavior.
+
+---
+
+### §47.10 Out of scope + Constraints on 145차+
+
+144차 explicitly does not:
+
+```text
+modify any source file
+modify any test
+add new tests
+execute S1 or S2
+change snapshot schema_version
+change migration framework
+change to_snapshot output shape
+change from_snapshot accepted input shape
+extract per-kind helpers (e.g., _load_entities)
+   — those would just rewrap _restore_dict_* calls in 1-line functions,
+     adding indirection without complexity reduction
+```
+
+145차+ scope:
+
+```text
+Scope S-pair      execute S1 + S2 together (recommended — they are coupled)
+                  cycle: 2-commit + 1 docs(dev)
+                    145차  refactor(engine): execute PR35-O7 S1+S2
+                    146차  docs(dev) record + ready + squash merge
+                  
+Scope S-only      accept nothing, close PR35 after audit only
+                  cycle: 144차 + 145차 docs(dev) only
+```
+
+145차 execution must preserve:
+
+```text
+schema_version still 2
+to_snapshot output shape (PR32-V SNAPSHOT_METADATA_KEYS invariant)
+from_snapshot accepted input shape
+restore order matches to_snapshot key order
+round-trip identity: from_snapshot(to_snapshot(engine)).to_snapshot() == engine.to_snapshot()
+1089 tests pass identically
+PR31-S frozenset / PR32-V *_KEYS / PR33-M docstring / PR34-O signature
+  all preserved
+```
+
+If 145차 execution would touch any item in the "must preserve" list, the change does not belong in PR35-O7.
+
+---
+
+### §47.11 O6 retirement note
+
+PR35 entry timing also records the retirement of §46.12 candidate O6.
+
+**O6 — compute_effective_confidence method split (RETIRED)**
+
+```text
+Original proposal (§46.12 at 141차):
+  Split the 110-LOC compute_effective_confidence into:
+    compute_effective_confidence(claim_id)      — public entry (~5 LOC)
+    _compose_effective_confidence(claim)         — formula composition (~20 LOC)
+
+Status after PR34-O O3 (142차):
+  compute_effective_confidence body shrank from inline composition
+  (~20 LOC of inline status / freshness logic) to clean 6-helper × base
+  composition (~10 LOC body).
+
+  Body now reads (post-O3):
+    self._assert_claim_exists(claim_id)
+    claim = self._claims[claim_id]
+    return ScoreValue(
+        claim.base_confidence.value
+        * self._status_modifier_for_claim(claim_id)
+        * self._freshness_modifier_for_claim(claim_id)
+        * self._gap_modifier_for_claim(claim_id)
+        * self._count_modifier_for_claim(claim_id)
+        * self._rule_stats_modifier_for_claim(claim_id)
+        * self._evidence_type_modifier_for_claim(claim_id)
+    )
+
+Measurement at 144차 timing:
+  compute_effective_confidence total LOC: 91 (was 110)
+  compute_effective_confidence body LOC: 11
+
+Reason for retirement:
+  - The 110-LOC figure in §46.4 conflated docstring + inline status/freshness
+    + composition. PR34-O O3 extracted the inline status/freshness as helpers,
+    leaving body = composition only.
+  - Splitting the 11-LOC body into a 5-LOC public entry + 8-LOC private
+    helper would add indirection without reducing complexity.
+  - The "split" goal was readability of the composition. After O3, the
+    composition IS visible at the public entry (1 block, 7 multiplications).
+  - O6 is therefore retired as "subsumed by PR34-O O3."
+
+Future reactivation:
+  - If a trace-emitting variant (e.g., compute_effective_confidence_with_trace)
+    becomes necessary, a _compose_effective_confidence helper may then be
+    extracted to share with the trace variant.
+  - That would be a separate PR with explicit justification, not a follow-up
+    of O6.
+```
+
+Effect on §46.12 status:
+
+```text
+O1   executed in PR34-O Scope O-mid
+O2   executed in PR34-O Scope O-mid
+O3   executed in PR34-O Scope O-mid
+O4   executed in PR34-O Scope O-mid
+O5   executed in PR34-O Scope O-mid (no-op confirmation)
+O8   executed in PR34-O Scope O-mid
+O6   retired by PR35-O7 §47.11 (subsumed by O3)        <-- THIS PR
+O7   selected for execution as PR35-O7                  <-- THIS PR
+```
+
+The §46.12 enumeration itself is not amended (historical record); §47.11 supersedes it.
+
+구현 단계 (145차/146차 — Scope S-pair 기본):
+- 145차: refactor(engine): execute PR35-O7 S1 + S2 (4 helper 추가 + from_snapshot rewrite).
+  1089 tests 모두 통과 유지 필수.
+- 146차: docs(dev) record `PR_035_SNAPSHOT_RESTORE_REFACTOR_MVP.md` + Draft → Ready + squash merge.
