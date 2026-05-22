@@ -9196,6 +9196,8 @@ The test suite should verify that current public behavior already satisfies the 
 
 ### §43.1 Core proposition
 
+> **Quick entry point:** see `README.md` *Quickstart* for the minimal usage example. §43 below documents the 6 canonical scenarios in detail.
+
 AI-readable usage recipe defines the canonical call sequence that an external AI consumer (LLM-driven agent, code-generation tool, or automation script) should follow when using the Engine.
 
 This section does not add a new Engine feature.
@@ -9716,6 +9718,8 @@ The test suite should verify that AI consumers can follow each recipe using only
 ## §44. Report Surface MVP
 
 ### §44.1 Core proposition
+
+> **Quick entry point:** see `README.md` *Quickstart* for the minimal usage example. §44 below documents the 6 canonical report shapes in detail.
 
 Report surface defines the canonical shape of consumer-side reports assembled from existing public Engine APIs.
 
@@ -12005,6 +12009,8 @@ The §46.12 enumeration itself is not amended (historical record); §47.11 super
 
 ### §48.1 Core statement
 
+> **Quick entry point:** see `README.md` *Stability & Evolvability* for the consumer-facing summary. §48 below documents the freeze in detail.
+
 ```text
 PR36-PKG freezes the Engine method surface as a stable package boundary.
 
@@ -12384,3 +12390,483 @@ PR36-PKG is the first framework PR with a *build* step (pyproject.toml). The cyc
 150차 records the PR + merges. Branch is `feat/engine-method-surface-freeze`.
 
 If 148차 / 149차 reveal an unexpected coupling that would require a method surface change, the PR is paused and the change is moved to a separate "method surface migration" PR (per §48.5).
+
+---
+
+## §49. Integration Readiness Boundary
+
+### §49.1 Core statement
+
+> **Quick entry point:** see `README.md` *Stability & Evolvability* + *Persistence Boundary* for the consumer-facing summary. §49 below documents the integration readiness boundary in detail.
+
+```text
+Algorithm can evolve. Integration boundary must be complete.
+
+If Cerberus is built on the current Engine structure,
+future updates should be limited to judgment mathematics and algorithms.
+Everything outside that boundary must be stable enough to integrate against.
+```
+
+PR37-PKG-DOCS extends PR36-PKG §48 one layer outward:
+
+```text
+PR36-PKG §48  freezes the method surface           (necessary condition)
+PR37-PKG §49  verifies integration readiness        (sufficient condition)
+```
+
+§48 locks the public method *names and shapes* through executable frozensets. §49 verifies that the *surrounding documentation, examples, adapter guidance, and consumer-facing integration boundary* is complete enough for Cerberus (and any future external consumer) to depend on.
+
+> **§49 is the completion criterion before V-cerberus.**
+> **It audits whether non-algorithmic boundaries are integration-ready.**
+
+151차 enters PR37-PKG-DOCS as audit-first (Scope D selection deferred to 152/153차).
+
+---
+
+### §49.2 Integration Readiness vs Method Surface Freeze
+
+```text
+§48 (PR36-PKG) — method surface freeze:
+  ragcore.__all__ frozenset (48 symbols)
+  Engine public method names (40 methods)
+  modifier helper signatures (6 helpers)
+  snapshot top-level keys (18 keys)
+  serialize/restore symmetry (6 × 6)
+  report key frozensets (PR32-V 6 sets)
+  Package import side-effect freedom
+
+§49 (PR37-PKG) — integration readiness:
+  README integration guide
+  examples/ directory with consumer entry-point examples
+  adapter call pattern documentation
+  consumer-owned persistence / storage responsibility documentation
+  PR31-S §43 usage recipes discoverability (outside contract doc)
+  PR32-V §44 report shapes discoverability (outside contract doc)
+  snapshot migration guide (consumer-facing)
+  §48.5 breaking change / deprecation cycle guidance
+  P6 Engine.claim_report decision status
+  storage responsibility separation clarity
+```
+
+§48 is verified by `tests/test_engine_method_surface_freeze.py` (26 invariants, locked frozensets). §49 is verified by *documentation completeness audit* — there is no automatable test for "the README has a good integration guide."
+
+Both are needed. §48 alone makes the API stable; §49 makes the API *discoverable and usable*.
+
+---
+
+### §49.3 151차 audit scope
+
+151차 (this section) is in scope:
+
+```text
+inventory of current docs / README / examples / agent / archive
+inventory of consumer-facing usage references (grep for "from ragcore")
+inventory of contract sections that describe integration patterns
+audit against V-cerberus pre-integration checklist (10 items)
+gap identification (D1 ~ Dn proposal codes)
+scope selection framework (D-low / D-mid / D-high / D-only)
+audit-only invariants
+```
+
+151차 is out of scope:
+
+```text
+any source modification in ragcore/
+any test modification
+any test addition
+adding README content (deferred to 153차 if scope chosen)
+adding examples/ directory (deferred to 153차)
+amending §48.5 deprecation cycle (PR36-PKG locked)
+changing method surface
+changing algorithm
+making Cerberus integration decisions (e.g., reactivating P6)
+```
+
+---
+
+### §49.4 Current docs / README / examples inventory (151차 timing)
+
+Recorded against main `41298f1` (PR36-PKG merged):
+
+```text
+docs/                                          (top-level docs)
+  00_PROJECT_IDENTITY.md                       project origin + Cerberus relationship
+  01_CORE_PHILOSOPHY.md                        evidence-centered design
+  02_LAYER_MODEL.md                            relation / intelligence / numeric layers
+  03_RUNTIME_LOOP.md                           judgment loop
+  09_GIT_WORKFLOW.md                           contributor workflow
+
+docs/contracts/                                (consumer contracts)
+  04_C_CORE_BOUNDARY.md                        future C/Rust boundary
+  05_DATA_CONTRACT_MVP.md                      §17 ~ §48 (PR36-PKG; this file)
+  06_MEMORY_RAG_GATE.md                        memory eligibility gate
+
+docs/agent/
+  08_CLAUDE_IMPLEMENTATION_BRIEF.md            implementer guidance (NOT consumer)
+
+docs/archive/
+  ORIGINAL_NOTE.md                              historical
+
+docs/dev/
+  PR_001 ~ PR_036 records                      per-PR implementation history (NOT consumer)
+
+docs/roadmap/
+  (empty or single doc — to be verified)
+
+README.md                                       project overview + boundaries (NO usage code)
+pyproject.toml                                  PR36-PKG minimal metadata
+examples/                                       DOES NOT EXIST
+```
+
+Grep results (audit-recorded):
+
+```text
+"from ragcore" in docs/                         0 occurrences
+"import ragcore" in docs/                       0 occurrences
+"from ragcore import Engine" in README.md       0 occurrences
+"from ragcore import Engine" in docs/           0 occurrences
+"from ragcore import Engine" in contract §§     1 occurrence (§48.6 example script)
+```
+
+Observation:
+
+```text
+- The §48.6 example script is the ONLY "from ragcore import Engine" usage
+  illustration anywhere in the repository.
+- It lives inside the contract document (a 12,000+ line audit-trail document).
+- It is not discoverable for a new consumer browsing README.
+- examples/ directory does not exist.
+- PR31-S §43 6 canonical recipes and PR32-V §44 6 report shapes are
+  documented inside the contract document only.
+- A new consumer (Cerberus integrator, future AI consumer) browsing
+  README and docs/ at the top level would not find any consumer
+  entry-point code.
+```
+
+---
+
+### §49.5 V-cerberus pre-integration checklist
+
+The 10 items from the integration readiness direction principle (locked 2026-05-22):
+
+```text
+[ 1] README Engine usage guide
+[ 2] examples/ directory existence (≥ 1 entry-point example)
+[ 3] adapter call pattern docs
+[ 4] consumer-owned persistence / storage responsibility docs
+[ 5] PR31-S §43 6 canonical recipes discoverability (outside contract doc)
+[ 6] PR32-V §44 6 report shapes consumer-side assembler example
+[ 7] snapshot migration guide (consumer-facing)
+[ 8] §48.5 breaking change / deprecation cycle guidance
+[ 9] P6 Engine.claim_report decision status documented
+[10] storage responsibility separation explicit (consumer holds snapshot dicts)
+```
+
+Each item is independently verifiable by an external integrator looking at the repo for the first time.
+
+---
+
+### §49.6 Audit findings — checklist gap analysis
+
+Each checklist item assessed against current main `41298f1`:
+
+| # | Item                                       | Current state              | Gap |
+| - | ------------------------------------------ | -------------------------- | --- |
+| 1 | README Engine usage guide                  | Architecture only, no `from ragcore import` | YES |
+| 2 | examples/ directory                        | Does not exist             | YES |
+| 3 | adapter call pattern docs                  | Embedded in §43 + §48.6 only | YES (discoverability) |
+| 4 | Consumer-owned persistence docs            | Embedded in §39.4 / §42.6 only | YES (discoverability) |
+| 5 | §43 recipes discoverable                   | Contract doc internal       | YES (discoverability) |
+| 6 | §44 report shapes consumer-side assembler  | Test file only (test_engine_report_surface.py) | YES (discoverability) |
+| 7 | Snapshot migration guide (consumer-facing) | Migration code exists; no consumer doc | YES |
+| 8 | §48.5 deprecation cycle guidance           | §48.5 exists; discoverable inside contract | PARTIAL |
+| 9 | P6 Engine.claim_report decision            | PR32-V §44.11 OOS + PR36-PKG preserved | DOCUMENTED (no gap) |
+| 10 | Storage responsibility separation          | §39.4 + §42.6 + §44; no top-level statement | YES (discoverability) |
+
+Summary:
+
+```text
+no-gap items:         1 (item 9 — P6 decision documented)
+partial-gap items:    1 (item 8 — exists but discoverability weak)
+gap items:            8 (items 1, 2, 3, 4, 5, 6, 7, 10)
+```
+
+Most gaps are not *content* gaps (the information exists, often well-documented in contract subsections) — they are *discoverability* gaps. A new consumer landing on README cannot easily find:
+
+- how to call Engine
+- where the canonical usage recipes are
+- where the report shapes are
+- where to put the snapshot
+- when the framework breaks backward compatibility
+
+§49 audit therefore proposes documentation surface refactoring (extraction / cross-referencing) rather than re-authoring the contract.
+
+---
+
+### §49.7 Gap candidates D1 ~ D8 (proposal only)
+
+The audit proposes 8 cleanup candidates. **None are decisions.** 152/153차 will pick scope.
+
+**D1 — README integration quickstart section (medium effort, low risk)**
+
+```text
+Add to README.md:
+  - "Usage" section with the §48.6 example script verbatim
+  - Cross-reference to docs/contracts/05_DATA_CONTRACT_MVP.md §43 (recipes)
+  - Cross-reference to docs/contracts/05_DATA_CONTRACT_MVP.md §44 (report shapes)
+  - Cross-reference to docs/contracts/05_DATA_CONTRACT_MVP.md §48 (stability)
+
+Risk:        low (additive docs only, no code change)
+Discoverability impact:  high (README is the first thing consumers see)
+```
+
+**D2 — examples/ directory with 1 entry-point example (medium effort, low risk)**
+
+```text
+Create examples/ directory with:
+  examples/01_minimal_claim_lifecycle.py
+    - mirrors §48.6 script
+    - executable as `python examples/01_minimal_claim_lifecycle.py`
+    - includes print statements showing each step's output
+
+Optional additional examples (defer to PR38+ if not in scope):
+  examples/02_snapshot_roundtrip.py
+  examples/03_disputed_lifecycle.py
+  examples/04_report_assembly.py
+
+Risk:        low (no engine change, examples are pure consumer code)
+Discoverability impact:  high (new consumer finds working code)
+```
+
+**D3 — docs/usage/ directory with consumer-facing guides (medium effort, low risk)**
+
+```text
+Create docs/usage/ containing:
+  10_QUICKSTART.md           — README "Usage" expanded
+  11_USAGE_RECIPES.md        — §43 recipes A~F extracted as standalone reference
+  12_REPORT_SHAPES.md         — §44 shapes A~F extracted as standalone reference
+  13_PERSISTENCE.md           — to_snapshot/from_snapshot + consumer storage
+  14_BREAKING_CHANGES.md     — §48.5 deprecation cycle explanation
+  15_INTEGRATION_READINESS.md — §49 itself summarized for consumers
+
+Each doc cross-references the contract section it extracts from, so contract
+remains source of truth, usage docs are reader-friendly extracts.
+
+Risk:        medium (large docs surface area, but no code change)
+Discoverability impact:  high (creates consumer-facing nav)
+```
+
+**D4 — README "Project Status" section (low effort, low risk)**
+
+```text
+Add to README.md:
+  - Version: 0.1.0
+  - Status: API surface frozen (PR36-PKG §48), algorithm allowed to evolve
+  - Stable: method surface, snapshot shape, report shapes
+  - Evolvable: modifier strength, threshold, calibration
+  - Cross-reference to §48 and §49
+
+Risk:        trivial (one-paragraph addition)
+Discoverability impact:  high (first-glance integration safety signal)
+```
+
+**D5 — Snapshot consumer storage example (low effort, low risk)**
+
+```text
+Add to docs/usage/13_PERSISTENCE.md (D3):
+  - JSON dump example: json.dumps(engine.to_snapshot())
+  - File storage example: pathlib.Path("state.json").write_text(...)
+  - Restore example: Engine.from_snapshot(json.loads(...))
+  - Explicit statement: framework does not own persistence; consumer chooses
+    json / sqlite / S3 / etc.
+
+Risk:        low (1 docs file)
+Discoverability impact:  medium (clarifies §39.4 / §42.6 boundary)
+```
+
+**D6 — §49 itself as integration readiness statement (this PR)**
+
+```text
+This PR adds §49 to the contract.
+
+Includes:
+  - core statement
+  - integration boundary categorization
+  - V-cerberus pre-integration checklist (10 items)
+  - audit findings against the checklist
+  - gap candidates D1~D8
+
+Risk:        trivial (this section)
+Discoverability impact:  high (the source of truth for "is the framework ready?")
+```
+
+**D7 — Cross-link from §43 / §44 / §48 to usage docs (low effort, trivial risk)**
+
+```text
+Add cross-reference comments at the top of §43 / §44 / §48 pointing
+to the corresponding extracted usage docs (D3 outputs).
+
+Bidirectional discoverability:
+  contract → usage  (consumer can find consumer-facing extract)
+  usage → contract  (consumer can find authoritative contract)
+
+Risk:        trivial (10~20 line additions across 3 sections)
+Discoverability impact:  medium
+```
+
+**D8 — Top-level "How to Use This Framework" docs index entry (trivial)**
+
+```text
+Add to README.md docs map:
+  - link to docs/usage/10_QUICKSTART.md
+  - link to docs/usage/15_INTEGRATION_READINESS.md
+  - link to docs/contracts/05_DATA_CONTRACT_MVP.md §48 / §49
+
+Risk:        trivial
+Discoverability impact:  medium
+```
+
+Effort / risk summary:
+
+```text
+D6                      trivial   (this section, already in this commit)
+D4 / D7 / D8           trivial   (small docs additions, no examples needed)
+D1 / D5                low       (README usage section + persistence example)
+D2 / D3                medium    (new directory + multiple docs)
+```
+
+---
+
+### §49.8 Scope selection framework
+
+152/153차 will pick scope:
+
+```text
+Scope D-low      Execute D4 + D6 + D7 + D8 (trivial discoverability fixes)
+                 README "Project Status" section + cross-links + index
+                 No new directory, no new docs/usage/.
+                 cycle: 152차 docs(readme + cross-links) + 153차 docs(dev) record
+                 
+Scope D-mid      Add D1 + D5 to D-low
+                 README integration quickstart + persistence example
+                 Still no new directory.
+                 cycle: 152차 docs(readme + persistence example) + 153차 docs(dev) record
+
+Scope D-full     Add D2 + D3 to D-mid
+                 examples/ directory + docs/usage/ directory
+                 cycle: 152차 docs(structure setup) + 153차 docs(content fill) +
+                        154차 docs(dev) record
+                 
+Scope D-only     Audit only. Close PR37-PKG-DOCS after §49 + record.
+                 V-cerberus track still requires manual gap closure first.
+                 cycle: 152차 docs(dev) PR_037 record (audit only)
+```
+
+Recommendation: **Scope D-mid** balances completeness and risk. D-full is appropriate if user explicitly wants the framework to feel production-ready before V-cerberus. D-only is appropriate if user wants V-cerberus to drive what gets documented (real-usage-driven).
+
+The choice depends on whether the framework is expected to attract external consumers beyond Cerberus.
+
+---
+
+### §49.9 Audit-only invariants
+
+151차 audit records:
+
+```text
+docs/                      5 top-level files + 5 subdirectories
+docs/contracts/             3 contract files (05 is 12,386 LOC)
+docs/dev/                   36 PR record files (PR_001 ~ PR_036)
+README.md                  88 lines (architecture only, no usage code)
+pyproject.toml             21 lines (PR36-PKG minimal metadata)
+examples/                  DOES NOT EXIST
+"from ragcore" in non-contract docs  0 occurrences
+V-cerberus checklist items  10 total
+  documented (no gap):       1 (P6 decision)
+  partial discoverability:    1 (§48.5)
+  gap (discoverability):      8 (items 1-7, 10)
+test suite                  1115 passing (unchanged)
+public symbols              48 (PR36-PKG locked)
+Engine public methods       40 (PR36-PKG locked)
+schema_version               2 (PR21-L)
+```
+
+These are descriptive snapshots. No new test invariants are added.
+
+---
+
+### §49.10 Non-goals
+
+151차 explicitly does NOT:
+
+```text
+modify any source file in ragcore/
+modify any test file
+add new tests
+add README content (deferred to 152/153차 if scope chosen)
+add examples/ directory (deferred to 152/153차)
+add docs/usage/ directory (deferred to 152/153차)
+amend §48.5 deprecation cycle
+change method surface
+change algorithm
+make Cerberus integration decisions
+reactivate P6 (Engine.claim_report — PR32-V §44.11 OOS preserved)
+shift PR31-S _PR30_BASELINE_PUBLIC_SYMBOLS frozenset
+shift PR32-V *_KEYS frozensets
+shift PR36-PKG _LOCKED_* frozensets
+```
+
+§49 is the integration readiness *audit*. Execution of any D-candidate is 152/153차 scope.
+
+---
+
+### §49.11 Future PR constraints + V-cerberus prerequisites
+
+After §49 is documented (151차 + record), the following constraints apply:
+
+```text
+- V-cerberus thin adapter PR may only proceed after:
+    Scope D-mid or higher gap-closure (D1, D2, D5 at minimum)
+    OR
+    Explicit user statement that V-cerberus drives what gets documented
+- Any future framework PR that adds judgment behavior must also verify
+  §49 checklist items (especially #5, #6) remain documented after change
+- Any future "method surface migration" PR (per §48.5) must update
+  §49 checklist items #3, #4, #8 if affected
+- §49 itself may be amended in future PRs, but only to add new
+  checklist items — never to remove (additive-only checklist)
+```
+
+V-cerberus prerequisites (from this audit):
+
+```text
+[required] D1 OR D2 (consumer-finding entry point)
+[required] D5 (persistence example clarifying §39.4 / §42.6)
+[recommended] D3 (extracted usage docs)
+[recommended] D4 (project status statement)
+[optional] D7, D8 (cross-links and index)
+```
+
+---
+
+### §49.12 Cycle for PR37-PKG-DOCS
+
+```text
+151차  docs(contract): define integration readiness boundary (§49)
+       includes audit findings + gap candidates D1~D8
+       this commit
+       
+152차  scope execution (depends on user scope selection):
+       D-only:   skip, go to 154차
+       D-low:    docs(readme + cross-links)
+       D-mid:    docs(readme + persistence + usage section)
+       D-full:   docs(structure setup — examples/ + docs/usage/ skeleton)
+
+153차  (D-full only) docs(content fill):
+       fill examples/ with executable code
+       fill docs/usage/ with extracted content
+
+154차  docs(dev): record PR_037 + ready + squash merge --delete-branch
+
+If 152/153차 reveal an unexpected coupling that would require a method
+surface change, the PR is paused and the change is moved to a separate
+"method surface migration" PR (per §48.5).
