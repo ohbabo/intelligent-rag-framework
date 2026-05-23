@@ -223,7 +223,14 @@ rule_id 와 rule_version 은 required (default 없음).
 
 "rule association" 은 "rule firing" 이 아니다.
 ragcore.Engine 은 rule 을 자동으로 firing 하지 않는다.
-fire_rule public method 는 존재하지 않는다.
+Engine.fire_rule instance method 는 존재하지 않는다.
+
+(주의: ragcore 모듈 level 에는 fire_rule / fire_rule_with_trace
+standalone function 이 존재한다 — rule_output.py 의 rule evaluator.
+이는 Engine state mutation 이 아니라 rule logic 자체를 평가하는
+함수이며, playbook 은 이를 호출하지 않는다. consumer 가 직접 rule
+logic 을 실행할 때 도구로 쓸 수 있을 뿐이고, 그 결과는 여전히
+add_claim 으로 Engine 에 등록되어야 한다.)
 
 rule_id / rule_version 의 역할은 audit trail / reproducibility /
 RuleStats 집계 / rule version pinning 이다.
@@ -429,7 +436,9 @@ external output
 
 ```text
 - consumer 가 rule logic 을 자체적으로 실행한 뒤 그 결과를 Claim 으로 등록
-- Engine 은 rule "firing" 을 trigger 하지 않음 (fire_rule public method 없음)
+- Engine.fire_rule instance method 없음 — Engine 은 rule 을 자동으로
+  firing 하지 않음 (ragcore.fire_rule standalone function 은 별개
+  rule evaluator 이며 Engine state 를 변경하지 않음)
 - rule_id / rule_version 은 audit trail / RuleStats 집계 / reproducibility 용도
 - 같은 rule 로 만들어진 Claim 들이 통계적으로 추적 가능
 ```
