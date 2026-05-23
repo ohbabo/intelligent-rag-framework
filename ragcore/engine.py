@@ -222,6 +222,11 @@ _SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS: frozenset[int] = frozenset({1, 2})
 # ============================================================================
 
 class Engine:
+    # ============================================================================
+    # Region B  —  __init__ + private guards
+    # See: docs/architecture/ENGINE_INTERNAL_MAP.md  §2 Region B
+    # ============================================================================
+
     def __init__(self) -> None:
         self._next_id: dict[str, int] = {}
         self._entities: dict[int, Entity] = {}
@@ -308,6 +313,11 @@ class Engine:
             raise KeyError(
                 f"unknown rule: rule_id={rule_id}, version={rule_version}"
             )
+
+    # ============================================================================
+    # Region C  —  CRUD layer (Identity + Evidence + Relation)
+    # See: docs/architecture/ENGINE_INTERNAL_MAP.md  §2 Region C
+    # ============================================================================
 
     # ---- Entity / Observation / Claim / Evidence ---------------------------
 
@@ -511,6 +521,11 @@ class Engine:
         """
         return self._relations[relation_id]
 
+    # ============================================================================
+    # Region D  —  Gap layer
+    # See: docs/architecture/ENGINE_INTERNAL_MAP.md  §2 Region D
+    # ============================================================================
+
     def add_gap(
         self,
         claim_id: int,
@@ -624,6 +639,11 @@ class Engine:
         """
         self._assert_gap_exists(gap_id)
         return self._gap_resolutions.get(gap_id)
+
+    # ============================================================================
+    # Region E  —  Lifecycle layer (transitions + contradictions)
+    # See: docs/architecture/ENGINE_INTERNAL_MAP.md  §2 Region E
+    # ============================================================================
 
     # ---- Claim lifecycle (PR6 §18) ----------------------------------------
 
@@ -906,6 +926,11 @@ class Engine:
                 return True
         return False
 
+    # ============================================================================
+    # Region F  —  Lifecycle history + freshness queries
+    # See: docs/architecture/ENGINE_INTERNAL_MAP.md  §2 Region F
+    # ============================================================================
+
     # ---- Lifecycle history (PR10-B §23) -----------------------------------
 
     def _record_claim_lifecycle_transition(
@@ -995,6 +1020,11 @@ class Engine:
         resolved = self._resolved_contradictions.get(claim_id, set())
         return tuple(sorted(contras - resolved, reverse=True))
 
+    # ============================================================================
+    # Region G  —  Freshness-based refute
+    # See: docs/architecture/ENGINE_INTERNAL_MAP.md  §2 Region G
+    # ============================================================================
+
     # ---- Freshness-aware refutation (PR11-B §27) --------------------------
 
     def refute_disputed_claim_if_ready_by_freshness(
@@ -1045,6 +1075,11 @@ class Engine:
             return True
         return False
 
+    # ============================================================================
+    # Region H  —  Rule meta
+    # See: docs/architecture/ENGINE_INTERNAL_MAP.md  §2 Region H
+    # ============================================================================
+
     # ---- Rule registry -----------------------------------------------------
 
     def register_rule(self, definition: RuleDefinition) -> None:
@@ -1090,6 +1125,11 @@ class Engine:
         """
         self._assert_rule_stats_pair_exists(rule_id, rule_version)
         return self._rule_stats[(rule_id, rule_version)]
+
+    # ============================================================================
+    # Region I  —  7-modifier helper layer
+    # See: docs/architecture/ENGINE_INTERNAL_MAP.md  §2 Region I
+    # ============================================================================
 
     # ---- Modifier helpers (private — PR34-O §46 O2 + O3) -----------------
     #
@@ -1368,6 +1408,11 @@ class Engine:
             return _EVIDENCE_TYPE_PENALTY_MODIFIER
         return 1.0
 
+    # ============================================================================
+    # Region J  —  Effective confidence + rule stats update
+    # See: docs/architecture/ENGINE_INTERNAL_MAP.md  §2 Region J
+    # ============================================================================
+
     def compute_effective_confidence(self, claim_id: int) -> ScoreValue:
         """Effective confidence as base × status × freshness × gap × count × rule_stats × evidence_type.
 
@@ -1497,6 +1542,11 @@ class Engine:
             ),
         )
 
+    # ============================================================================
+    # Region K  —  Snapshot serialize / restore (on Engine)
+    # See: docs/architecture/ENGINE_INTERNAL_MAP.md  §2 Region K
+    # ============================================================================
+
     # ---- Persistence snapshot (PR17 §29) ----------------------------------
 
     def to_snapshot(self) -> dict[str, Any]:
@@ -1580,6 +1630,11 @@ class Engine:
         return engine
 
 
+# ============================================================================
+# Region L  —  Snapshot migration (module-level)
+# See: docs/architecture/ENGINE_INTERNAL_MAP.md  §2 Region L
+# ============================================================================
+
 # ---- Snapshot migration framework (PR18-K §30 + PR21-L §33) ---------------
 # Engine 내부 private — public export 안 함.
 # 미래 schema 변경 시 _SUPPORTED 확장 + migration step 추가.
@@ -1631,6 +1686,11 @@ def _migrate_snapshot_to_current(snapshot: dict[str, Any]) -> dict[str, Any]:
         f"Unsupported snapshot schema_version: {version}"
     )
 
+
+# ============================================================================
+# Region M  —  Dataclass restore from dict (module-level)
+# See: docs/architecture/ENGINE_INTERNAL_MAP.md  §2 Region M
+# ============================================================================
 
 # ---- Persistence serialization helpers (PR17 §29) -------------------------
 # PR12-D 다음 / Persistence (PR17 §29) 직렬화 보조. 결정성 (sorted) 보장.
@@ -1690,6 +1750,12 @@ def _rule_stats_from_dict(d: dict[str, Any]) -> RuleStats:
     d["observed_precision"] = _sv_from_dict(d.get("observed_precision"))
     d["false_positive_rate"] = _sv_from_dict(d.get("false_positive_rate"))
     return RuleStats(**d)
+
+
+# ============================================================================
+# Region N  —  Dict serialize / restore helpers (module-level)
+# See: docs/architecture/ENGINE_INTERNAL_MAP.md  §2 Region N
+# ============================================================================
 
 
 def _serialize_dict_int_dataclass(d: dict[int, Any]) -> list[dict[str, Any]]:
