@@ -2,6 +2,33 @@
 
 관계-판단-수치 기반 범용 AI Agentic RAG 프레임워크.
 
+## Core Thesis
+
+```text
+The truth unit is evidence, not the tool.
+LLM is a reader and proposer, not the judge.
+RAG is an operational knowledge layer, not just vector search.
+```
+
+이 프로젝트는 "문서를 검색해서 LLM 답변을 보강하는 RAG"에 머물지 않는다.
+
+목표는 도구 출력, API 신호, 로그, 문서, 사람의 판단 기록을 모두 **검증 가능한 evidence 단위**로 정규화하고, 그 evidence가 어떤 claim을 지지하거나 반박하는지, 무엇이 아직 부족한지, 다음에 무엇을 확인해야 하는지를 계산하는 것이다.
+
+```text
+Raw output / API signal / document / log
+→ Canonical evidence
+→ Claim / Gap / Contradiction
+→ Lifecycle state
+→ Effective confidence
+→ LLM-readable packet
+→ Proposal validation
+→ Operator gate
+```
+
+LLM은 이 흐름에서 최종 판단자가 아니다.
+
+LLM은 Engine이 만든 상태를 읽고, 다음 조사 후보를 제안할 수 있다. 그러나 claim의 truth, lifecycle transition, confidence, execution decision은 evidence, rule, validator, operator gate를 통해 통제된다.
+
 ## Origin
 
 본 프레임워크는 켈베로스(Cerberus) 보안 진단 프로젝트에서 축적한 evidence-centric 판단 구조를 범용화하기 위해 분리된 프로젝트다. 켈베로스는 첫 번째 도메인 적용 사례이며, 본 프레임워크는 보안 도메인에 종속되지 않는 관계-판단-수치 기반 RAG 엔진을 목표로 한다.
@@ -21,10 +48,66 @@ Framework = 켈베로스에서 추출된 범용 판단 엔진
 새 데이터는 무엇과 연결되는가?
 그 연결은 어떤 규칙 때문에 생겼는가?
 현재 판단에 부족한 Gap은 무엇인가?
+현재 판단을 반박하는 Contradiction은 무엇인가?
 그 판단은 얼마나 신뢰할 수 있는가?
+LLM에게 어떤 상태까지 읽게 할 수 있는가?
+LLM 제안은 어떤 검증을 통과해야 하는가?
 다음 행동은 무엇이어야 하는가?
 이 흐름은 장기 기억/RAG에 저장할 가치가 있는가?
 ```
+
+## Not a Prompt-only System
+
+이 프로젝트는 긴 프롬프트 하나로 LLM을 설득하는 방식이 아니다.
+
+```text
+Prompt only        ❌
+Vector search only ❌
+LLM-as-judge       ❌
+Tool-as-truth      ❌
+```
+
+대신 다음 구조를 지향한다.
+
+```text
+Engine state
+→ Read packet
+→ Packet validator
+→ LLM context
+→ LLM proposal
+→ Proposal schema validator
+→ Proposal safety validator
+→ Operator decision boundary
+→ Consumer-owned execution
+```
+
+프롬프트는 이 흐름의 한 부품이다. 핵심은 LLM에게 무엇을 보여줄지, 무엇을 말하지 못하게 할지, 어떤 제안을 위험하다고 볼지, 사람이 어디서 승인해야 하는지를 구조로 고정하는 것이다.
+
+## RAG Model
+
+일반적인 RAG 흐름은 다음과 같다.
+
+```text
+Document → Chunk → Embedding → Vector Search → LLM Answer
+```
+
+본 프레임워크는 이보다 앞단과 뒷단을 함께 다룬다.
+
+```text
+Data → Relation → Rule-based Judgment → Numeric Score → Read Packet → Proposal → Gate → Memory
+```
+
+Vector store는 사용할 수 있다. 그러나 vector store는 truth source가 아니다.
+
+```text
+Vector retrieval = candidate knowledge lookup
+Evidence         = normalized support or contradiction unit
+Engine state     = current judgment state
+LLM              = reader / summarizer / proposer
+Operator         = execution authority
+```
+
+즉 이 프로젝트에서 RAG는 "LLM의 백과사전"이 아니라, LLM이 현재 상황을 안전하게 읽고 다음 확인 후보를 제안할 수 있도록 만드는 운영 지식층이다.
 
 ## Project Status
 
@@ -41,11 +124,75 @@ Integration readiness:   audited in §49 (D-mid completion in progress)
 ```text
 Freeze method surface, not judgment mathematics.
 Algorithm can evolve. Integration boundary must be complete.
+Read surface can thaw without thawing judgment semantics.
 ```
 
 이 프로젝트는 production 보안 도구가 아니다. 외부 consumer (켈베로스 포함) 가 method surface 에 의존해도 되도록 잠겨 있으며, 내부 알고리즘 / modifier 수치 / threshold 정책은 향후 실사용 피드백에 따라 진화할 수 있다.
 
 자세한 잠금 규칙은 `docs/contracts/05_DATA_CONTRACT_MVP.md` 의 §48 (method surface freeze) 과 §49 (integration readiness boundary) 참고.
+
+## Design Principles
+
+### 1. Evidence is the truth unit
+
+도구는 truth가 아니다. 도구는 raw output을 만든다.
+
+```text
+Nmap output     ≠ truth
+LLM summary     ≠ truth
+API enrichment  ≠ truth
+Parsed evidence = judgment input
+```
+
+판단은 도구 이름이 아니라, 정규화된 evidence와 그 evidence가 claim과 맺는 관계를 기준으로 한다.
+
+### 2. Preserve raw output, compute normalized state
+
+Raw output은 삭제하지 않는다.
+
+```text
+raw text / JSON / log
+→ normalized evidence
+→ computed signal
+→ score / lifecycle / report
+```
+
+나중에 parser나 scoring formula가 바뀌어도, raw output과 normalized evidence가 남아 있으면 재평가할 수 있다.
+
+### 3. LLM reads state, not private engine internals
+
+LLM은 Engine private state를 직접 읽지 않는다.
+
+```text
+Engine private state ❌
+Public read surface ✅
+LLM context packet ✅
+```
+
+LLM에게 들어가는 정보는 consumer-side packet으로 정리되어야 하며, forbidden reading은 validator가 차단한다.
+
+### 4. Proposal is not execution
+
+LLM proposal은 실행 명령이 아니다.
+
+```text
+validator pass      = reviewable proposal
+operator acceptance = consumer gate pass
+Engine truth        = unchanged
+```
+
+제안이 안전 validator를 통과해도 Engine truth가 되지 않는다. 사람이 승인해도 Engine truth가 되지 않는다. 실행과 truth update는 consumer adapter가 evidence를 다시 넣는 방식으로 분리된다.
+
+### 5. Domain adapter owns domain meaning
+
+Core는 도메인 중립이어야 한다.
+
+```text
+Framework Core: Entity / Observation / Claim / Evidence / Gap / Contradiction
+Cerberus Adapter: Asset / Service / Port / CVE / Tool output / Risk signal
+```
+
+보안 용어는 Cerberus adapter에서 확장한다. Core는 보안 도구에 종속되지 않는다.
 
 ## Quickstart
 
