@@ -77,7 +77,10 @@ def _is_non_empty_string(value):
 
 
 def _has_example_prefix(value):
-    return value.startswith(_EXAMPLE_PREFIX) and len(value) > len(_EXAMPLE_PREFIX)
+    return (
+        value.startswith(_EXAMPLE_PREFIX)
+        and value[len(_EXAMPLE_PREFIX):].strip() != ""
+    )
 
 
 def _normalize_use_text(value):
@@ -129,7 +132,9 @@ def _assemble(buckets):
     return out
 
 
-def validate_role_assignment_boundaries(assignment):
+def validate_role_assignment_boundaries(
+    assignment: object,
+) -> list[tuple[str, str]]:
     buckets = {code: [] for code in _CODE_ORDER}
 
     # RA1 — top-level shape
@@ -172,16 +177,24 @@ def validate_role_assignment_boundaries(assignment):
                 ("RA4", "primary_role must be None or a non-empty string")
             )
 
-    # RA5 — example: prefix on shape-valid role-bearing labels
+    # RA5 — role-bearing label shape and 'example:' prefix
+    # Targets: primary_role / secondary_roles[*].label / candidate_roles[*]
     if "primary_role" in assignment:
         pr = assignment["primary_role"]
+        # primary_role None is valid; non-string/empty shape is RA4 territory.
+        # RA5 fires only on shape-valid strings that lack a non-empty
+        # 'example:' suffix.
         if (
             isinstance(pr, str)
             and pr.strip() != ""
             and not _has_example_prefix(pr)
         ):
             buckets["RA5"].append(
-                ("RA5", "primary_role must use 'example:' prefix")
+                (
+                    "RA5",
+                    "primary_role must use 'example:' prefix with a "
+                    "non-empty suffix",
+                )
             )
 
     if "secondary_roles" in assignment and isinstance(
@@ -189,17 +202,21 @@ def validate_role_assignment_boundaries(assignment):
     ):
         for idx, entry in enumerate(assignment["secondary_roles"]):
             if isinstance(entry, dict) and "label" in entry:
-                lbl = entry["label"]
-                if (
-                    isinstance(lbl, str)
-                    and lbl.strip() != ""
-                    and not _has_example_prefix(lbl)
-                ):
+                label = entry["label"]
+                if not isinstance(label, str) or label.strip() == "":
+                    buckets["RA5"].append(
+                        (
+                            "RA5",
+                            f"secondary_roles[{idx}].label must be a "
+                            f"non-empty string",
+                        )
+                    )
+                elif not _has_example_prefix(label):
                     buckets["RA5"].append(
                         (
                             "RA5",
                             f"secondary_roles[{idx}].label must use "
-                            f"'example:' prefix",
+                            f"'example:' prefix with a non-empty suffix",
                         )
                     )
 
@@ -209,13 +226,17 @@ def validate_role_assignment_boundaries(assignment):
         for idx, item in enumerate(assignment["candidate_roles"]):
             if not isinstance(item, str) or item.strip() == "":
                 buckets["RA5"].append(
-                    ("RA5", f"candidate_roles[{idx}] must be a non-empty string")
+                    (
+                        "RA5",
+                        f"candidate_roles[{idx}] must be a non-empty string",
+                    )
                 )
             elif not _has_example_prefix(item):
                 buckets["RA5"].append(
                     (
                         "RA5",
-                        f"candidate_roles[{idx}] must use 'example:' prefix",
+                        f"candidate_roles[{idx}] must use 'example:' prefix "
+                        f"with a non-empty suffix",
                     )
                 )
 

@@ -146,20 +146,72 @@ class TestRoleAssignmentBoundaryValidator:
             )
 
     def test_07_role_bearing_labels_require_example_prefix(self):
-        # primary_role without prefix
-        d = deepcopy(RESOLVED)
-        d["primary_role"] = "observation"
-        assert "RA5" in _codes(validate(d))
+        # Primary role: missing prefix / prefix-only / whitespace suffix
+        primary_ra5_cases = ["observation", "example:", "example:   "]
+        for bad in primary_ra5_cases:
+            d = deepcopy(RESOLVED)
+            d["primary_role"] = bad
+            assert "RA5" in _codes(validate(d)), (
+                f"primary_role={bad!r} did not trigger RA5"
+            )
 
-        # secondary_roles[0].label without prefix
-        d = deepcopy(RESOLVED)
-        d["secondary_roles"][0]["label"] = "knowledge-reference"
-        assert "RA5" in _codes(validate(d))
+        # Secondary label: non-string / empty / whitespace / missing-prefix /
+        # prefix-only / prefix-with-whitespace-suffix
+        secondary_ra5_cases = [
+            None,
+            0,
+            True,
+            "",
+            "   ",
+            "knowledge-reference",
+            "example:",
+            "example:   ",
+        ]
+        for bad in secondary_ra5_cases:
+            d = deepcopy(RESOLVED)
+            d["secondary_roles"][0]["label"] = bad
+            assert "RA5" in _codes(validate(d)), (
+                f"secondary_roles[0].label={bad!r} did not trigger RA5"
+            )
 
-        # candidate_roles[0] without prefix
+        # Candidate item: same coverage
+        candidate_ra5_cases = [
+            None,
+            0,
+            True,
+            "",
+            "   ",
+            "knowledge-reference",
+            "example:",
+            "example:   ",
+        ]
+        for bad in candidate_ra5_cases:
+            d = deepcopy(UNRESOLVED)
+            d["candidate_roles"][0] = bad
+            assert "RA5" in _codes(validate(d)), (
+                f"candidate_roles[0]={bad!r} did not trigger RA5"
+            )
+
+        # Valid control: meaningful example:* labels do not raise RA5
+        d = deepcopy(RESOLVED)
+        d["primary_role"] = "example:observation"
+        assert "RA5" not in _codes(validate(d))
+
+        d = deepcopy(RESOLVED)
+        d["secondary_roles"][0]["label"] = "example:knowledge-reference"
+        assert "RA5" not in _codes(validate(d))
+
         d = deepcopy(UNRESOLVED)
-        d["candidate_roles"][0] = "knowledge-reference"
-        assert "RA5" in _codes(validate(d))
+        d["candidate_roles"][0] = "example:alternative-candidate"
+        assert "RA5" not in _codes(validate(d))
+
+        # Non-string secondary label is RA5 only (no RA5/RA6 duplicate)
+        d = deepcopy(RESOLVED)
+        d["secondary_roles"][0]["label"] = 123
+        codes = _codes(validate(d))
+        assert codes == ["RA5"], (
+            f"non-string secondary label should be RA5 only, got {codes!r}"
+        )
 
     def test_08_record_shape_and_source_type_are_not_role_labels(self):
         d = deepcopy(RESOLVED)
@@ -434,11 +486,46 @@ class TestRoleAssignmentBoundaryValidator:
                 )
 
         # Exactly one non-private top-level function
-        public_funcs = [
-            node.name
+        public_func_nodes = [
+            node
             for node in tree.body
             if isinstance(node, ast.FunctionDef) and not node.name.startswith("_")
         ]
-        assert public_funcs == ["validate_role_assignment_boundaries"], (
-            f"unexpected public function set: {public_funcs!r}"
+        assert len(public_func_nodes) == 1, (
+            f"expected exactly 1 non-private function, got "
+            f"{[n.name for n in public_func_nodes]!r}"
         )
+        fn = public_func_nodes[0]
+        assert fn.name == "validate_role_assignment_boundaries"
+
+        # Signature: exactly one positional argument named 'assignment'
+        # with annotation 'object'; no other arg forms.
+        args = fn.args
+        assert args.posonlyargs == []
+        assert args.kwonlyargs == []
+        assert args.vararg is None
+        assert args.kwarg is None
+        assert len(args.args) == 1
+        assert args.defaults == []
+        arg0 = args.args[0]
+        assert arg0.arg == "assignment"
+        assert isinstance(arg0.annotation, ast.Name)
+        assert arg0.annotation.id == "object"
+
+        # Return annotation: list[tuple[str, str]]
+        ret = fn.returns
+        assert isinstance(ret, ast.Subscript), (
+            "return annotation must be a subscripted generic"
+        )
+        assert isinstance(ret.value, ast.Name)
+        assert ret.value.id == "list"
+        inner = ret.slice
+        assert isinstance(inner, ast.Subscript)
+        assert isinstance(inner.value, ast.Name)
+        assert inner.value.id == "tuple"
+        inner_slice = inner.slice
+        assert isinstance(inner_slice, ast.Tuple)
+        assert len(inner_slice.elts) == 2
+        for elt in inner_slice.elts:
+            assert isinstance(elt, ast.Name)
+            assert elt.id == "str"
