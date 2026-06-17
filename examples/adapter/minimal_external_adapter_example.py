@@ -101,7 +101,9 @@ RESOLVED_TRANSLATION_TRACE = {
             ),
         },
         {
-            "source_location": "external_item.heading",
+            "source_location": (
+                "source_retention.retained_source_fields.heading"
+            ),
             "consumer_location": "normalized_view.title",
             "transformation": "rename heading to title",
             "reason": (
@@ -110,7 +112,9 @@ RESOLVED_TRANSLATION_TRACE = {
             ),
         },
         {
-            "source_location": "external_item.review_date",
+            "source_location": (
+                "source_retention.retained_source_fields.review_date"
+            ),
             "consumer_location": "normalized_view.stated_date",
             "transformation": "rename review_date to stated_date",
             "reason": (
@@ -120,7 +124,9 @@ RESOLVED_TRANSLATION_TRACE = {
             ),
         },
         {
-            "source_location": "external_item.layout_hint",
+            "source_location": (
+                "source_retention.retained_source_fields.layout_hint"
+            ),
             "consumer_location": "normalized_view (absent)",
             "transformation": (
                 "omit layout_hint from normalized_view; preserve "
@@ -259,7 +265,9 @@ UNRESOLVED_TRANSLATION_TRACE = {
             ),
         },
         {
-            "source_location": "external_item.heading",
+            "source_location": (
+                "source_retention.retained_source_fields.heading"
+            ),
             "consumer_location": "normalized_view.title",
             "transformation": "rename heading to title",
             "reason": (
@@ -268,7 +276,9 @@ UNRESOLVED_TRANSLATION_TRACE = {
             ),
         },
         {
-            "source_location": "external_item.review_date",
+            "source_location": (
+                "source_retention.retained_source_fields.review_date"
+            ),
             "consumer_location": "normalized_view.stated_date",
             "transformation": "rename review_date to stated_date",
             "reason": (
@@ -278,7 +288,9 @@ UNRESOLVED_TRANSLATION_TRACE = {
             ),
         },
         {
-            "source_location": "external_item.layout_hint",
+            "source_location": (
+                "source_retention.retained_source_fields.layout_hint"
+            ),
             "consumer_location": "normalized_view (absent)",
             "transformation": (
                 "omit layout_hint from normalized_view; preserve "
