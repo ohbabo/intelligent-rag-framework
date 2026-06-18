@@ -13465,3 +13465,211 @@ V-cerberus thin adapter PR (cerberus_client repo)
 ```
 
 These 7 conditions form the "Cerberus engine frame" completion criteria (user 2026-05-22). §50 closes 1, 2, 3, 4, 5. PR36-PKG §48 already covers 6, 7. V-cerberus first iteration validates them in practice.
+
+---
+
+## §51. Claim Status Admission Domain
+
+### Prologue (locked sentences, 2026-06-17)
+
+```text
+Claim.status is a closed admission domain.
+
+Only the four registered status constants are admissible.
+
+An invalid Claim.status must never enter Engine state.
+Rejection happens before any related mutation.
+
+bool is not an int for the purpose of Claim.status, even
+though Python treats bool as a subclass of int.
+
+A numeric float is not an int for the purpose of Claim.status,
+even if the float value equals a status constant.
+
+A snapshot carrying an invalid Claim.status must not produce
+an Engine.
+```
+
+> **§51 closes the admission gate so that no downstream Engine code is responsible for handling an invalid Claim.status.**
+
+---
+
+### §51.1 Admissible status values
+
+Claim.status admits exactly the following four integer constants
+exported from `ragcore`:
+
+```text
+CLAIM_STATUS_CANDIDATE
+CLAIM_STATUS_CONFIRMED
+CLAIM_STATUS_REFUTED
+CLAIM_STATUS_DISPUTED
+```
+
+No other integer is admissible. No string, bool, float, or None
+is admissible. The set is closed by this contract; widening
+requires a separate documented change.
+
+§51 does not change the integer values of the four constants.
+§51 does not change their lifecycle semantics.
+
+---
+
+### §51.2 Exact integer requirement
+
+Claim.status must be a built-in `int`.
+
+In Python, `bool` is a subclass of `int`. For Claim.status this
+relationship is rejected. `True` and `False` are not admissible
+even though `isinstance(True, int)` is true.
+
+A `float` value that equals a status constant is not admissible.
+Examples that must be rejected:
+
+```text
+1.0   is not  CLAIM_STATUS_CONFIRMED
+0.0   is not  CLAIM_STATUS_CANDIDATE
+3.0   is not  CLAIM_STATUS_DISPUTED
+```
+
+No silent coercion is permitted. Specifically:
+
+```text
+"1"     -> 1     forbidden
+1.0     -> 1     forbidden
+True    -> 1     forbidden
+False   -> 0     forbidden
+```
+
+The semantic check is equivalent to:
+
+```text
+type(status) is int
+and
+status in {CLAIM_STATUS_CANDIDATE, CLAIM_STATUS_CONFIRMED,
+           CLAIM_STATUS_REFUTED,  CLAIM_STATUS_DISPUTED}
+```
+
+---
+
+### §51.3 Fail-fast at admission
+
+`Engine.add_claim()` must reject an invalid status before any
+related Engine state mutation, including but not limited to:
+
+```text
+- claim ID allocation        (no counter increment)
+- self._claims registration  (no dict insertion)
+- self._claim_gap_refs       (no key creation)
+- self._contradictions       (no key creation)
+- self._claim_lifecycle_events (no list creation)
+```
+
+After a rejected admission, the Engine snapshot before the call
+and the Engine snapshot after the rejection must be equal.
+
+A subsequent valid `add_claim()` call must receive the next
+claim ID that would have been issued had the rejected call
+never been attempted. Rejection does not consume an ID.
+
+---
+
+### §51.4 Restore-time rejection
+
+`Engine.from_snapshot()` must reject a snapshot that contains a
+Claim entry whose `status` value is not admissible per §51.1
+and §51.2.
+
+The rejection rules:
+
+```text
+- The restore must not return an Engine with an invalid claim.
+- The restore must not silently drop an invalid claim entry.
+- The restore must not coerce an invalid value into an
+  admissible constant.
+- The restore must not reinfer or rewrite the value.
+- The input snapshot dictionary must not be mutated.
+```
+
+Detection of an invalid Claim.status during restore raises an
+exception. Detection should occur before invalid Claim objects
+are placed into `self._claims`, and the Engine returned to the
+caller must not have observed the invalid value.
+
+§51 does not require validation of other invariants during
+restore (orphan reference checks, set-inclusion checks, counter
+integrity). Those remain out of scope for §51.
+
+---
+
+### §51.5 Error type convention
+
+Per the existing Engine input validation convention (e.g.
+`set_hint_evidence_types` at PR21-L §33, `_storage_for_kind`
+at PR34-O §46):
+
+```text
+- bool, None, str, float, or any non-int value for status
+  raises TypeError.
+- An int that is not one of the four admissible constants
+  raises ValueError.
+```
+
+The TypeError variant carries the offending type name. The
+ValueError variant carries the offending integer value and the
+admissible set.
+
+§51 does not introduce a new exception class.
+
+---
+
+### §51.6 Non-goals
+
+§51 does not:
+
+```text
+- change the integer values of CLAIM_STATUS_*
+- change lifecycle transition semantics
+- change status modifier values
+- change freshness / gap / count / rule_stats / evidence_type
+  modifiers
+- change the effective confidence formula
+- change Claim dataclass shape or field set
+- change snapshot schema_version
+- change any snapshot top-level key
+- change any public Engine method signature
+- add a new public Engine method
+- add a new private Engine method
+- add a new public ragcore symbol
+- add a new dependency
+- introduce a proposal layer, packet validator, role assignment,
+  or operator boundary
+- validate cross-reference integrity, orphan references, or
+  counter integrity in snapshot restore (out of scope)
+```
+
+§51 only locks the admission domain at `Engine.add_claim()` and
+`Engine.from_snapshot()`.
+
+---
+
+### §51.7 Test expectation
+
+`tests/test_engine_claim_status_admission.py` covers:
+
+```text
+- add_claim rejects each invalid status (bool, str, None,
+  float, out-of-range int) with the appropriate error type
+- add_claim leaves Engine state and ID counter unchanged after
+  rejection
+- a valid add_claim call after a rejected one receives the
+  next sequential claim ID
+- add_claim admits each of the four valid constants
+- from_snapshot rejects a snapshot whose claim status is invalid
+  for each invalid value category
+- from_snapshot does not mutate the input snapshot dict
+- valid v2 snapshot round-trip remains unchanged
+- existing v1 → v2 migration tests remain unchanged
+```
+
+§51 is closed when these expectations hold.
