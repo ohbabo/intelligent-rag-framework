@@ -74,6 +74,37 @@ _STATUS_TO_MODIFIER: dict[int, float] = {
     CLAIM_STATUS_REFUTED: _STATUS_MODIFIER_REFUTED,
 }
 
+# ---- Claim status admission domain (PR65-P01 §51) ----
+# Engine 내부 private — public export 안 함.
+# Admission gate for Claim.status: only the four registered constants
+# are admissible. bool / float / None / str / out-of-range int are rejected
+# before any state mutation. See §51.1 / §51.2 / §51.5.
+_VALID_CLAIM_STATUSES: frozenset[int] = frozenset(_STATUS_TO_MODIFIER)
+
+
+def _validate_claim_status_admission(value: object) -> None:
+    """§51.2/§51.5 — fail-fast Claim.status admission check.
+
+    Raises:
+        TypeError: ``value`` is not a built-in int (includes bool, which
+            is an int subclass but rejected for Claim.status).
+        ValueError: ``value`` is an int but not one of the four
+            admissible status constants.
+    """
+    # bool is an int subclass; reject explicitly per §51.2.
+    if isinstance(value, bool) or type(value) is not int:
+        raise TypeError(
+            "Claim.status must be a built-in int and one of "
+            "CLAIM_STATUS_CANDIDATE / CLAIM_STATUS_CONFIRMED / "
+            "CLAIM_STATUS_REFUTED / CLAIM_STATUS_DISPUTED, "
+            f"not {type(value).__name__}"
+        )
+    if value not in _VALID_CLAIM_STATUSES:
+        raise ValueError(
+            f"Claim.status {value} is not admissible; "
+            f"admissible values: {sorted(_VALID_CLAIM_STATUSES)}"
+        )
+
 # ---- Freshness modifier (PR11-C §26) ----
 # freshness modifier 의 strength → penalty 가중치.
 # effective = base × status_modifier × (1.0 - most_recent.strength × WEIGHT)
@@ -397,6 +428,8 @@ class Engine:
             # subject_id uses a distinct error label vs add_evidence/add_observation
             # entity_id callers, so keep this inline (helper handles entity_id label).
             raise KeyError(f"unknown subject_id (entity): {subject_id}")
+        # §51.3 — reject invalid status before any state mutation.
+        _validate_claim_status_admission(status)
         claim_id = self._allocate_id("claim")
         self._claims[claim_id] = Claim(
             id=claim_id,
@@ -1596,6 +1629,10 @@ class Engine:
             ValueError: missing or unknown schema_version.
         """
         snapshot = _migrate_snapshot_to_current(snapshot)
+        # §51.4 — reject snapshots whose claim entries carry an invalid
+        # status before constructing or populating any Engine state.
+        for _item in snapshot.get("claims", []):
+            _validate_claim_status_admission(_item["value"]["status"])
         engine = cls()
         engine._next_id = dict(snapshot.get("next_id", {}))
         engine._lifecycle_seq = snapshot.get("lifecycle_seq", 0)
