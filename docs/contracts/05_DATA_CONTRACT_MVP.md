@@ -13673,3 +13673,467 @@ admissible set.
 ```
 
 §51 is closed when these expectations hold.
+
+---
+
+## §52. Snapshot Restore Integrity Contract
+
+### Prologue (locked sentences, 2026-06-18)
+
+```text
+A snapshot that violates engine-internal references, set
+relations, index relations, RuleStats identity shape, counter
+relations, or §51 Claim.status admission is an invalid snapshot.
+
+An invalid snapshot must not produce an observable Engine.
+
+Engine.from_snapshot() carries the final invariant defense
+responsibility. A consumer-side detailed validator is permitted
+but is not required to land with the enforcement PR and is not
+declared as a public framework symbol by this contract.
+
+Restore failure is fail-fast: one violation, one exception. A
+restore that fails does not mutate the input snapshot, does not
+mutate any existing Engine, and does not return a partially
+populated Engine.
+
+§52 defines the conceptual boundary that PR67-P03 enforces.
+§52 does not introduce a runtime change, a new schema, a new
+top-level snapshot key, a new public symbol, or a new dependency.
+```
+
+> **§52 closes the cross-reference, set, index, RuleStats, counter, and Claim.status linkage boundary that PR65-P01 §51 explicitly left out of scope.**
+
+§52 builds on §51 (Claim.status admission), PR17 §29 (snapshot persistence), PR18-K §30 (snapshot migration framework), PR21-L §33 (schema version v2 + `hint_evidence_types`), and PR47 §39 (frozen Engine internal refactor audit). PR65-P01 §51.6 listed "orphan reference checks, set-inclusion checks, counter integrity" as explicitly out of scope; §52 picks up exactly that boundary.
+
+---
+
+### §52.1 Scope and terminology
+
+§52 applies to `Engine.from_snapshot(snapshot)` and to any future caller-side validator that claims to mirror its decision.
+
+For the rest of §52 the following names refer to the actual snapshot top-level keys as serialized by `Engine.to_snapshot()` at the current `schema_version` `2`:
+
+```text
+schema_version
+next_id
+lifecycle_seq
+entities
+observations
+claims
+evidences
+relations
+gaps
+rule_definitions
+rule_stats
+gap_dedup_index
+claim_gap_refs
+gap_resolutions
+contradictions
+resolved_contradictions
+claim_lifecycle_events
+hint_evidence_types
+```
+
+The 18 keys above are the complete top-level set at schema_version 2. §52 does not introduce or remove a key.
+
+For the rest of §52:
+
+```text
+restored Claim       — a Claim materialized from snapshot["claims"][*].value
+                       whose Python representation is a ragcore.Claim and
+                       whose id matches the surrounding ``key`` field.
+restored Evidence    — same pattern over snapshot["evidences"].
+restored Gap         — same pattern over snapshot["gaps"].
+restored ID set      — the set of ``key`` integers in a given top-level
+                       collection.
+identity tuple       — (rule_id, rule_version), the dict key shape for
+                       ``rule_definitions`` and ``rule_stats``.
+allocator kind       — one of ``"entity"`` / ``"observation"`` / ``"claim"``
+                       / ``"evidence"`` / ``"relation"`` / ``"gap"`` as used
+                       by Engine._allocate_id.
+```
+
+The internal representation of each storage attribute is recorded so the contract uses real shapes:
+
+```text
+self._entities                : dict[int, Entity]
+self._observations            : dict[int, Observation]
+self._claims                  : dict[int, Claim]
+self._evidences               : dict[int, Evidence]            # has claim_id
+self._relations               : dict[int, Relation]
+self._gaps                    : dict[int, Gap]                 # has claim_id
+self._rule_definitions        : dict[tuple[int, int], RuleDefinition]
+self._rule_stats              : dict[tuple[int, int], RuleStats]
+self._gap_dedup_index         : dict[tuple[int, int, int, int], int]
+self._claim_gap_refs          : dict[int, set[int]]            # claim_id -> {gap_id}
+self._gap_resolutions         : dict[int, int]                 # gap_id -> evidence_id
+self._contradictions          : dict[int, set[int]]            # claim_id -> {evidence_id}
+self._resolved_contradictions : dict[int, set[int]]            # claim_id -> {evidence_id}
+self._claim_lifecycle_events  : dict[int, list[ClaimLifecycleEvent]]
+self._hint_evidence_types     : set[int]
+self._next_id                 : dict[str, int]                 # kind -> last issued id
+```
+
+`Engine._allocate_id(kind)` returns `self._next_id.get(kind, 0) + 1` and stores the new value back. The stored value is therefore the **last issued ID**, not the next ID to be issued. The next issued ID for `kind` is `self._next_id.get(kind, 0) + 1`.
+
+---
+
+### §52.2 Reference integrity
+
+A snapshot is invalid when any of the following references resolves outside the restored ID set for its target collection.
+
+#### §52.2.1 Evidence → Claim
+
+For every `e` in restored Evidence:
+
+```text
+e.claim_id ∈ restored ID set of snapshot["claims"]
+```
+
+An Evidence whose `claim_id` does not match a restored Claim is an **EVIDENCE_CLAIM_ORPHAN**. The orphan Evidence is not silently dropped, not auto-attached to a different Claim, and not paired with a synthesized Claim.
+
+#### §52.2.2 Contradiction → Claim and Evidence
+
+For every `(claim_id, evidence_id_set)` in `contradictions`:
+
+```text
+claim_id ∈ restored ID set of snapshot["claims"]
+∀ evidence_id ∈ evidence_id_set:
+    evidence_id ∈ restored ID set of snapshot["evidences"]
+```
+
+Violation labels: **CONTRADICTION_CLAIM_ORPHAN** and **CONTRADICTION_EVIDENCE_ORPHAN**.
+
+The runtime `register_contradiction(claim_id, evidence_id)` explicitly states "Cross-claim 허용: `evidence.claim_id == claim_id` 강제 안 함." §52 does **not** introduce an `evidence.claim_id == claim_id` requirement for contradictions. The existing cross-claim freedom is preserved.
+
+#### §52.2.3 Claim-gap reference → Claim and Gap
+
+For every `(claim_id, gap_id_set)` in `claim_gap_refs`:
+
+```text
+claim_id ∈ restored ID set of snapshot["claims"]
+∀ gap_id ∈ gap_id_set:
+    gap_id ∈ restored ID set of snapshot["gaps"]
+```
+
+Violation labels: **CLAIM_GAP_CLAIM_ORPHAN** and **CLAIM_GAP_GAP_ORPHAN**.
+
+`Gap.claim_id` itself stores the **first registering claim** (per PR4 §16 _의미 약화_). §52 does not require additional consistency between `Gap.claim_id` and `claim_gap_refs` — the many-to-many fan-out lives in `claim_gap_refs` and the field on `Gap` is informational about its origin only.
+
+#### §52.2.4 Gap resolution → Gap and Evidence
+
+For every `(gap_id, evidence_id)` in `gap_resolutions`:
+
+```text
+gap_id      ∈ restored ID set of snapshot["gaps"]
+evidence_id ∈ restored ID set of snapshot["evidences"]
+```
+
+Violation labels: **GAP_RESOLUTION_GAP_ORPHAN** and **GAP_RESOLUTION_EVIDENCE_ORPHAN**. The runtime resolver (`resolve_gaps_for_evidence`) registers only `evidence.id` values that already exist; the restore-time check is the same shape.
+
+---
+
+### §52.3 Set and index integrity
+
+#### §52.3.1 Gap dedup index target
+
+For every `(key_tuple, gap_id)` in `gap_dedup_index`:
+
+```text
+gap_id ∈ restored ID set of snapshot["gaps"]
+```
+
+The key tuple shape is `(subject_id, rule_id, gap_type, required_evidence_type)`. §52 requires the **target** of each entry to be a restored Gap (label **GAP_DEDUP_TARGET_ORPHAN**). §52 does not require the key tuple components to match any other collection — `subject_id` and `rule_id` are caller-domain integers and the runtime does not back-validate them when forming the index.
+
+#### §52.3.2 Resolved contradictions ⊆ contradictions
+
+For every `(claim_id, resolved_set)` in `resolved_contradictions`:
+
+```text
+claim_id ∈ restored ID set of snapshot["claims"]
+claim_id is also a key in snapshot["contradictions"]
+resolved_set ⊆ contradictions[claim_id]
+```
+
+Violation labels: **RESOLVED_CONTRADICTION_CLAIM_ORPHAN** (claim_id outside Claim set or outside `contradictions` keys) and **RESOLVED_CONTRADICTION_NOT_SUBSET** (an evidence_id resolved but not registered as a contradiction for the same claim).
+
+The contract does not require `resolved_contradictions` to carry an entry for every contradiction; absence of an entry simply means "nothing resolved yet for this claim."
+
+---
+
+### §52.4 RuleStats identity integrity
+
+For every key `k` in `rule_stats`:
+
+```text
+k is an identity tuple (rule_id: int, rule_version: int)
+both components are built-in int
+bool is not admitted as a component (consistent with §51.2 type-precise admission)
+```
+
+§52 does not require the identity tuple to match a registered `rule_definitions` entry. The runtime explicitly allows RuleStats records to live alongside rules whose definition was never registered with the Engine (advisory, per PR47 §39 / PR43-C playbook). Sentinel rule references and advisory/unregistered references are preserved as they are; §52 does not introduce a "rule quality verdict."
+
+Violation label: **RULE_STATS_IDENTITY_INVALID** — applied only to identity tuples whose shape (length / element types / bool elements) is malformed.
+
+---
+
+### §52.5 Counter integrity
+
+`self._next_id[kind]` stores the **last issued ID** for `kind`. The next issued ID is `self._next_id.get(kind, 0) + 1`. A restored counter is admissible when:
+
+```text
+type(self._next_id[kind]) is int
+bool is not admitted (consistent with §51.2)
+self._next_id[kind] >= 0
+self._next_id[kind] >= max(restored ID set for kind, default 0)
+```
+
+The third condition prevents an immediate collision on the next allocation (since the allocator issues `last + 1`).
+
+Sparse IDs are permitted. The contract does not require the restored ID set to be the contiguous range `1 .. last`; it requires only the maximum-bound condition above.
+
+Violation labels:
+
+```text
+COUNTER_TYPE_INVALID     non-int / bool / float / string / None
+COUNTER_VALUE_INVALID    negative integer
+COUNTER_COLLISION_RISK   counter < max(restored ID set for the same kind)
+```
+
+§52 does not introduce silent coercion or clamping:
+
+```text
+"5"  -> 5     forbidden
+5.0  -> 5     forbidden
+True -> 1     forbidden
+None -> 0     forbidden
+```
+
+A `kind` that does not appear in `snapshot["next_id"]` is treated by the runtime as zero (allocator default). §52 does not require an explicit entry for every kind, only that present entries satisfy the conditions above.
+
+---
+
+### §52.6 Claim status linkage to §51
+
+A restored `Claim.status` must satisfy §51.1 / §51.2 / §51.5 unchanged. §52 does not introduce a new admissible status, a new exception type, or any coercion for status. §51 remains the authoritative gate for the four registered status constants.
+
+Cross-reference label: **CLAIM_STATUS_INVALID** (reuses §51).
+
+§52 places the §51 status check inside the conceptual restore integrity pipeline at the same logical stage as the §52.2 reference checks. Implementation order is left to PR67-P03 (see §52.11).
+
+---
+
+### §52.7 Failure semantics
+
+Engine.from_snapshot() must be **fail-fast** on the first detected violation. The contract specifies:
+
+```text
+one violation                 -> one exception
+no partial Engine returned    -> caller never observes an invalid Engine
+no exception aggregation      -> §52 does not introduce a multi-violation
+                                  collection type or a public result object
+no silent warning              -> a violation does not become a logged warning
+```
+
+Exception type policy:
+
+```text
+wrong Python type for a structural slot
+  (e.g. snapshot is not a dict; a collection is not a list /
+   dict where one is required; next_id value is not int)
+  -> TypeError
+
+valid type but broken reference, broken subset, broken index
+  target, broken identity-tuple shape, broken counter relation
+  -> ValueError
+
+unsupported / missing schema_version                    -> ValueError
+                                                            (already established
+                                                             by `_migrate_snapshot_to_current`)
+```
+
+Raw `KeyError` from `dict[...]` lookups inside private restore helpers is **not** part of the §52 contract surface. PR67-P03 must convert lookup misses into the violation classes above before exiting the restore boundary; surfacing a bare `KeyError` to the caller would imply that the snapshot still had a chance of completing, which contradicts §52.7 fail-fast.
+
+§52 does not introduce a new exception class.
+
+---
+
+### §52.8 Validation responsibility
+
+§52 fixes the **final invariant defender** as `Engine.from_snapshot()`. The three candidates considered (PR66-P02 directive §4 decision 1):
+
+```text
+A. consumer-side validator only
+   rejected — bypassable; an Engine call would still admit
+   an invalid snapshot.
+
+B. Engine.from_snapshot() only
+   accepted — no caller can build an invalid Engine through
+   the public API, regardless of whether a consumer validator
+   exists.
+
+C. consumer-side validator + Engine.from_snapshot()
+   permitted as a non-required future expansion; the Engine
+   side remains the authoritative gate.
+```
+
+Consequences:
+
+```text
+- PR67-P03 minimum scope = Engine.from_snapshot() enforcement.
+- A consumer-side detailed validator (e.g. multi-violation report,
+  diagnostic labels) is permitted as a separate later PR but is not
+  required to land with PR67-P03.
+- §52 does not declare a consumer-side validator as a public
+  ragcore symbol.
+- Validator pass-through cannot substitute for Engine acceptance —
+  passing the consumer validator does not imply the Engine will
+  admit the snapshot.
+```
+
+---
+
+### §52.9 Valid migration and round-trip preservation
+
+§52 preserves the existing migration and round-trip semantics. The following must remain true after PR67-P03:
+
+```text
+- schema_version 2 is unchanged.
+- snapshot top-level key set is unchanged (the 18 listed in §52.1).
+- A snapshot at schema_version 1 still migrates to schema_version 2
+  via `_migrate_snapshot_v1_to_v2` exactly as today (PR21-L §33).
+- A valid v2 round-trip (`Engine.from_snapshot(engine.to_snapshot())`)
+  preserves every restored Engine state field bit-for-bit equal to
+  the serialized form.
+- Deterministic serialization is preserved (the `to_snapshot()`
+  ordering / `sorted()` discipline at PR17 §29).
+- Restored `lifecycle_seq`, `Claim.status`, `Claim.base_confidence`,
+  `Evidence.strength`, `Gap.severity`, `RuleStats.*` are preserved
+  without recomputation.
+```
+
+§52 prohibits Rule re-execution, Evidence re-evaluation, lifecycle re-inference, and effective-confidence reinterpretation during restore. The existing PR47 §39 frozen-internal posture is reaffirmed.
+
+§52 does **not** propose schema_version 3 and does not reserve a v2→v3 migration slot.
+
+---
+
+### §52.10 Prohibited automatic repair
+
+PR67-P03 implementation **must not** perform any of the following on a restored snapshot:
+
+```text
+- create a missing Claim, Evidence, Gap, Contradiction, Relation,
+  Entity, or Observation to make a reference resolve
+- delete an orphan reference entry to make the snapshot consistent
+- delete an orphan index entry
+- delete an orphan resolved-contradiction entry
+- delete an orphan gap_resolutions entry
+- coerce a Claim.status into an admissible value
+- coerce "1" / 1.0 / True / False / None into a counter value
+- coerce a non-int collection key into an int
+- clamp a negative counter to 0
+- raise a counter to max(restored ID set) silently
+- reset a counter to zero
+- mutate the input snapshot dict in any way
+- mutate any pre-existing Engine instance owned by the caller
+- run Rule firing during restore
+- re-infer Claim lifecycle from Evidence / Gap state
+- recompute Evidence.strength, Gap.severity, or effective confidence
+- restore only the valid portion of a snapshot and skip the rest
+- replace an exception with a logged warning and return a partial Engine
+```
+
+If a snapshot cannot be restored cleanly, the contract requires an exception. There is no half-success outcome.
+
+---
+
+### §52.11 PR67-P03 entry conditions
+
+PR67-P03 official title:
+
+```text
+Snapshot Restore Integrity Enforcement
+```
+
+Minimum implementation scope:
+
+```text
+Engine.from_snapshot() rejects every §52.2 / §52.3 / §52.4 / §52.5
+/ §52.6 violation before returning, with the §52.7 exception type
+policy. §52.9 valid-path preservation is maintained.
+
+§51 Claim.status admission remains exactly as PR65-P01 ships it.
+```
+
+Prohibited PR67-P03 scope:
+
+```text
+- new snapshot schema_version
+- new top-level snapshot key
+- new ragcore public symbol (no new entry in ragcore.__all__)
+- new public Engine method
+- new private Engine method that exceeds the minimum needed for
+  §52.2 / §52.3 / §52.4 / §52.5 enforcement (count cap measured
+  against current 18)
+- new dependency
+- new exception class
+- domain-specific vocabulary
+- consumer-side validator declared as a framework public API
+- a multi-violation report object
+- silent dependency on `dict.__getitem__` raising bare KeyError
+- lifecycle re-inference, Rule re-execution, Evidence re-evaluation
+- changing the meaning of `Gap.claim_id`, `Evidence.claim_id`,
+  or the contradiction cross-claim freedom established at runtime
+```
+
+Counter integrity (§52.5) is a sub-clause of PR67-P03, not a separate PR. PR67's name remains "Snapshot Restore Integrity Enforcement."
+
+Closing condition for PR67-P03:
+
+```text
+- every §52 invariant has a corresponding failing test prior to
+  implementation, then passes after implementation
+- existing 1270 (or higher, if PR67 lands after later work) tests
+  remain green
+- Engine public methods unchanged at 40
+- ragcore.__all__ unchanged at 48
+- snapshot schema_version unchanged at 2
+- snapshot top-level keys unchanged at 18
+- judgment semantics delta = 0
+```
+
+---
+
+### §52.12 Non-goals
+
+§52 does **not**:
+
+```text
+- change snapshot schema_version
+- change snapshot top-level keys
+- add a public symbol or method
+- add a private Engine method
+- add a dependency
+- introduce a new exception class
+- introduce a runtime change (this PR is doc-only)
+- redefine Claim / Evidence / Gap / Contradiction semantics
+- redefine the contradiction cross-claim freedom
+- redefine the Gap.claim_id "first registering claim" meaning
+- introduce a rule-quality verdict
+- propose schema_version 3
+- replace `_migrate_snapshot_to_current` ValueError behavior
+- replace `ScoreValue.__post_init__` [0.0, 1.0] check
+- introduce a consumer-side validator as a public framework symbol
+- introduce a multi-violation result object
+- enforce additional reference relationships beyond those enumerated
+  in §52.2 ~ §52.5 (e.g. requiring `evidence.claim_id == claim_id`
+  inside `contradictions`)
+- audit `entities`, `observations`, `relations`, or
+  `claim_lifecycle_events` for cross-reference integrity (those
+  collections may be revisited in a separate later PR; they are out
+  of scope for §52)
+```
+
+§52 is closed when these boundaries hold and PR67-P03 enforcement scope is unambiguous from §52.11.
