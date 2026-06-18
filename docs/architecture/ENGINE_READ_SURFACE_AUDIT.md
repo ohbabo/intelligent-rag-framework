@@ -305,7 +305,7 @@ claim summary
   base_confidence                     get_claim(claim_id).base_confidence ✓
   effective_confidence                compute_effective_confidence(...)  ✓
 
-supporting evidence summaries
+evidence summaries (polarity-neutral; see DATA_CONTRACT §53.3)
   per-evidence (id, type, strength)   evidences_for_claim(claim_id)     ✓
   freshness per evidence              evidence_freshness(evidence_id)    ✓ (N+1)
 
@@ -356,8 +356,9 @@ to the Cerberus-side proposal layer (direction_rag_framework_proposal_layer
 Several composite fields require N additional get_* calls per parent claim:
 
 ```text
-supporting evidence summaries  → 1 evidences_for_claim
-                                 + N evidence_freshness
+evidence summaries             → 1 evidences_for_claim
+  (polarity-neutral;             + N evidence_freshness
+   see DATA_CONTRACT §53.3)
 unresolved gaps                 → 1 gaps_for_claim
                                  + N gap_resolution
 active contradictions          → 1 active_contradictions_for_claim
