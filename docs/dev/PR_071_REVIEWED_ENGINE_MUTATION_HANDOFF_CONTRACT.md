@@ -956,9 +956,9 @@ separate mutation class:
 ```
 §14.1   Lifecycle transition separation
         (six _if_ready methods only)
-§14b    Contradiction-resolution separation
+§14.2   Contradiction-resolution separation
         (register_contradiction_resolution; not lifecycle)
-§14c    Gap resolution separation
+§14.3   Gap resolution separation
         (resolve_gaps_for_evidence)
 ```
 
@@ -966,7 +966,7 @@ separate mutation class:
 The initial §7.2 example non-effect `does not resolve every
 Gap` was imprecise. The contract now reads
 `does not itself resolve any Gap` and adds explicit pointers
-to §14b (contradiction resolution) and §14c (Gap resolution),
+to §14.2 (contradiction resolution) and §14.3 (Gap resolution),
 with `resolve_gaps_for_evidence` named as the existing
 state-mutating method that performs Gap resolution.
 
@@ -1051,13 +1051,18 @@ snapshot delta                       0
 233차  cf129e2  docs(architecture): define reviewed Engine
                   mutation handoff
 234차  47b7aa3  docs(dev): record PR71-M02
-235차  <ACTUAL>  docs(architecture): correct reviewed mutation
+235차  cb2006b  docs(architecture): correct reviewed mutation
                   handoff boundaries
+236차  (this commit)  docs(architecture): finalize reviewed
+                       mutation handoff audit
 ```
 
-The 235차 SHA is set after the commit is created and is
-reported in the post-merge measurement (this PR stays draft;
-merge is not part of 235차).
+The 236차 commit performs the final audit cleanup before
+merge: replaces the 235차 placeholder, normalizes the
+§14b / §14c lowercase-suffix subsection headers to the
+repository-standard dot-numbering convention (§14.2 / §14.3),
+and updates all cross-references accordingly. No semantic
+change to the contract.
 
 ### State after 235차
 

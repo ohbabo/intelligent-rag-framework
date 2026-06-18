@@ -184,10 +184,11 @@ Layer 4   explicit invocation of one existing state-mutating
 The boundaries between layers must not be collapsed.
 
 §4 describes the OC-A role-derived path. Lifecycle transitions
-(§14), contradiction-resolution (§14b), and Rule / RuleStats
-(§15) are separately reviewed, separately invoked operations
-whose source-basis contracts M02 does not over-fix; see those
-sections for the per-class admission rules.
+(§14.1), contradiction-resolution (§14.2), Gap resolution
+(§14.3), and Rule / RuleStats (§15) are separately reviewed,
+separately invoked operations whose source-basis contracts M02
+does not over-fix; see those sections for the per-class
+admission rules.
 
 ### §4.1 Layer 1 — RoleAssignment
 
@@ -480,9 +481,9 @@ must also enumerate non-effects such as:
 - does not execute a tool
 - does not update RuleStats
 - does not itself resolve any Gap (Gap resolution requires a
-  separate resolve_gaps_for_evidence candidate, §14c)
+  separate resolve_gaps_for_evidence candidate, §14.3)
 - does not register or resolve any contradiction (those are
-  separate candidates, §14b)
+  separate candidates, §14.2)
 - does not produce a final verdict
 ```
 
@@ -917,7 +918,7 @@ verifies, at minimum:
 §12.3.6  If the operation requires a lifecycle transition or
           a contradiction resolution or a Gap resolution, a
           separate candidate / review / call sequence is
-          followed (§14, §14b), not bundled into a
+          followed (§14.1 / §14.2 / §14.3), not bundled into a
           data-registration candidate.
 ```
 
@@ -970,9 +971,9 @@ register_contradiction success
 Lifecycle transitions occur only when the caller explicitly
 invokes the corresponding `_if_ready` method, separately
 reviewed under §14.1. Contradiction resolution requires a
-separate `register_contradiction_resolution` candidate (§14b).
+separate `register_contradiction_resolution` candidate (§14.2).
 Gap resolution requires a separate `resolve_gaps_for_evidence`
-candidate (§14c).
+candidate (§14.3).
 
 ---
 
@@ -1015,7 +1016,7 @@ transition candidates beyond requiring that the candidate be
 separately inspectable, separately reviewed, separately
 approved, and separately invoked.
 
-## §14b Contradiction-resolution separation
+### §14.2 Contradiction-resolution separation
 
 `register_contradiction_resolution(claim_id, evidence_id)` is a
 **contradiction-resolution mutation**, not a lifecycle
@@ -1041,7 +1042,7 @@ M02 does not over-fix the source-basis contract for
 contradiction-resolution candidates beyond the same separation
 requirement.
 
-## §14c Gap resolution separation
+### §14.3 Gap resolution separation
 
 `resolve_gaps_for_evidence(evidence_id)` is the existing
 state-mutating Engine public method that performs Gap
@@ -1112,9 +1113,9 @@ re-submit it.
 - a lifecycle effect is hidden inside what looks like a data
   registration (§14.1)
 - a contradiction-resolution effect is hidden inside what
-  looks like a data registration (§14b)
+  looks like a data registration (§14.2)
 - a Gap resolution effect is hidden inside what looks like a
-  data registration (§14c)
+  data registration (§14.3)
 - a RuleStats side effect is hidden inside the call (§15)
 ```
 
@@ -1334,8 +1335,8 @@ ingress path:
 
 M02 also fixes the separation principle for:
   lifecycle transitions          (§14.1)
-  contradiction resolution       (§14b)
-  Gap resolution                  (§14c)
+  contradiction resolution       (§14.2)
+  Gap resolution                  (§14.3)
   Rule / RuleStats                (§15)
 without over-fixing their per-class source-basis contracts.
 
