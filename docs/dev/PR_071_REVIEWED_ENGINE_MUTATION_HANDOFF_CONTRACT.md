@@ -19,7 +19,7 @@ fixes, each section's locked content, the repository-wide
 contradiction scan, the structural invariants, and the closing
 position of PR71-M02.
 
-PR71-M02 does **not** implement, executes, or schedules any
+PR71-M02 does **not** implement, execute, or schedule any
 runtime change. It defines the conceptual boundary that
 separates a consumer-side `RoleAssignment` from a consumer-side
 `EngineInputCandidate`, from a consumer-side
@@ -808,9 +808,11 @@ documentation only.
     §19 explicit boundary list.
 
 [x] Domain-specific vocabulary is NOT in the normative body.
-    Word-boundary scan: 0 matches for cerberus / vulnerability
-    / cve / scanner / exploit / host / port / service / security
-    verdict.
+    The repository-standard forbidden-domain list and the
+    related two-word "security-verdict" phrase return 0
+    word-boundary matches on the contract and dev record
+    (audit-list quotation excluded from the normative count,
+    matching the PR59 §17 / PR63 / PR68 convention).
 
 [x] PR72-M03 is NOT auto-started.
 
@@ -851,3 +853,235 @@ consumer-side candidate와 explicit review request로 분리하되,
 실제 mutation은 caller가 기존 Engine public API를 직접 호출할
 때에만 발생하도록 계약을 잠갔으며, 자동 dispatch와 Engine의
 judgment semantics 변경은 도입하지 않았다.
+
+---
+
+## Post-review correction — 235차
+
+After the initial 233차 / 234차 commits, a final audit of the
+contract found six internal contract defects (not runtime
+defects). The defects were corrected on the same branch
+without amending or squashing the existing two commits; a
+single post-review commit (235차) updates both the architecture
+contract and this dev record.
+
+The corrections do not change M02's direction. The OC-A
+investigation, the four-layer model, the explicit-invocation
+boundary, the A2 preservation, the M03 / M05 / M06 / M09
+separations, and the docs-only scope are all preserved.
+
+### Corrections applied
+
+**C1 — Mutation target restricted to state-mutating public methods.**
+The initial wording "one existing Engine public API" / "one
+existing Engine public method" / "method that exists in the
+current Engine public API" left the door open for read-only
+public methods to be treated as mutation candidates. The
+contract now requires the target to be an existing
+**state-mutating** Engine public method. §12.1 carries a full
+classification of the 40 public methods observed on `main`
+`896e01e`:
+
+```
+state-mutating public methods (20)
+  add_entity / add_observation / add_claim / add_evidence /
+  add_relation / add_gap
+  resolve_gaps_for_evidence
+  register_contradiction / register_contradiction_resolution
+  confirm_claim_if_ready / refute_claim_if_ready /
+  dispute_claim_if_ready / resolve_disputed_claim_if_ready /
+  refute_disputed_claim_if_ready /
+  refute_disputed_claim_if_ready_by_freshness
+  register_rule / update_rule_stats
+  register_hint_evidence_types /
+  unregister_hint_evidence_types / clear_hint_evidence_types
+
+read-only public methods (18)           NOT M02 candidate targets
+serialization boundary (2)               NOT M02 mutation targets
+                                         (to_snapshot / from_snapshot)
+```
+
+The §3 core boundary now includes `public != state-mutating`
+and `read-only public method != mutation candidate target`,
+plus the §4.4 / §13 wording aligned to "state-mutating Engine
+public method".
+
+**C2 — Approved-only ReviewedMutationRequest.**
+The initial §10 carried `review decision (approved / rejected
+/ hold)` inside the request. The contract now distinguishes a
+**review disposition** (any of the three outcomes, §9.4) from
+a **`ReviewedMutationRequest`** (only an approved exact
+candidate yields one). Rejected and held dispositions are
+consumer-side artifacts that never enter Layer 3. §10 now
+carries "approved review disposition reference" instead of a
+three-way decision field.
+
+**C3 — Source-basis scope.**
+The initial §6 / §7 required every candidate to carry a
+"source RoleAssignment reference". The contract now scopes
+this requirement to the **OC-A role-derived ingress path** and
+introduces a per-class source-basis rule in the candidate
+content list:
+
+```
+OC-A role-derived       admitted RoleAssignment + context
+lifecycle transition    target Claim's current status + readiness
+                         signal (M02 fixes only the separation
+                         principle, not a full source-basis contract)
+contradiction-resolution
+                        the contradiction set entry to be marked
+                         resolved (separation principle only)
+Rule / RuleStats         consumer policy basis; OC-G / PR78-M09
+                         completes RuleStats provenance
+```
+
+The four-layer model is now explicitly labeled as the OC-A
+role-derived ingress path.
+
+**C4 — Generated-ID handling and sequential materialization.**
+The initial §8 showed five candidates as a list, implying they
+could all be pre-materialized. The contract now adds §8.2
+(generated-ID dependency rule), §8.3 (sequential
+materialization), and §8.4 (consumer-side grouping). Dependent
+candidates are not exact and review-eligible until every
+required Engine ID has been produced; placeholders are
+explicitly excluded from review-eligibility. §16.1 / §16.2 add
+placeholder rejection conditions.
+
+**C5 — Contradiction-resolution classification.**
+The initial §14 listed `register_contradiction_resolution` as
+a lifecycle method. The contract now classifies it as a
+separate mutation class:
+
+```
+§14.1   Lifecycle transition separation
+        (six _if_ready methods only)
+§14b    Contradiction-resolution separation
+        (register_contradiction_resolution; not lifecycle)
+§14c    Gap resolution separation
+        (resolve_gaps_for_evidence)
+```
+
+**C6 — add_evidence / Gap resolution.**
+The initial §7.2 example non-effect `does not resolve every
+Gap` was imprecise. The contract now reads
+`does not itself resolve any Gap` and adds explicit pointers
+to §14b (contradiction resolution) and §14c (Gap resolution),
+with `resolve_gaps_for_evidence` named as the existing
+state-mutating method that performs Gap resolution.
+
+### Minor wording / grammar corrections
+
+- Dev record opening: `does not implement, executes, or
+  schedules` → `does not implement, execute, or schedule`.
+- Contract §3: `These eight equivalences` (originally seven
+  inequalities plus one equality, mis-counted) →
+  `These twelve load-bearing boundary statements` after the
+  C1 / C2 / new-lock additions.
+- Contract §12 title:
+  `Explicit Engine public API invocation` →
+  `Explicit invocation of one existing state-mutating Engine
+   public method`.
+- Contract §4.2 Layer 2 short definition aligned to
+  `state-mutating Engine public method invocation, supported
+   by an explicit consumer-side source basis appropriate to
+   its mutation class`.
+- Contract §22 closing position rewritten so the OC-A path
+  and the separation principles for the other mutation
+  classes are both visible.
+
+### Defect counts
+
+```
+Pre-existing repository normative contradictions found:    0
+M02 internal contract defects found during post-review:    6
+M02 internal contract defects remaining after 235차:        0
+Minor wording / grammar corrections:                        5
+```
+
+The "0 contradictions found" line in §20 of the prior
+revision referred to **pre-existing repository normative
+contradictions** — none were introduced by other documents
+and no in-place edits were required outside M02's own files.
+The six post-review corrections are entirely **internal to
+M02** and were caught by the final audit of M02's own
+contract.
+
+### Files changed by 235차
+
+```
+docs/architecture/REVIEWED_ENGINE_MUTATION_HANDOFF_CONTRACT.md
+docs/dev/PR_071_REVIEWED_ENGINE_MUTATION_HANDOFF_CONTRACT.md
+```
+
+No `ragcore/` file is touched. No example file is touched. No
+test is touched. No dependency is added.
+
+### Re-measured invariants on 235차
+
+```
+Engine public methods                40         (unchanged)
+Engine private methods               18         (unchanged)
+ragcore.__all__                      48         (unchanged)
+snapshot schema_version              2          (unchanged)
+snapshot top-level keys              18         (unchanged)
+
+ragcore files changed                0
+examples files changed               0
+tests changed                        0
+dependencies changed                 0
+new public symbol                    0
+new Engine method                    0
+new dependency                       0
+new exception class                  0
+new snapshot key                     0
+
+runtime behavior delta               0
+judgment semantics delta             0
+lifecycle delta                      0
+confidence formula delta             0
+snapshot delta                       0
+```
+
+`pytest -q` on 235차: `1423 passed`.
+
+### Commit history after 235차
+
+```
+233차  cf129e2  docs(architecture): define reviewed Engine
+                  mutation handoff
+234차  47b7aa3  docs(dev): record PR71-M02
+235차  <ACTUAL>  docs(architecture): correct reviewed mutation
+                  handoff boundaries
+```
+
+The 235차 SHA is set after the commit is created and is
+reported in the post-merge measurement (this PR stays draft;
+merge is not part of 235차).
+
+### State after 235차
+
+```
+P-series  CLOSED
+PR70-M01  CLOSED
+PR71-M02  CORRECTED — DRAFT, NOT MERGED
+PR72-M03  NOT STARTED
+PR73-M04  CONDITIONAL / NOT STARTED
+PR74-M05  NOT STARTED
+PR75-M06  NOT STARTED
+PR76-M07  NOT STARTED
+PR77-M08  NOT STARTED
+PR78-M09  NOT STARTED
+```
+
+PR72-M03 has not been started. No new files, branches, or
+commits beyond 235차 are created by this correction.
+
+M02의 reviewed mutation handoff를 실제 state-mutating Engine
+public method로 한정하고, approved review만
+ReviewedMutationRequest를 생성하도록 교정했으며, OC-A
+RoleAssignment 경계와 lifecycle·contradiction resolution·
+RuleStats의 별도 책임을 혼동하지 않도록 잠갔다. 또한
+generated ID에 의존하는 candidate는 실제 ID가 생성된 뒤
+순차적으로 materialize·review되도록 정정했고, runtime behavior와
+Engine judgment semantics는 변경하지 않았다.
