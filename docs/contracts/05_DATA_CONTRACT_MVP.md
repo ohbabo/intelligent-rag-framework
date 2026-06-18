@@ -14602,3 +14602,796 @@ freshness                           is not a clock.
 describe Evidence, evidences_for_claim, effective_confidence,
 Observation.source_type, and freshness in the precise sense
 locked above.
+
+---
+
+## §54. Rule Reference and Gap Ownership Semantics
+
+### Prologue (locked sentences, 2026-06-18)
+
+```text
+This section is a docs-only semantic alignment.
+
+It does not change runtime behavior, public API, snapshot
+schema, modifier values, the effective-confidence formula,
+the Gap dedup key, the resolution-storage shape, lifecycle
+conditions, or any test.
+
+It locks the meaning of three rule-reference layers and three
+Gap-relation layers so that consumer code, adapter
+documentation, and integration guides do not silently widen
+their semantics.
+
+Rule references:
+
+  1. Stored rule reference
+  2. Registered RuleDefinition
+  3. RuleStats state
+
+Gap relation:
+
+  4. Gap.claim_id  — first-registration provenance
+  5. _claim_gap_refs / claim_gap_refs — Claim-to-Gap membership
+  6. gaps_for_claim — authoritative public read
+
+Top-level locks:
+
+  Stored rule reference  ≠ registered RuleDefinition
+                         ≠ RuleStats state
+                         ≠ rule-quality verdict
+
+  Gap.claim_id           ≠ the only Claim that references the Gap
+
+  Gap resolution         ≠ automatic Claim lifecycle transition
+```
+
+> **§54 records what the current implementation already means; everything below is observable today on `main` `0fae073`.**
+
+§54 builds on PR4 §16 (Gap dedup + `first registering claim`), PR11-D §24 (status modifier composition), PR20-F §32 + PR26-R §38 + PR29-R §41 (rule-stats modifier sentinel + lookup-miss + maturity + precision composition), PR28-O §40 (`(rule_id, rule_version)` joint identity for rule pinning), PR47 §39 (frozen Engine internal posture), PR52 §6 / PR53 (LLM packet / proposal layer boundaries), PR59 §17 (DataAccessProfile axes), §51 / §52 / §53. It is a clarification PR; everything it locks already holds at runtime.
+
+---
+
+### §54.1 Scope
+
+§54 applies to:
+
+```text
+- normative contract documents
+- architecture documents
+- consumer-facing guides
+- new dev records
+```
+
+§54 deliberately does **not** rewrite historical dev records or
+runtime docstrings. The authoritative clarification lives here;
+historical wording is preserved as a snapshot of its own PR.
+
+§54 does **not** introduce a new dataclass, enum, registry,
+public method, validator, migration, range check, sentinel
+constant, or dependency. Every term below already exists in code;
+§54 only states its meaning unambiguously.
+
+---
+
+### §54.2 Stored rule references and registered definitions
+
+Three layers must be kept apart.
+
+#### Layer 1 — Stored rule reference
+
+```text
+- an int (or pair of ints) stored on a Claim, Gap, Relation, or
+  similar record at the time the caller invoked an Engine API
+- caller-supplied; ragcore stores it verbatim
+- existence of the field does NOT prove the caller previously
+  called register_rule()
+- existence of the field does NOT prove that a RuleStats slot
+  exists
+- existence of the field does NOT prove anything about rule
+  quality
+```
+
+#### Layer 2 — Registered RuleDefinition
+
+```text
+- the (rule_id, rule_version) pair currently in
+  self._rule_definitions
+- materialized by Engine.register_rule(definition: RuleDefinition)
+- read via Engine.get_rule(rule_id, rule_version)
+- joint identity: same rule_id with a different rule_version is
+  a separate registered definition (PR28-O §40)
+- duplicate registration raises ValueError (engine.py:1456)
+```
+
+#### Layer 3 — RuleStats state
+
+```text
+- the (rule_id, rule_version) -> RuleStats record currently in
+  self._rule_stats
+- a slot is allocated on register_rule() (engine.py:1461);
+  Engine never auto-creates a slot for an unregistered pair
+- read via Engine.get_rule_stats(rule_id, rule_version)
+- carries firing_count + optional observed_precision +
+  optional false_positive_rate; mutated by update_rule_stats
+- the values are caller-recorded operating statistics, NOT a
+  truth verdict or an absolute quality measurement
+```
+
+#### Locks
+
+```text
+Stored rule reference
+  ≠ registered RuleDefinition
+  ≠ RuleStats state
+
+Reference existence does not imply registry membership.
+Registry membership does not imply rule quality.
+```
+
+---
+
+### §54.3 Claim advisory rule pair
+
+`Claim.created_by_rule` and `Claim.created_by_rule_version` are
+the canonical example of Layer 1.
+
+```text
+Engine.add_claim() admits unregistered pairs.
+The pair is stored on the Claim record verbatim.
+get_rule(pair) raises KeyError if the pair is not registered.
+get_rule_stats(pair) raises KeyError if no stats slot exists.
+```
+
+Observed on `main` `0fae073` (empirical probe):
+
+```text
+add_claim(rule_id=999, rule_version=42)         admitted
+Claim.created_by_rule                            == 999
+Claim.created_by_rule_version                    == 42
+get_rule(999, 42)                                -> KeyError
+get_rule_stats(999, 42)                          -> KeyError
+compute_effective_confidence(claim)              -> 0.5 (neutral
+                                                     under base=0.5)
+```
+
+#### Locks
+
+```text
+Claim stores a rule pair
+  ≠ the pair is registered.
+
+add_claim admission
+  ≠ get_rule lookup success.
+
+An unregistered pair stored on a Claim
+  ≠ invalid Claim.
+  ≠ corrupt snapshot.
+```
+
+`Claim.created_by_rule` and `Claim.created_by_rule_version` are
+advisory provenance; they preserve which `(rule_id, version)` was
+named at admission time without forcing the caller to register
+the definition first.
+
+---
+
+### §54.4 Strict reads and RuleStats lookup miss
+
+Two read APIs are strict and raise `KeyError` on missing pairs:
+
+```text
+Engine.get_rule(rule_id, rule_version)
+Engine.get_rule_stats(rule_id, rule_version)
+```
+
+The modifier helper `_rule_stats_modifier_for_claim`, by
+contrast, treats a missing slot as neutral:
+
+```python
+# engine.py:1625-1631
+claim = self._claims[claim_id]
+if claim.created_by_rule == 0:
+    return 1.0
+key = (claim.created_by_rule, claim.created_by_rule_version)
+stats = self._rule_stats.get(key)
+if stats is None:
+    return 1.0
+```
+
+Two distinct early-return conditions return `1.0`:
+
+```text
+(a) Claim.created_by_rule == 0       (sentinel; §54.6)
+(b) self._rule_stats.get(key) is None (lookup miss)
+```
+
+Both leave the Claim record unchanged and raise no exception.
+
+#### Locks
+
+```text
+Advisory write admission        ≠ strict registry read.
+RuleStats lookup miss            ≠ verified rule.
+RuleStats lookup miss            ≠ invalid Claim.
+rule_stats_modifier == 1.0       ≠ perfect rule quality.
+rule_stats_modifier == 1.0       =  this modifier currently
+                                    applies no attenuation.
+```
+
+A caller MUST NOT interpret `rule_stats_modifier == 1.0` as
+evidence that the rule is trusted, verified, calibrated, or
+correct. PR26-R §38.2 already states "RuleStats modifier is a
+weak maturity signal, not a rule quality verdict"; §54.4 is the
+consumer-facing restatement of that lock.
+
+---
+
+### §54.5 Late rule registration
+
+Registering a rule after Claims that name it have already been
+created does **not** modify any existing Claim record. It does
+change the `_rule_stats` registry state, which changes what
+`_rule_stats_modifier_for_claim` returns for those Claims.
+
+Observed on `main` `0fae073` (empirical probe):
+
+```text
+add_claim(rule_id=7, rule_version=1, base=0.5)
+compute_effective_confidence(claim)              == 0.5
+                                                    (rule_stats
+                                                     modifier 1.0)
+
+register_rule(RuleDefinition(id=7, version=1,
+                              maturity=EXPERIMENTAL,
+                              prior_confidence=0.5))
+                                                 (RuleStats slot
+                                                  initialized with
+                                                  firing_count=0)
+compute_effective_confidence(claim)              == 0.4
+                                                    (rule_stats
+                                                     modifier 0.8
+                                                     under
+                                                     firing_count=0
+                                                     maturity)
+Claim.created_by_rule                            == 7   (unchanged)
+Claim.created_by_rule_version                    == 1   (unchanged)
+```
+
+#### Locks
+
+```text
+Registry-state change
+may affect the current modifier lookup result
+without changing the Claim record.
+```
+
+A caller MUST NOT describe late registration as:
+
+```text
+- Claim provenance was rewritten
+- the Claim was re-attributed to a new rule
+- the Claim base_confidence changed
+- the Claim was re-classified
+- a lifecycle transition fired automatically
+```
+
+§54 does not change the late-registration behavior; it states
+its observable shape unambiguously.
+
+---
+
+### §54.6 `created_by_rule == 0` sentinel scope
+
+The `Claim.created_by_rule == 0` sentinel is the **first**
+early-return branch of `_rule_stats_modifier_for_claim`. It
+returns `1.0` before constructing the `(rule_id, rule_version)`
+key, before consulting `self._rule_stats`, and irrespective of
+the value stored in `Claim.created_by_rule_version`.
+
+```text
+Claim.created_by_rule == 0
+  -> rule_stats_modifier_for_claim returns 1.0
+  -> rule_version value is irrelevant in this branch
+  -> registry lookup is not attempted
+```
+
+The sentinel is **scoped to that modifier helper**. It is not:
+
+```text
+- a framework-wide enum
+- a universal "no rule" marker for every rule_id field
+- a "human-created" classifier
+- an "operator-created" classifier
+- a "trusted Claim" classifier
+- an "untrusted Claim" classifier
+```
+
+Other rule_id-bearing fields (`Gap.created_by_rule`,
+`Relation.rule_id`) carry their own field-specific semantics
+(§54.8). §54 does NOT lift the Claim sentinel into a
+cross-field framework rule.
+
+#### Locks
+
+```text
+Claim.created_by_rule == 0
+is a rule-stats-modifier compatibility sentinel
+under the current policy.
+
+It is not a framework-wide semantic classification
+for every rule_id field.
+
+Claim.created_by_rule == 0
+  ≠ Gap.created_by_rule == 0
+  ≠ Relation.rule_id == 0
+```
+
+§54 does not introduce a `RULE_ID_UNSET` constant, a sentinel
+enum, or a numeric-domain validator. It does not change the
+behavior described above.
+
+---
+
+### §54.7 Rule ID convention vs runtime enforcement
+
+Rule loader and mapping documents may state a numeric convention
+(for example, `1..65535` as mapped values with `0` reserved).
+The current Engine admission path does **not** enforce that
+convention at the public API surface:
+
+```text
+add_claim(rule_id=*, rule_version=*)             admits any int
+add_gap(rule_id=*)                                admits any int
+add_relation(rule_id=*)                           admits any int
+register_rule(RuleDefinition(id=*, version=*))   admits any int
+                                                  except duplicates
+from_snapshot(...)                                admits stored
+                                                  rule references
+                                                  irrespective of
+                                                  registration
+                                                  status (PR67 §52
+                                                  preserves advisory
+                                                  references; see
+                                                  §54.14)
+```
+
+#### Locks
+
+```text
+Loader / mapping convention
+  ≠ Engine admission enforcement.
+```
+
+A document MUST NOT write phrases such as:
+
+```text
+- "Engine rejects rule_id == 0"
+- "Engine validates rule_id in 1..65535"
+- "register_rule is mandatory before add_claim"
+- "Engine refuses unregistered rule pairs"
+```
+
+unless they qualify the statement with the specific code path
+that enforces it.
+
+§54 does **not** add any range check. The decision whether to
+enforce a numeric convention is left to a future PR that names
+this work explicitly; §54 does not schedule it.
+
+---
+
+### §54.8 Claim, Gap, and Relation rule fields
+
+Three different rule-bearing field shapes exist in the codebase:
+
+```text
+Claim.created_by_rule + Claim.created_by_rule_version
+                                  (joint pair; PR28-O §40)
+
+Gap.created_by_rule               (single int; component of
+                                   _gap_dedup_index key)
+
+Relation.rule_id                  (single int; provenance
+                                   metadata)
+```
+
+`Gap.created_by_rule` and `Relation.rule_id` carry no
+`rule_version`. They therefore cannot, by themselves, identify
+a versioned `RuleDefinition` (Layer 2).
+
+#### Locks
+
+```text
+Claim rule pair
+  ≠ Gap.created_by_rule
+  ≠ Relation.rule_id
+
+Same integer value used in different fields
+does NOT imply the framework treats them
+under the same validation / lookup / versioning policy.
+```
+
+A document MUST NOT describe these three fields as a single
+unified abstraction. They share the underlying type `int` and
+the broad notion of "which rule was named when this was
+recorded", but the framework does not provide a single
+validation, registry resolution, or sentinel-scope policy across
+all three.
+
+§54 does not add `rule_version` to `Gap` or `Relation`.
+
+---
+
+### §54.9 `Gap.claim_id` is first-registration provenance
+
+`Gap.claim_id` records the Claim that **first** registered a
+Gap with a given dedup key. After PR4 §16 the field's role was
+explicitly weakened from "the Claim this Gap belongs to" to
+"first registering claim — §16 의미 약화" (see engine.py:1314
+runtime comment + contract line 1314).
+
+#### Locks
+
+```text
+Gap.claim_id is first-registration provenance.
+It is not the complete Claim-to-Gap relation.
+
+Gap.claim_id is NOT:
+  - the exclusive owner of the Gap
+  - the only Claim that references the Gap
+  - the only Claim whose Evidence can resolve the Gap
+  - the only Claim whose lifecycle the Gap affects
+  - the filter predicate of gaps_for_claim(claim_id)
+```
+
+Domain-neutral example:
+
+```text
+Claim A registers Gap G first via
+  add_gap(claim_id=A, gap_type=t, required_evidence_type=e,
+          severity=s, rule_id=r).
+
+G.claim_id == A.
+
+Claim B later reaches the same dedup key
+  (subject_id, rule_id, gap_type, required_evidence_type)
+and calls add_gap. The runtime returns G's gap_id and
+adds G to B's _claim_gap_refs entry.
+
+gaps_for_claim(B) contains G,
+even though G.claim_id is still A.
+```
+
+§54 does not rename, delete, split, or duplicate the
+`claim_id` field on `Gap`. §52 already locks the meaning at the
+restore boundary; §54.9 is the consumer-facing restatement.
+
+---
+
+### §54.10 Claim-to-Gap reference relation
+
+The framework keeps three names for the same underlying relation
+at three different layers:
+
+```text
+_claim_gap_refs              dict[int, set[int]]
+                              Engine-internal source of truth
+                              for Claim -> {Gap ids}.
+                              Private attribute, NOT public API.
+
+"claim_gap_refs"             snapshot top-level key
+                              serialized representation of
+                              _claim_gap_refs; restored verbatim
+                              by from_snapshot.
+
+gaps_for_claim(claim_id)     public read API.
+                              Returns Gap objects whose ids are
+                              in _claim_gap_refs[claim_id],
+                              sorted by Gap.id ascending.
+                              Includes shared / reused Gaps.
+```
+
+#### Locks
+
+```text
+The authoritative public read for Claim-to-Gap membership
+is gaps_for_claim(claim_id).
+
+The authoritative internal relation is _claim_gap_refs,
+NOT Gap.claim_id equality.
+
+_claim_gap_refs is NOT public API.
+claim_gap_refs (snapshot field) is NOT a public mutation surface.
+```
+
+A document MUST NOT describe `_claim_gap_refs` as a cache. It
+is the source of truth; the snapshot field is its serialized
+form. A document MUST NOT propose reconstructing the
+Claim-to-Gap relation from `Gap.claim_id` alone after PR4 §16.
+
+§54 does NOT promote `_claim_gap_refs` or `claim_gap_refs` to
+a public symbol or mutation API.
+
+---
+
+### §54.11 Shared Gap dedup semantics
+
+The dedup key is:
+
+```text
+(subject_id, rule_id, gap_type, required_evidence_type)
+```
+
+The following are deliberately excluded from the key:
+
+```text
+- claim_id        (so different Claims with the same key share)
+- rule_version    (so version pin does not split shared Gaps)
+- severity        (so caller severity differences do not split)
+```
+
+On a dedup hit, `add_gap` returns the existing `gap_id`. The
+existing `Gap.claim_id`, the existing `Gap.severity`, and every
+other field of the stored Gap record remain unchanged. The
+current caller's Claim id is added to `_claim_gap_refs`.
+
+Observed on `main` `0fae073` (empirical probe):
+
+```text
+Claim A:  add_gap(claim_id=A, gap_type=5,
+                  required_evidence_type=42,
+                  severity=0.5, rule_id=1)
+                                                 -> gap_id 1
+                                                    Gap.claim_id == A
+                                                    Gap.severity == 0.5
+
+Claim B:  add_gap(claim_id=B, gap_type=5,
+                  required_evidence_type=42,
+                  severity=0.7, rule_id=1)
+                                                 -> gap_id 1
+                                                    (same gap)
+                                                    Gap.claim_id == A
+                                                    (unchanged)
+                                                    Gap.severity == 0.5
+                                                    (unchanged;
+                                                     first severity
+                                                     kept)
+
+gaps_for_claim(A)                                 -> [Gap(id=1)]
+gaps_for_claim(B)                                 -> [Gap(id=1)]
+```
+
+#### Locks
+
+```text
+Shared Gap          ≠ shared Claim identity.
+Shared Gap          ≠ Claims are equivalent.
+Shared Gap          ≠ Gap.claim_id rewrite.
+Shared Gap          ≠ Gap.severity rewrite.
+Dedup reuse         ≠ new Gap creation.
+Dedup reuse         ≠ Gap.claim_id transfer.
+```
+
+§54 does NOT change the dedup key, the first-severity policy,
+or the dedup hit return shape.
+
+---
+
+### §54.12 Gap-scoped resolution
+
+`_gap_resolutions` stores one entry per resolved Gap:
+
+```text
+_gap_resolutions:    gap_id -> evidence_id
+```
+
+`resolve_gaps_for_evidence(evidence_id)`:
+
+```text
+- restricts its search to gaps_for_claim(evidence.claim_id)
+- matches by gap.required_evidence_type == evidence.type
+- skips Gaps already in _gap_resolutions (first evidence wins)
+- writes _gap_resolutions[gap.id] = evidence.id for newly
+  resolved Gaps
+- returns the gap_ids it just resolved (sorted ascending)
+```
+
+`gap_resolution(gap_id)` returns the resolving `evidence_id`
+(or `None`).
+
+Observed on `main` `0fae073` (empirical probe):
+
+```text
+Claim A registers Gap G first.
+Claim B reuses G via dedup.
+
+Add Evidence ev_A to Claim A with type matching G.
+resolve_gaps_for_evidence(ev_A) writes
+_gap_resolutions[G.id] = ev_A.
+
+Both:
+  gap_resolution(G.id)        -> ev_A   (same value)
+  gaps_for_claim(B) contains G -> True
+  G is observed resolved for both Claim A and Claim B
+
+Unchanged:
+  Evidence(ev_A).claim_id     == A      (NOT re-parented to B)
+  Gap.claim_id                 == A      (first-registering)
+```
+
+#### Locks
+
+```text
+Gap resolution is gap-scoped, not per-Claim.
+
+Resolving a shared Gap does NOT:
+  - change Evidence.claim_id
+  - change Gap.claim_id
+  - create a per-Claim resolution record
+  - overwrite an earlier resolution for the same Gap
+  - reparent Evidence to a different Claim
+  - record resolution history
+```
+
+§54 does NOT introduce a per-Claim resolution shape, a
+resolution history, or an overwrite policy.
+
+---
+
+### §54.13 Lifecycle interaction
+
+`confirm_claim_if_ready(claim_id)` evaluates each Claim's
+readiness conditions independently. Sharing a Gap with another
+Claim means the **same resolution record** is visible to both
+readiness evaluations, but it does NOT transition any Claim
+status without an explicit lifecycle API call.
+
+Observed on `main` `0fae073` (empirical probe):
+
+```text
+Both Claim A and Claim B share Gap G.
+resolve_gaps_for_evidence resolves G via A's Evidence.
+
+Claim A.status                        CANDIDATE (until call)
+Claim B.status                        CANDIDATE (until call)
+
+confirm_claim_if_ready(A)             returns True
+                                       Claim A.status -> CONFIRMED
+confirm_claim_if_ready(B)             returns True
+                                       Claim B.status -> CONFIRMED
+```
+
+The second call still requires an explicit invocation; the
+resolution itself did not transition Claim B.
+
+#### Locks
+
+```text
+Shared resolution
+may satisfy one readiness condition for multiple Claims,
+but lifecycle transition still requires an explicit API call.
+
+Gap resolution
+  ≠ automatic Claim confirmation
+  ≠ automatic lifecycle transition
+```
+
+§54 does NOT introduce an auto-confirmation policy or a
+shared-resolution lifecycle hook.
+
+---
+
+### §54.14 Snapshot and restore implications
+
+PR67-P03 §52 enforces structural cross-reference integrity at
+restore time. §54 records what §52 already enforces, what §52
+does NOT enforce, and the rule-reference invariants implied by
+those choices.
+
+Enforced (per §52.2 / §52.3 / §52.4 / §52.5):
+
+```text
+Evidence.claim_id            ∈ restored Claim ID set
+contradictions               claim_id ∈ Claim set;
+                              evidence_id ⊆ Evidence set
+claim_gap_refs               claim_id ∈ Claim set;
+                              gap_id ⊆ Gap set
+gap_resolutions              gap_id ∈ Gap set;
+                              evidence_id ∈ Evidence set
+gap_dedup_index              target gap_id ∈ Gap set;
+                              key shape = 4 built-in ints
+resolved_contradictions[c]   ⊆ contradictions[c]
+rule_stats key shape         (rule_id, rule_version) int x int
+                              (bool excluded)
+next_id[kind]                type / value / collision relation
+                              (§52.5)
+Claim.status                 §51 admission policy
+```
+
+Explicitly NOT enforced (per §52.4 / §52.10 + §54 confirmation):
+
+```text
+Claim.created_by_rule pair    ∈ _rule_definitions
+                              (advisory; unregistered admitted)
+Gap.created_by_rule            ∈ _rule_definitions
+                              (advisory; unregistered admitted)
+Relation.rule_id               ∈ _rule_definitions
+                              (advisory; unregistered admitted)
+rule_stats key                 ∈ rule_definitions
+                              (advisory; §52.4 explicit lock)
+```
+
+Observed on `main` `0fae073` (empirical probe):
+
+```text
+add_claim(rule_id=999, rule_version=99)         admitted
+to_snapshot() + from_snapshot()                  admitted
+restored.get_claim(...).created_by_rule          == 999
+                                                  (verbatim)
+```
+
+#### Locks
+
+```text
+Restore integrity validates stored reference structure.
+It does NOT silently convert advisory rule references
+into mandatory registry foreign keys.
+```
+
+A document MUST NOT describe a snapshot containing
+unregistered rule references as "corrupt", "invalid", or
+"non-conforming" on rule-registry grounds alone. Such a
+snapshot may still violate other integrity rules (PR65 §51 /
+PR67 §52), but advisory rule references by themselves are not
+a §52 violation.
+
+§54 does NOT introduce a mandatory registry foreign key for
+any rule-bearing field, and does NOT change PR67's enforcement.
+
+---
+
+### §54.15 Non-goals
+
+§54 is documentation alignment only. It does **not**:
+
+```text
+- change any runtime behavior
+- change any modifier value or composition formula
+- change Claim / Gap / Relation / RuleDefinition / RuleStats
+  dataclass shapes
+- change snapshot schema_version or top-level keys
+- add a public ragcore symbol or method
+- add a private Engine method
+- add a new dependency
+- add a new exception class
+- rename created_by_rule / created_by_rule_version /
+  Gap.claim_id / claim_gap_refs / gaps_for_claim /
+  gap_resolutions / register_rule / get_rule / get_rule_stats /
+  _rule_stats_modifier_for_claim
+- introduce a RULE_ID_UNSET constant, sentinel enum, or any
+  numeric-range validator
+- introduce a strict rule foreign key
+- introduce a mandatory register_rule before add_claim
+- add a rule-quality verdict
+- change late-registration behavior
+- change Gap dedup key, dedup hit policy, or first-severity
+  policy
+- change gap-scoped resolution shape or first-evidence-wins
+  policy
+- introduce a per-Claim resolution record or resolution history
+- introduce automatic Claim confirmation on shared-Gap
+  resolution
+- promote _claim_gap_refs or claim_gap_refs to a public API
+- modify ragcore/ source files (runtime docstrings that
+  predate §54 are intentionally preserved; §54 is the
+  authoritative reading)
+- modify tests
+- modify examples Python source
+```
+
+§54 is closed when consumer code, integration documentation, and
+adapter documentation describe stored rule references, the
+RuleDefinition / RuleStats registry, the `created_by_rule == 0`
+sentinel, the three rule field shapes, `Gap.claim_id`, the
+Claim-to-Gap relation, shared Gap dedup, gap-scoped resolution,
+and lifecycle interaction in the precise sense locked above.
