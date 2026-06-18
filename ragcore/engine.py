@@ -105,6 +105,336 @@ def _validate_claim_status_admission(value: object) -> None:
             f"admissible values: {sorted(_VALID_CLAIM_STATUSES)}"
         )
 
+
+# ---- Snapshot restore integrity (PR67-P03 §52) ----
+# Engine 내부 private — public export 안 함.
+# §52 — pre-validate cross-reference, set/index, identity, and counter
+# integrity. Runs after _migrate_snapshot_to_current + §51 status check
+# and before engine state population so a rejected snapshot never
+# produces an observable Engine.
+
+_SNAPSHOT_REQUIRED_KEYS: tuple[str, ...] = (
+    "schema_version", "next_id", "lifecycle_seq",
+    "entities", "observations", "claims", "evidences", "relations", "gaps",
+    "rule_definitions", "rule_stats", "gap_dedup_index",
+    "claim_gap_refs", "gap_resolutions",
+    "contradictions", "resolved_contradictions",
+    "claim_lifecycle_events", "hint_evidence_types",
+)
+
+# Mapping from _allocate_id(kind) name -> snapshot top-level collection
+# whose ID set bounds the counter. See §52.5.
+_COUNTER_KIND_TO_COLLECTION: dict[str, str] = {
+    "entity": "entities",
+    "observation": "observations",
+    "claim": "claims",
+    "evidence": "evidences",
+    "relation": "relations",
+    "gap": "gaps",
+}
+
+
+def _exact_int(value: object) -> bool:
+    """True iff ``value`` is a built-in int and not a bool (§51.2 rule)."""
+    return type(value) is int and not isinstance(value, bool)
+
+
+def _collect_id_set(snapshot: dict, name: str) -> set:
+    """Validate snapshot[name] is a list of {key, value} dicts and return
+    its key set. §52.7 TypeError for structural type mismatch, ValueError
+    for missing 'key'/'value' fields."""
+    items = snapshot[name]
+    if not isinstance(items, list):
+        raise TypeError(
+            f"snapshot[{name!r}] must be a list, got {type(items).__name__}"
+        )
+    ids: set = set()
+    for item in items:
+        if not isinstance(item, dict):
+            raise TypeError(
+                f"snapshot[{name!r}] entry must be a dict, got "
+                f"{type(item).__name__}"
+            )
+        if "key" not in item or "value" not in item:
+            raise ValueError(
+                f"snapshot[{name!r}] entry must carry 'key' and 'value'"
+            )
+        ids.add(item["key"])
+    return ids
+
+
+def _validate_snapshot_restore_integrity(snapshot: dict) -> None:
+    """§52 — fail-fast snapshot restore integrity check.
+
+    Runs after ``_migrate_snapshot_to_current`` (so ``snapshot`` is at
+    the current schema_version) and after the §51 Claim.status admission
+    pass, but before any Engine state is populated.
+
+    Raises:
+        TypeError: structural type violation (snapshot not a dict; a
+            required collection not a list; an item not a dict;
+            gap_dedup_index key not a 4-list of ints; rule_stats key not
+            a 2-list of ints; next_id value not a built-in int).
+        ValueError: broken reference / subset / index target relation,
+            invalid counter value, missing required top-level key, or
+            missing 'key'/'value' inside a collection item.
+
+    Never raises a bare ``KeyError`` from snapshot lookups (§52.7).
+    """
+    if not isinstance(snapshot, dict):
+        raise TypeError(
+            f"snapshot must be a dict, got {type(snapshot).__name__}"
+        )
+    for required in _SNAPSHOT_REQUIRED_KEYS:
+        if required not in snapshot:
+            raise ValueError(
+                f"snapshot is missing required top-level key {required!r}"
+            )
+
+    # §52.1 — build ID sets per kind. Each helper raises TypeError /
+    # ValueError on structural problems before any cross-reference check.
+    claim_ids = _collect_id_set(snapshot, "claims")
+    evidence_ids = _collect_id_set(snapshot, "evidences")
+    gap_ids = _collect_id_set(snapshot, "gaps")
+    entity_ids = _collect_id_set(snapshot, "entities")
+    observation_ids = _collect_id_set(snapshot, "observations")
+    relation_ids = _collect_id_set(snapshot, "relations")
+
+    # §52.2.1 Evidence -> Claim
+    for item in snapshot["evidences"]:
+        value = item["value"]
+        if not isinstance(value, dict) or "claim_id" not in value:
+            raise ValueError(
+                f"Evidence entry {item.get('key')!r} must carry a value "
+                "dict with 'claim_id'"
+            )
+        ev_claim_id = value["claim_id"]
+        if ev_claim_id not in claim_ids:
+            raise ValueError(
+                f"Evidence {item['key']} references unknown Claim "
+                f"{ev_claim_id}"
+            )
+
+    # §52.2.2 Contradiction -> Claim and Evidence
+    contradictions_collection = snapshot["contradictions"]
+    if not isinstance(contradictions_collection, list):
+        raise TypeError(
+            "snapshot['contradictions'] must be a list, got "
+            f"{type(contradictions_collection).__name__}"
+        )
+    contradictions_index: dict = {}
+    for item in contradictions_collection:
+        if not isinstance(item, dict) or "key" not in item or "value" not in item:
+            raise ValueError(
+                "snapshot['contradictions'] entries must carry 'key' and 'value'"
+            )
+        c_claim = item["key"]
+        if c_claim not in claim_ids:
+            raise ValueError(
+                f"contradiction references unknown Claim {c_claim}"
+            )
+        bucket = item["value"]
+        if not isinstance(bucket, (list, set, tuple)):
+            raise TypeError(
+                f"contradiction[{c_claim}] value must be a list/set/tuple, "
+                f"got {type(bucket).__name__}"
+            )
+        for ev_id in bucket:
+            if ev_id not in evidence_ids:
+                raise ValueError(
+                    f"contradiction[{c_claim}] references unknown Evidence "
+                    f"{ev_id}"
+                )
+        contradictions_index[c_claim] = set(bucket)
+
+    # §52.2.3 Claim-gap reference integrity
+    cgr_collection = snapshot["claim_gap_refs"]
+    if not isinstance(cgr_collection, list):
+        raise TypeError(
+            "snapshot['claim_gap_refs'] must be a list, got "
+            f"{type(cgr_collection).__name__}"
+        )
+    for item in cgr_collection:
+        if not isinstance(item, dict) or "key" not in item or "value" not in item:
+            raise ValueError(
+                "snapshot['claim_gap_refs'] entries must carry 'key' and 'value'"
+            )
+        cg_claim = item["key"]
+        if cg_claim not in claim_ids:
+            raise ValueError(
+                f"claim_gap_refs references unknown Claim {cg_claim}"
+            )
+        bucket = item["value"]
+        if not isinstance(bucket, (list, set, tuple)):
+            raise TypeError(
+                f"claim_gap_refs[{cg_claim}] value must be a list/set/tuple, "
+                f"got {type(bucket).__name__}"
+            )
+        for gap_id in bucket:
+            if gap_id not in gap_ids:
+                raise ValueError(
+                    f"claim_gap_refs[{cg_claim}] references unknown Gap "
+                    f"{gap_id}"
+                )
+
+    # §52.2.4 Gap resolution reference integrity
+    resolutions = snapshot["gap_resolutions"]
+    if not isinstance(resolutions, list):
+        raise TypeError(
+            "snapshot['gap_resolutions'] must be a list, got "
+            f"{type(resolutions).__name__}"
+        )
+    for item in resolutions:
+        if not isinstance(item, dict) or "key" not in item or "value" not in item:
+            raise ValueError(
+                "snapshot['gap_resolutions'] entries must carry 'key' and 'value'"
+            )
+        gap_id = item["key"]
+        if gap_id not in gap_ids:
+            raise ValueError(
+                f"gap_resolutions references unknown Gap {gap_id}"
+            )
+        ev_id = item["value"]
+        if ev_id not in evidence_ids:
+            raise ValueError(
+                f"gap_resolutions[{gap_id}] references unknown Evidence "
+                f"{ev_id}"
+            )
+
+    # §52.3.1 Gap dedup index — key 4-tuple shape + target gap_id resolves
+    dedup = snapshot["gap_dedup_index"]
+    if not isinstance(dedup, list):
+        raise TypeError(
+            "snapshot['gap_dedup_index'] must be a list, got "
+            f"{type(dedup).__name__}"
+        )
+    for item in dedup:
+        if not isinstance(item, dict) or "key" not in item or "value" not in item:
+            raise ValueError(
+                "snapshot['gap_dedup_index'] entries must carry 'key' and 'value'"
+            )
+        key = item["key"]
+        if not isinstance(key, list) or len(key) != 4:
+            raise TypeError(
+                "gap_dedup_index key must be a 4-element list, got "
+                f"{key!r}"
+            )
+        for component in key:
+            if not _exact_int(component):
+                raise TypeError(
+                    "gap_dedup_index key component must be a built-in int "
+                    f"(bool excluded), got {type(component).__name__}"
+                )
+        target = item["value"]
+        if target not in gap_ids:
+            raise ValueError(
+                f"gap_dedup_index target references unknown Gap {target}"
+            )
+
+    # §52.3.2 resolved_contradictions ⊆ contradictions[claim_id]
+    resolved = snapshot["resolved_contradictions"]
+    if not isinstance(resolved, list):
+        raise TypeError(
+            "snapshot['resolved_contradictions'] must be a list, got "
+            f"{type(resolved).__name__}"
+        )
+    for item in resolved:
+        if not isinstance(item, dict) or "key" not in item or "value" not in item:
+            raise ValueError(
+                "snapshot['resolved_contradictions'] entries must carry "
+                "'key' and 'value'"
+            )
+        rc_claim = item["key"]
+        if rc_claim not in claim_ids:
+            raise ValueError(
+                f"resolved_contradictions references unknown Claim {rc_claim}"
+            )
+        bucket = item["value"]
+        if not isinstance(bucket, (list, set, tuple)):
+            raise TypeError(
+                f"resolved_contradictions[{rc_claim}] value must be a "
+                f"list/set/tuple, got {type(bucket).__name__}"
+            )
+        if bucket and rc_claim not in contradictions_index:
+            raise ValueError(
+                f"resolved_contradictions[{rc_claim}] has no matching "
+                "contradictions entry"
+            )
+        registered = contradictions_index.get(rc_claim, set())
+        for ev_id in bucket:
+            if ev_id not in registered:
+                raise ValueError(
+                    f"resolved_contradictions[{rc_claim}] includes Evidence "
+                    f"{ev_id} not registered in contradictions"
+                )
+
+    # §52.4 RuleStats identity shape
+    rule_stats = snapshot["rule_stats"]
+    if not isinstance(rule_stats, list):
+        raise TypeError(
+            "snapshot['rule_stats'] must be a list, got "
+            f"{type(rule_stats).__name__}"
+        )
+    for item in rule_stats:
+        if not isinstance(item, dict) or "key" not in item or "value" not in item:
+            raise ValueError(
+                "snapshot['rule_stats'] entries must carry 'key' and 'value'"
+            )
+        key = item["key"]
+        if not isinstance(key, list) or len(key) != 2:
+            raise TypeError(
+                "rule_stats key must be a 2-element list (rule_id, "
+                f"rule_version), got {key!r}"
+            )
+        for component in key:
+            if not _exact_int(component):
+                raise TypeError(
+                    "rule_stats key component must be a built-in int "
+                    f"(bool excluded), got {type(component).__name__}"
+                )
+
+    # §52.5 Counter integrity
+    next_id = snapshot["next_id"]
+    if not isinstance(next_id, dict):
+        raise TypeError(
+            f"snapshot['next_id'] must be a dict, got {type(next_id).__name__}"
+        )
+    kind_to_restored = {
+        "entity": entity_ids,
+        "observation": observation_ids,
+        "claim": claim_ids,
+        "evidence": evidence_ids,
+        "relation": relation_ids,
+        "gap": gap_ids,
+    }
+    for kind, restored_ids in kind_to_restored.items():
+        max_restored = max(restored_ids) if restored_ids else 0
+        if kind in next_id:
+            counter = next_id[kind]
+            if not _exact_int(counter):
+                raise TypeError(
+                    f"next_id[{kind!r}] must be a built-in int (bool "
+                    f"excluded), got {type(counter).__name__}"
+                )
+            if counter < 0:
+                raise ValueError(
+                    f"next_id[{kind!r}] must be >= 0, got {counter}"
+                )
+            if counter < max_restored:
+                raise ValueError(
+                    f"next_id[{kind!r}]={counter} is below max restored "
+                    f"ID {max_restored}; collision risk"
+                )
+        else:
+            # §52.5 — a missing kind is treated as zero; valid only if no
+            # restored IDs exist for that kind.
+            if max_restored > 0:
+                raise ValueError(
+                    f"next_id[{kind!r}] is missing but max restored ID "
+                    f"is {max_restored}; collision risk"
+                )
+
+
 # ---- Freshness modifier (PR11-C §26) ----
 # freshness modifier 의 strength → penalty 가중치.
 # effective = base × status_modifier × (1.0 - most_recent.strength × WEIGHT)
@@ -1628,10 +1958,22 @@ class Engine:
         Raises:
             ValueError: missing or unknown schema_version.
         """
+        # §52.7 — reject non-dict snapshot before the migration helper
+        # touches it (the helper would otherwise raise AttributeError,
+        # which is not part of the §52 contract surface).
+        if not isinstance(snapshot, dict):
+            raise TypeError(
+                f"snapshot must be a dict, got {type(snapshot).__name__}"
+            )
         snapshot = _migrate_snapshot_to_current(snapshot)
+        # §52 — fail-fast cross-reference / set / index / identity /
+        # counter integrity check. Also converts raw-KeyError surfaces
+        # (missing required top-level keys, malformed item shapes) into
+        # the §52.7 contract surface (TypeError / ValueError).
+        _validate_snapshot_restore_integrity(snapshot)
         # §51.4 — reject snapshots whose claim entries carry an invalid
         # status before constructing or populating any Engine state.
-        for _item in snapshot.get("claims", []):
+        for _item in snapshot["claims"]:
             _validate_claim_status_admission(_item["value"]["status"])
         engine = cls()
         engine._next_id = dict(snapshot.get("next_id", {}))
