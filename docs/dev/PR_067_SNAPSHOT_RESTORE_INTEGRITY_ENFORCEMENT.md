@@ -532,6 +532,117 @@ final commit:
 
 ---
 
+## §12.1 Representation-Layer Clarification (post-implementation review)
+
+§52.4 phrases the RuleStats identity as an "identity tuple
+`(rule_id: int, rule_version: int)`" and §52.1 declares
+`self._rule_stats : dict[tuple[int, int], RuleStats]` and
+`self._gap_dedup_index : dict[tuple[int, int, int, int], int]`.
+These describe the **in-memory** shape held by the running Engine.
+
+PR67-P03 validates the **on-disk / JSON-serialized** shape of
+the same identities, because that is what `to_snapshot()`
+actually writes and what `from_snapshot()` actually reads:
+
+```
+_serialize_dict_tuple_dataclass  ->  {"key": list(k), "value": ...}
+_serialize_dict_tuple4_int       ->  {"key": list(k), "value": ...}
+_restore_dict_tuple              ->  tuple(item["key"])
+_restore_dict_tuple4_int         ->  tuple(item["key"])
+```
+
+`list(k)` is how each in-memory `tuple` becomes a JSON-compatible
+representation; `tuple(item["key"])` is how it is reversed on
+restore. The two layers are not redundant — they are the
+in-memory identity (`tuple`) and the serialized identity (`list`)
+of the same logical object.
+
+PR67's `_validate_snapshot_restore_integrity` runs on the
+already-migrated snapshot dict, i.e. the **serialized** layer. It
+therefore checks `isinstance(key, list)` and `len(key) == 4`
+(or `== 2`) and `_exact_int(component)`. After the validator
+passes, the existing `_restore_dict_tuple` / `_restore_dict_tuple4_int`
+helpers re-tuple the keys before they land in `self._rule_stats`
+/ `self._gap_dedup_index`.
+
+Summary:
+
+```
+contract layer  (§52.1 / §52.4)   identity tuple    in-memory
+serialized layer (snapshot dict)   identity list     on-disk / JSON
+validator layer (PR67 §7)          identity list     pre-restore check
+restored layer   (engine = cls())  identity tuple    in-memory again
+```
+
+PR67-P03 does not redefine the identity shape; it validates the
+shape at the layer where `from_snapshot()` reads it.
+
+## §12.2 Required-Key Strength (post-implementation review)
+
+`_SNAPSHOT_REQUIRED_KEYS` lists the 18 top-level keys that the
+current `to_snapshot()` writes. PR67's validator checks **presence
+only**:
+
+```python
+for required in _SNAPSHOT_REQUIRED_KEYS:
+    if required not in snapshot:
+        raise ValueError(...)
+```
+
+It is deliberately **not**:
+
+```python
+if set(snapshot.keys()) != set(_SNAPSHOT_REQUIRED_KEYS):
+    raise ValueError(...)
+```
+
+A caller that hands `from_snapshot()` a snapshot with extra,
+non-framework top-level keys is admitted. The restored Engine
+does not propagate those extras, because each subsequent
+`snapshot[<key>]` reads only the framework-defined keys. §52
+required preservation of the 18-key write shape and validation
+of the required collections; it did not require rejection of
+forward-compatible or consumer-side adjacent metadata. PR67
+matches §52 exactly here.
+
+Empirical probe (post-implementation):
+
+```
+extras admitted:                       True
+restored snapshot top-level key count: 18
+extras propagated to restored engine:  no
+```
+
+## §12.3 ID Key Set Construction (post-implementation review)
+
+`_collect_id_set(snapshot, name)` builds the restored ID set
+with a single line:
+
+```python
+ids.add(item["key"])
+```
+
+It does **not** parse a prefix (no `"claim:"`/`"evidence:"`
+scheme), does **not** parse a numeric suffix, does **not**
+require contiguous IDs, and does **not** require the IDs to be
+of any specific Python type beyond what they were in the
+serialized snapshot. The only constraint PR67 adds at the ID
+boundary is that **references** must match keys already present
+in the same collection (membership check, not type promotion).
+
+Empirical probes (post-implementation):
+
+```
+sparse IDs {1, 7, 13} with next_id["claim"]=13  -> admitted
+realistic v2 round-trip                          -> preserved
+explicit prefix / suffix / parsing rule          -> none
+```
+
+This matches §52.5's "sparse IDs permitted" rule and avoids
+inventing a new ID format contract.
+
+---
+
 ## §13 Closing Position
 
 PR67-P03 is closed when:
