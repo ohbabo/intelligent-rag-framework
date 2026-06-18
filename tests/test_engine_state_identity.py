@@ -586,25 +586,48 @@ class TestReadOnlyDoesNotAdvance:
 
     @pytest.fixture
     def populated(self):
+        """Pre-populate so every read-only method has a valid target.
+
+        PR73-M04 §9 245차 correction — every read-only method must be
+        exercised via its real Engine call against a valid id, not via
+        a placeholder ``lambda: True``. Broad ``except Exception: pass``
+        is intentionally absent: if an unexpected error is raised the
+        test must fail loudly.
+        """
+        from ragcore import KIND_ENTITY, KIND_CLAIM
         e = Engine()
         ent, cid = _build_basic(e)
-        ev = e.add_evidence(claim_id=cid, raw_ref_id=0, evidence_type=42, strength=0.5)
+        obs = e.add_observation(
+            entity_id=ent, raw_ref_id=11, observation_type=2,
+        )
+        ev = e.add_evidence(
+            claim_id=cid, raw_ref_id=0, evidence_type=42, strength=0.5,
+        )
         g = e.add_gap(
             claim_id=cid, gap_type=1, required_evidence_type=42,
             severity=0.5, rule_id=1,
+        )
+        rel = e.add_relation(
+            from_kind=KIND_ENTITY, from_id=ent,
+            to_kind=KIND_CLAIM, to_id=cid,
+            relation_type=3, rule_id=1, reason_code=0,
         )
         e.register_contradiction(cid, ev)
         e.register_rule(RuleDefinition(
             id=7, version=1, maturity=RULE_MATURITY_STABLE,
             prior_confidence=ScoreValue(0.5),
         ))
-        return e, ent, cid, ev, g
+        return e, {
+            "ent": ent, "cid": cid, "obs": obs, "ev": ev,
+            "g": g, "rel": rel,
+        }
 
     @pytest.mark.parametrize("method_call", [
         ("get_entity", lambda e, ids: e.get_entity(ids["ent"])),
-        ("get_observation_via_existence_only", lambda e, ids: True),
+        ("get_observation", lambda e, ids: e.get_observation(ids["obs"])),
         ("get_claim", lambda e, ids: e.get_claim(ids["cid"])),
         ("get_evidence", lambda e, ids: e.get_evidence(ids["ev"])),
+        ("get_relation", lambda e, ids: e.get_relation(ids["rel"])),
         ("get_gap", lambda e, ids: e.get_gap(ids["g"])),
         ("evidences_for_claim", lambda e, ids: e.evidences_for_claim(ids["cid"])),
         ("gaps_for_claim", lambda e, ids: e.gaps_for_claim(ids["cid"])),
@@ -621,14 +644,13 @@ class TestReadOnlyDoesNotAdvance:
         ("state_identity_itself", lambda e, ids: e.state_identity()),
     ])
     def test_read_only_method_does_not_advance(self, populated, method_call):
+        # PR73-M04 §9 245차 correction — no broad except. The fixture
+        # is valid for every parameterized call; an unexpected error
+        # must surface as a test failure, not a silently swallowed pass.
         name, call = method_call
-        e, ent, cid, ev, g = populated
-        ids = {"ent": ent, "cid": cid, "ev": ev, "g": g}
+        e, ids = populated
         before = e.state_identity()
-        try:
-            call(e, ids)
-        except Exception:
-            pass
+        call(e, ids)
         after = e.state_identity()
         assert before == after, f"read-only method {name} advanced revision"
 
@@ -819,3 +841,173 @@ class TestStructuralCounts:
 
     def test_engine_state_identity_in_all(self):
         assert "EngineStateIdentity" in ragcore.__all__
+
+
+# ===========================================================================
+# M. 245차 — C1 failed-allocation partial-mutation correction
+# ===========================================================================
+
+
+class TestFailedAllocationDoesNotConsumeId:
+    """PR73-M04 §3 C1 — invalid ScoreValue must reject BEFORE
+    _allocate_id is called, so a failed call cannot leave _next_id
+    advanced while leaving the identity and snapshot unchanged.
+    """
+
+    def test_invalid_add_claim_base_confidence_raises_value_error(self):
+        e = Engine()
+        ent = e.add_entity(entity_type=1)
+        with pytest.raises(ValueError):
+            e.add_claim(
+                subject_id=ent, claim_type=1, rule_id=1, rule_version=1,
+                reason_code=0, base_confidence=1.5,
+            )
+
+    def test_invalid_add_claim_identity_and_snapshot_unchanged(self):
+        e = Engine()
+        ent = e.add_entity(entity_type=1)
+        identity_before = e.state_identity()
+        snapshot_before = e.to_snapshot()
+        with pytest.raises(ValueError):
+            e.add_claim(
+                subject_id=ent, claim_type=1, rule_id=1, rule_version=1,
+                reason_code=0, base_confidence=1.5,
+            )
+        assert e.state_identity() == identity_before
+        assert e.to_snapshot() == snapshot_before
+
+    def test_invalid_add_claim_does_not_skip_next_claim_id(self):
+        """The next successful add_claim must NOT skip an id —
+        a failed ScoreValue admission cannot consume _next_id."""
+        e = Engine()
+        ent = e.add_entity(entity_type=1)
+        first_cid = e.add_claim(
+            subject_id=ent, claim_type=1, rule_id=1, rule_version=1,
+            reason_code=0, base_confidence=0.5,
+        )
+        with pytest.raises(ValueError):
+            e.add_claim(
+                subject_id=ent, claim_type=1, rule_id=1, rule_version=1,
+                reason_code=0, base_confidence=-0.1,
+            )
+        # Without the C1 fix, _next_id would have advanced inside the
+        # failed call and `second_cid` would be `first_cid + 2`.
+        second_cid = e.add_claim(
+            subject_id=ent, claim_type=1, rule_id=1, rule_version=1,
+            reason_code=0, base_confidence=0.5,
+        )
+        assert second_cid == first_cid + 1
+
+    def test_invalid_add_evidence_strength_raises_value_error(self):
+        e = Engine()
+        ent, cid = _build_basic(e)
+        with pytest.raises(ValueError):
+            e.add_evidence(
+                claim_id=cid, raw_ref_id=0, evidence_type=42,
+                strength=1.5,
+            )
+
+    def test_invalid_add_evidence_identity_and_snapshot_unchanged(self):
+        e = Engine()
+        ent, cid = _build_basic(e)
+        identity_before = e.state_identity()
+        snapshot_before = e.to_snapshot()
+        with pytest.raises(ValueError):
+            e.add_evidence(
+                claim_id=cid, raw_ref_id=0, evidence_type=42,
+                strength=1.5,
+            )
+        assert e.state_identity() == identity_before
+        assert e.to_snapshot() == snapshot_before
+
+    def test_invalid_add_evidence_does_not_skip_next_evidence_id(self):
+        e = Engine()
+        ent, cid = _build_basic(e)
+        first_ev = e.add_evidence(
+            claim_id=cid, raw_ref_id=0, evidence_type=42, strength=0.5,
+        )
+        with pytest.raises(ValueError):
+            e.add_evidence(
+                claim_id=cid, raw_ref_id=0, evidence_type=42,
+                strength=-0.1,
+            )
+        second_ev = e.add_evidence(
+            claim_id=cid, raw_ref_id=0, evidence_type=42, strength=0.5,
+        )
+        assert second_ev == first_ev + 1
+
+
+# ===========================================================================
+# N. 245차 — C5 EngineStateIdentity admission
+# ===========================================================================
+
+
+class TestEngineStateIdentityAdmission:
+    """PR73-M04 §3 C5 — the public value type must reject invalid
+    instances at __post_init__. Wrong type → TypeError; out-of-range
+    value → ValueError.
+    """
+
+    def _make(self, token, revision):
+        return ragcore.EngineStateIdentity(
+            engine_token=token, revision=revision,
+        )
+
+    def test_valid_value_accepted(self):
+        v = self._make("abc", 0)
+        assert v.engine_token == "abc"
+        assert v.revision == 0
+
+    def test_valid_value_with_positive_revision_accepted(self):
+        v = self._make("abc", 7)
+        assert v.revision == 7
+
+    def test_empty_engine_token_rejected(self):
+        with pytest.raises(ValueError):
+            self._make("", 0)
+
+    def test_non_str_engine_token_rejected(self):
+        with pytest.raises(TypeError):
+            self._make(b"abc", 0)
+        with pytest.raises(TypeError):
+            self._make(123, 0)
+        with pytest.raises(TypeError):
+            self._make(None, 0)
+
+    def test_bool_revision_rejected(self):
+        # type(True) is bool, not int — must be rejected even though
+        # `isinstance(True, int)` would be True.
+        with pytest.raises(TypeError):
+            self._make("abc", True)
+        with pytest.raises(TypeError):
+            self._make("abc", False)
+
+    def test_float_revision_rejected(self):
+        with pytest.raises(TypeError):
+            self._make("abc", 0.0)
+        with pytest.raises(TypeError):
+            self._make("abc", 1.5)
+
+    def test_negative_revision_rejected(self):
+        with pytest.raises(ValueError):
+            self._make("abc", -1)
+
+    def test_value_equality_preserved_after_admission(self):
+        a = self._make("abc", 3)
+        b = self._make("abc", 3)
+        c = self._make("abc", 4)
+        d = self._make("xyz", 3)
+        assert a == b
+        assert hash(a) == hash(b)
+        assert a != c
+        assert a != d
+
+    def test_engine_returned_identity_admission_still_passes(self):
+        """The normal Engine path must continue to produce valid
+        EngineStateIdentity values."""
+        e = Engine()
+        v = e.state_identity()
+        assert isinstance(v.engine_token, str)
+        assert v.engine_token != ""
+        assert isinstance(v.revision, int)
+        assert v.revision >= 0

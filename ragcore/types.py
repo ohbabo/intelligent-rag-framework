@@ -189,6 +189,13 @@ class EngineStateIdentity:
     with mutation order **within the same lineage** (same
     ``engine_token``) and undefined across lineages.
 
+    Admission (§1 / §3 C5):
+        - ``engine_token`` must be a built-in ``str`` and non-empty.
+        - ``revision`` must be a built-in ``int`` (``bool`` rejected)
+          and non-negative.
+        - Wrong type raises ``TypeError``; out-of-range value raises
+          ``ValueError``.
+
     See ``docs/architecture/ENGINE_STATE_IDENTITY_PRIMITIVE_CONTRACT.md``
     for the full contract. This value is NOT a truth verdict, NOT a
     lifecycle status, NOT a timestamp, NOT a cryptographic proof, and
@@ -197,3 +204,22 @@ class EngineStateIdentity:
 
     engine_token: str
     revision: int
+
+    def __post_init__(self) -> None:
+        # PR73-M04 §3 C5 — strict admission of the public value type.
+        if type(self.engine_token) is not str:
+            raise TypeError(
+                "engine_token must be a built-in str, "
+                f"got {type(self.engine_token).__name__}"
+            )
+        if not self.engine_token:
+            raise ValueError("engine_token must be non-empty")
+        if type(self.revision) is not int:
+            raise TypeError(
+                "revision must be a built-in int, "
+                f"got {type(self.revision).__name__}"
+            )
+        if self.revision < 0:
+            raise ValueError(
+                f"revision must be non-negative, got {self.revision}"
+            )

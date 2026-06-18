@@ -35,6 +35,10 @@ CAPTURE_BOUND semantics, does **not** stamp PR51 packets,
 does **not** stale-mark stored packets, does **not** modify
 M02, and does **not** open OC-B (PR74-M05).
 
+Any future packet-binding or comparison helper built on top of
+M04 is **separate, explicitly-directed future work, not assigned
+to any of M06-M09 and not automatically scheduled** — see §12.
+
 ---
 
 ## §1 Origin
@@ -48,9 +52,18 @@ declines to introduce the mechanism itself; it only describes
 the boundary the mechanism must respect.
 
 PR73-M04 activates the conditional M04 slot by implementing
-exactly that mechanism — and nothing more. PR74-M05 (operator
-decision plane) and PR75-M06 (CAPTURE_BOUND packet) remain
-NOT STARTED.
+exactly that mechanism — and nothing more. The M01-locked
+M-series plan is preserved unchanged:
+
+```
+PR74-M05  Operator Decision Record / stale revalidation  (OC-B)
+PR75-M06  Downstream Result Re-entry                     (OC-E)
+PR76-M07  Effective Confidence Calculation Trace         (OC-D)
+PR77-M08  Complete Domain-Neutral Reference Operation    (OC-F)
+PR78-M09  RuleStats Update Provenance                    (OC-G)
+```
+
+PR74-M05 ~ PR78-M09 all remain NOT STARTED.
 
 The acceptance criteria stated upfront in the directive:
 
@@ -71,7 +84,9 @@ The acceptance criteria stated upfront in the directive:
 14. failure / no-op / read-only call → revision 불변
 ```
 
-All fourteen are satisfied by the squashed PR.
+All fourteen are met by the branch's four-commit cycle. The PR
+is opened as Draft and has not been merged; closure language is
+deferred until squash merge.
 
 ---
 
@@ -101,7 +116,9 @@ ragcore.__all__:              49 (+ EngineStateIdentity)
 snapshot schema_version:      2 (UNCHANGED)
 snapshot top-level keys:      18 (UNCHANGED, same set)
 PR51 packet keys:             7 (UNCHANGED)
-M-series state:               M01 / M02 / M03 / M04 CLOSED;
+M-series state:               M01 / M02 / M03 CLOSED on main;
+                              M04 OPEN — DRAFT, NOT MERGED
+                                  (this PR);
                               M05 ~ M09 NOT STARTED
 ```
 
@@ -331,8 +348,10 @@ the preceding M-series PRs:
   six status vocab / seven OC tags. PR73-M04 changes none of
   them. The scaffold's status code for OC-C remains UNDEFINED
   at packet binding because PR73-M04 does not introduce
-  CAPTURE_BOUND packet binding (that is PR75-M06 / OC-C
-  closure scope).
+  CAPTURE_BOUND packet binding. Any such wiring would be
+  separate, explicitly-directed future work — it is **not**
+  re-assigned to PR75-M06, which retains its M01-locked scope
+  of Downstream Result Re-entry (OC-E).
 - **PR71-M02 (reviewed mutation handoff)** — RoleAssignment →
   EngineInputCandidate → ReviewedMutationRequest → explicit
   invocation. PR73-M04 does not touch any of the 4 layers and
@@ -350,8 +369,9 @@ In particular:
 - **PR51 packet** remains UNBOUND + UNKNOWN. PR73-M04 does
   **not** add `state_identity` (or anything else) to the packet.
   The packet's 7 keys (`claim`, `effective_confidence`,
-  `evidences`, `contradictions`, `active_contradictions`,
-  `gaps`, `lifecycle_history`) are byte-identical to PR72-M03
+  `supporting_evidence`, `contradictions`,
+  `active_contradictions`, `unresolved_gaps`,
+  `lifecycle_history`) are byte-identical to PR72-M03
   baseline.
 - **§52 validator** is untouched. Snapshot restore integrity
   is not extended to validate any identity field.
@@ -530,18 +550,30 @@ expectations except the seven structural-freeze files listed in
 
 ## §12 Forward boundary
 
-PR73-M04 deliberately leaves the following open for later PRs:
+The M01-locked M-series plan is preserved verbatim. PR73-M04
+does **not** re-assign M06-M09 to identity-mechanism follow-ups.
 
-- **OC-B (operator decision)** — PR74-M05 scope, not started.
-- **OC-C closure (CAPTURE_BOUND packet)** — PR75-M06 scope, not
-  started. PR73-M04 makes the mechanism available; it does not
-  add it to the packet.
-- **CURRENTLY_MATCHED comparison helper** — could be a thin
-  pure-function on top of two `EngineStateIdentity` values; not
-  introduced here.
-- **Stale-determination API** — explicitly forbidden by M03 §10
+```
+PR74-M05  Operator Decision Record / stale revalidation  (OC-B)
+PR75-M06  Downstream Result Re-entry                     (OC-E)
+PR76-M07  Effective Confidence Calculation Trace         (OC-D)
+PR77-M08  Complete Domain-Neutral Reference Operation    (OC-F)
+PR78-M09  RuleStats Update Provenance                    (OC-G)
+```
+
+Items that *may* become explicitly-directed future work on top
+of M04 but are **not** assigned to any M06-M09 slot and **not**
+automatically scheduled:
+
+- A future CAPTURE_BOUND packet binding (OC-C closure) — would
+  wire `state_identity()` into the packet builder under M03 §6
+  conditions. Separate, explicitly-directed future work.
+- A future CURRENTLY_MATCHED comparison helper — could be a
+  thin pure-function on top of two `EngineStateIdentity`
+  values. Separate, explicitly-directed future work.
+- A stale-determination API — explicitly forbidden by M03 §10
   at this stage.
-- **Cross-Engine ordering** — explicitly forbidden by M03 §15.
+- Cross-Engine ordering — explicitly forbidden by M03 §15.
 
 Each of those is reachable from the M04 primitive without
 schema migration. None is reachable from the snapshot, by
@@ -563,16 +595,284 @@ design.
 > introduced here. PR73-M04 stays as small as M03 demands and
 > as additive as the structural-freeze tests require.*
 
-PR73-M04 is opened as **Draft** and is **not** merged. The
-M-series sequence after PR73-M04:
+PR73-M04 is opened as **Draft** and is **not** merged. Closure
+language (`CLOSED`) is reserved for the post-squash-merge state.
+The M-series sequence after PR73-M04:
 
 ```
-PR73-M04   Engine state identity primitive     CLOSED (this PR, Draft)
-PR74-M05   Operator decision plane             NOT STARTED
-PR75-M06   CAPTURE_BOUND packet                 NOT STARTED
-PR76-M07   CURRENTLY_MATCHED comparison         NOT STARTED
-PR77-M08   stale determination boundary         NOT STARTED
-PR78-M09   reserved                              NOT STARTED
+PR73-M04   Engine state identity primitive
+           OPEN — DRAFT, NOT MERGED
+PR74-M05   Operator Decision Record /
+           stale revalidation              (OC-B) NOT STARTED
+PR75-M06   Downstream Result Re-entry      (OC-E) NOT STARTED
+PR76-M07   Effective Confidence Trace      (OC-D) NOT STARTED
+PR77-M08   Complete Domain-Neutral
+           Reference Operation             (OC-F) NOT STARTED
+PR78-M09   RuleStats Update Provenance     (OC-G) NOT STARTED
 ```
 
 No automatic next PR. Framework waits for directive.
+
+---
+
+## §14 Post-review correction — 245차
+
+PR73-M04 is held in Draft for post-review correction. The 245차
+commit `fix(engine): close state identity audit gaps` lands seven
+audit-defect corrections without amending or rebasing 241~244차.
+
+### §14.1 C1 — failed allocation partial mutation
+
+`add_claim` and `add_evidence` previously called `_allocate_id`
+**before** instantiating `ScoreValue`. An invalid score would then
+raise after the id counter had advanced, leaving:
+
+```
+_next_id          advanced
+state revision     unchanged
+to_snapshot        unchanged
+registered object  absent
+```
+
+That violated the §1 contract that *equal `EngineStateIdentity`
+implies equal observable Engine logical state*. Two engines could
+diverge by one id step with no detectable difference at the
+identity surface.
+
+The fix moves `ScoreValue(...)` admission to **before**
+`_allocate_id` in both methods. `add_gap` already had the correct
+order (severity validated before allocate). The remaining four
+allocation paths (`add_entity`, `add_observation`, `add_relation`,
+`register_rule` — though `register_rule` does not allocate) have
+**no** post-allocate validation hazard:
+
+| Method | Constructor admission | Post-allocate hazard |
+|--------|----------------------|----------------------|
+| `add_entity` | none (Entity has no `__post_init__`) | none |
+| `add_observation` | none (Observation has no `__post_init__`) | none |
+| `add_claim` | `ScoreValue(base_confidence)` | **fixed** (validated before allocate) |
+| `add_evidence` | `ScoreValue(strength)` | **fixed** (validated before allocate) |
+| `add_relation` | none (Relation has no `__post_init__`) | none |
+| `add_gap` | `ScoreValue(severity)` | already correct (validated before allocate) |
+
+Validation order for both fixed methods:
+
+```
+add_claim
+  subject existence
+  claim status admission (§51)
+  base_confidence validation (§3 C1)
+  ID allocation
+  Claim storage
+  revision +1 (§2.1)
+
+add_evidence
+  claim existence
+  strength validation (§3 C1)
+  ID allocation
+  Evidence storage
+  revision +1 (§2.1)
+```
+
+Failure invariants enforced by `TestFailedAllocationDoesNotConsumeId`:
+
+- `state_identity()` unchanged
+- `to_snapshot()` unchanged
+- next successful add_claim / add_evidence call does **not** skip
+  an id (consecutive integer allocation preserved)
+
+### §14.2 C2 — M-series responsibility drift
+
+Earlier drafts of the dev record and PR body re-assigned M06-M09
+to identity-mechanism follow-ups
+(`CAPTURE_BOUND packet` / `CURRENTLY_MATCHED comparison` /
+`stale determination` / `reserved`). The 245차 correction restores
+the M01-locked plan:
+
+```
+PR74-M05  Operator Decision Record / stale revalidation  (OC-B)
+PR75-M06  Downstream Result Re-entry                     (OC-E)
+PR76-M07  Effective Confidence Calculation Trace         (OC-D)
+PR77-M08  Complete Domain-Neutral Reference Operation    (OC-F)
+PR78-M09  RuleStats Update Provenance                    (OC-G)
+```
+
+Any future packet binding or comparison helper built on M04 is
+**separate, explicitly-directed future work, not assigned to any
+M06-M09 slot, and not automatically scheduled**. See §12.
+
+### §14.3 C3 — `_claim_gap_refs` index wording
+
+§2.2 of the contract previously wrote
+`_claim_gap_refs[gap_id]` for the "current Claim already
+references this Gap" branch. The actual structure is
+`claim_id -> set[gap_id]`, so the correct membership check is
+`gap_id in _claim_gap_refs[claim_id]`. The contract wording is
+updated; the runtime code was already correct and is unchanged.
+
+### §14.4 C4 — M02 / M03 post-M04 addenda
+
+`ENGINE_READ_CONSISTENCY_CONTRACT.md` (M03) and
+`REVIEWED_ENGINE_MUTATION_HANDOFF_CONTRACT.md` (M02) gain post-M04
+addenda (M03 §19 / M02 §23). The historical M03 §1-§18 baseline
+investigation and M02 §1-§22 four-layer model are preserved
+verbatim.
+
+M03 §19 records:
+
+```
+- M03 baseline state had no mechanized Engine state identity.
+- After PR73-M04 merges, EngineStateIdentity and
+  state_identity() exist.
+- That mechanism alone does NOT lift PR51 packets out of
+  UNBOUND + UNKNOWN.
+- The current PR51 packet remains UNBOUND + UNKNOWN.
+- Atomic capture (§6) and packet binding (§8) are NOT provided
+  by PR73-M04.
+- CURRENTLY_MATCHED (§9), STALE (§10), and stale-rejection
+  policy remain out of scope.
+```
+
+M02 §23 records the post-M04 public surface count
+(20 state-mutating / 19 read-only / 2 serialization = 41 total)
+without overwriting the §12.1 historical baseline of 40 methods
+on `main` `896e01e`. `state_identity` is classified explicitly as
+**read-only / NOT a M02 mutation candidate target / NOT eligible
+to appear in a ReviewedMutationRequest / NOT instrumented to
+advance the revision**.
+
+### §14.5 C5 — `EngineStateIdentity` strict admission
+
+The public value type previously accepted any (token, revision)
+pair a caller chose to construct. The 245차 fix adds a strict
+`__post_init__` admission:
+
+```
+engine_token:
+  type(value) is str           — wrong type → TypeError
+  len(value) > 0                — empty token → ValueError
+
+revision:
+  type(value) is int            — wrong type → TypeError (bool
+                                   rejected even though
+                                   isinstance(True, int) is True)
+  value >= 0                    — negative → ValueError
+```
+
+`Engine.state_identity()` continues to return admissible values
+under the normal Engine path. `TestEngineStateIdentityAdmission`
+covers the nine admission branches plus the
+Engine-returned-value sanity check.
+
+### §14.6 C6 — Draft state wording
+
+References to `M04 CLOSED`, `CLOSED (this PR, Draft)`, and
+"All fourteen are satisfied by the squashed PR" are replaced
+with the Draft-only state:
+
+```
+PR73-M04   OPEN — DRAFT, NOT MERGED
+```
+
+`CLOSED` is reserved for the post-squash-merge state.
+
+### §14.7 C7 — PR51 packet key names
+
+§7 previously listed the packet's 7 keys as
+`(claim, effective_confidence, evidences, contradictions,
+active_contradictions, gaps, lifecycle_history)`. The actual
+keys emitted by `examples/inspector/engine_inspector.py` are:
+
+```
+claim
+effective_confidence
+supporting_evidence
+contradictions
+active_contradictions
+unresolved_gaps
+lifecycle_history
+```
+
+The packet runtime code and shape are unchanged. Only the dev
+record's listing is corrected to match.
+
+### §14.8 Test surface adjustment
+
+The `TestReadOnlyDoesNotAdvance` parameterization previously
+contained one placeholder entry
+(`("get_observation_via_existence_only", lambda ...: True)`)
+that did not exercise `get_observation`. The 245차 fix:
+
+- enlarges the fixture to also create an `Observation`, a
+  `Relation`, and a `Rule` so every read-only method has a
+  valid target id;
+- replaces the placeholder with a real `get_observation(...)`
+  call;
+- adds a real `get_relation(...)` call (previously absent);
+- removes the broad `except Exception: pass` swallow — a valid
+  fixture must let unexpected errors surface as test failures.
+
+Read-only coverage after 245차: all 19 post-M04 read-only public
+methods (18 baseline + `state_identity`) exercised via real
+calls in the parameterization.
+
+### §14.9 Invariants after 245차
+
+```
+Engine public methods            41   (unchanged from 243차)
+Engine private methods           19   (unchanged from 243차)
+state-mutating public methods    20   (unchanged set; instrumented)
+read-only public methods         19   (real-call coverage now 19/19)
+serialization boundary            2   (unchanged set)
+ragcore.__all__                  49   (unchanged from 243차)
+snapshot schema_version           2   (unchanged)
+snapshot top-level keys          18   (unchanged set)
+PR51 packet keys                  7   (unchanged set, names corrected
+                                       in dev record only)
+tests                          1517   (1501 prior + 16 in 245차:
+                                       6 C1 regression + 9 C5
+                                       admission + 1 get_relation
+                                       parameterization)
+```
+
+Behavioral deltas remain 0 across all ten invariant categories
+of §9.2.
+
+Two intended runtime additions:
+
+```
+- invalid Claim / Evidence score no longer consumes an ID
+- invalid public EngineStateIdentity construction is rejected
+```
+
+Both are admission tightening at the boundary, not judgment
+semantics change.
+
+### §14.10 245차 file footprint
+
+```
+ragcore/engine.py          + C1 validation order fix in
+                              add_claim and add_evidence
+ragcore/types.py           + EngineStateIdentity.__post_init__
+                              strict admission
+tests/test_engine_state_identity.py
+                            + TestFailedAllocationDoesNotConsumeId
+                              (6 tests)
+                            + TestEngineStateIdentityAdmission
+                              (9 tests)
+                            + read-only parameterization fix
+                              (placeholder removed, get_relation
+                              added, broad except removed)
+docs/architecture/ENGINE_STATE_IDENTITY_PRIMITIVE_CONTRACT.md
+                            + §2.2 _claim_gap_refs wording fix
+docs/architecture/ENGINE_READ_CONSISTENCY_CONTRACT.md
+                            + §19 Post-M04 addendum
+docs/architecture/REVIEWED_ENGINE_MUTATION_HANDOFF_CONTRACT.md
+                            + §23 Post-M04 public surface addendum
+docs/dev/PR_073_ENGINE_STATE_IDENTITY_PRIMITIVE_MVP.md
+                            + §14 (this section)
+                            + C2 / C6 / C7 in §1 / §7 / §12 / §13
+```
+
+No `examples/*` file is touched. No `pyproject.toml` change. No
+other test file's expectations are changed.

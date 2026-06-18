@@ -799,6 +799,10 @@ class Engine:
             raise KeyError(f"unknown subject_id (entity): {subject_id}")
         # §51.3 — reject invalid status before any state mutation.
         _validate_claim_status_admission(status)
+        # PR73-M04 §3 C1 — validate base_confidence BEFORE allocating an
+        # id so a failed ScoreValue admission cannot consume _next_id
+        # while leaving the revision and snapshot unchanged.
+        validated_base_confidence = ScoreValue(base_confidence)
         claim_id = self._allocate_id("claim")
         self._claims[claim_id] = Claim(
             id=claim_id,
@@ -808,7 +812,7 @@ class Engine:
             created_by_rule=rule_id,
             created_by_rule_version=rule_version,
             reason_code=reason_code,
-            base_confidence=ScoreValue(base_confidence),
+            base_confidence=validated_base_confidence,
             flags=flags,
         )
         self._advance_state_revision()  # PR73-M04 §2.1
@@ -842,13 +846,17 @@ class Engine:
             KeyError: unknown claim_id.
         """
         self._assert_claim_exists(claim_id)
+        # PR73-M04 §3 C1 — validate strength BEFORE allocating an id so
+        # a failed ScoreValue admission cannot consume _next_id while
+        # leaving the revision and snapshot unchanged.
+        validated_strength = ScoreValue(strength)
         evidence_id = self._allocate_id("evidence")
         self._evidences[evidence_id] = Evidence(
             id=evidence_id,
             claim_id=claim_id,
             raw_ref_id=raw_ref_id,
             type=evidence_type,
-            strength=ScoreValue(strength),
+            strength=validated_strength,
         )
         self._advance_state_revision()  # PR73-M04 §2.1
         return evidence_id

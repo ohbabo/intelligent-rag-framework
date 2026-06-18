@@ -143,8 +143,8 @@ add_gap
   dedup miss (new Gap created)                      -> +1
   dedup hit + current Claim references the Gap for
     the first time                                  -> +1
-  dedup hit + current Claim already in
-    _claim_gap_refs[gap_id]                         -> +0
+  dedup hit + current Claim already has
+    gap_id in _claim_gap_refs[claim_id]             -> +0
   validation error                                  -> +0
 ```
 
