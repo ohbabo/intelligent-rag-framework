@@ -14137,3 +14137,468 @@ Closing condition for PR67-P03:
 ```
 
 §52 is closed when these boundaries hold and PR67-P03 enforcement scope is unambiguous from §52.11.
+
+---
+
+## §53. Evidence, Confidence, Source, and Freshness Terminology
+
+### Prologue (locked sentences, 2026-06-18)
+
+```text
+This section is a docs-only terminology alignment.
+
+It does not change runtime behavior, public API, snapshot
+schema, modifier values, the effective-confidence formula, or
+any test.
+
+It locks how five existing terms must be described going
+forward so that consumer code and integration documentation do
+not silently widen their semantics.
+
+The five terms are:
+
+  1. Evidence (and its three representation layers)
+  2. evidences_for_claim (polarity neutrality)
+  3. effective_confidence (non-probabilistic policy signal)
+  4. Observation.source_type vs PR59 SourceType
+  5. freshness (evidence-registration order, not wall-clock age)
+```
+
+> **§53 records what the current implementation actually means, not what its terms could be misread as.**
+
+§53 builds on PR65-P01 §51 (Claim.status admission), PR59 §17 (DataAccessProfile axes; SourceType registry boundary), PR11-A §25 (freshness signal), and PR11-D §24 (status modifier inside effective confidence). It is a clarification PR; everything it locks already holds at runtime.
+
+---
+
+### §53.1 Scope
+
+§53 applies to:
+
+```text
+- normative contract documents
+- architecture documents
+- consumer-facing guides
+- new dev records
+```
+
+§53 deliberately does **not** rewrite historical dev records or
+runtime docstrings. Existing dev records describe state at the
+time of their PR; their wording is preserved as a historical
+artifact even where it predates §53 phrasing. The authoritative
+clarification lives here.
+
+§53 does **not** introduce a new dataclass, enum, registry,
+public method, validator, or migration. The terms below are
+already present in code; §53 only states their meaning
+unambiguously.
+
+---
+
+### §53.2 Evidence representation layers
+
+The word **"Evidence"** carries three layered meanings in the
+codebase and surrounding documentation. They must not be
+collapsed into a single thing.
+
+#### Layer 1 — External raw item
+
+```text
+- something that arrives from outside the framework boundary
+  (a document, a log record, a tool output, an API response,
+   an operator note)
+- has no ragcore identity
+- is not yet a candidate for any Engine API call
+- has no polarity, no Engine truth standing, and no automatic
+  link to any Claim
+- carries whatever shape the adapter or consumer chooses;
+  ragcore does not own this shape
+```
+
+#### Layer 2 — Consumer-side interpreted item
+
+```text
+- the result of an adapter, role-assignment, or consumer policy
+  reading a Layer 1 item in a specific context
+- may be a candidate for an Engine API call, but is not yet a
+  ragcore.Evidence
+- consumer validators (e.g. PR62 role-assignment validator) may
+  reject this object structurally without ragcore ever seeing it
+- passing a consumer validator is NOT equivalent to passing
+  Engine acceptance (PR57 §3)
+```
+
+#### Layer 3 — ragcore.Evidence
+
+```text
+- the dataclass declared in ragcore.types and stored in
+  Engine._evidences after add_evidence()
+- carries (id, claim_id, raw_ref_id, type, strength)
+- has no polarity field
+- being registered does NOT mean the surrounding Claim is
+  confirmed, refuted, supported, or contradicted; lifecycle
+  transitions still require explicit Engine API calls
+- the same evidence_id may simultaneously be present in
+  evidences_for_claim and in contradictions_for_claim
+  (PR19 §31)
+```
+
+#### Locks
+
+```text
+External raw item
+  ≠ Consumer-side interpreted item
+  ≠ ragcore.Evidence
+
+Adapter output     is not ragcore.Evidence.
+Role assignment    is not ragcore.Evidence.
+Validator pass     is not ragcore.Evidence registration.
+Operator acceptance is not ragcore.Evidence registration.
+```
+
+A Layer 1 or Layer 2 object becomes a Layer 3 ragcore.Evidence
+only when a caller explicitly invokes the existing Engine API
+(`add_evidence`). §53 does not introduce any other promotion
+path.
+
+§53 introduces no new conceptual type (no `ExternalRawItem`,
+`InterpretedEvidence`, or `EngineEvidenceCandidate` dataclass
+or enum). The three names above are descriptive vocabulary for
+this section only.
+
+---
+
+### §53.3 `evidences_for_claim` polarity neutrality
+
+`Engine.evidences_for_claim(claim_id)` returns every
+`ragcore.Evidence` record whose `claim_id` field equals the
+argument, in insertion order. The return is polarity-neutral:
+
+```text
+A returned Evidence is NOT automatically:
+  - supporting evidence
+  - refuting evidence
+  - confirming evidence
+  - contradicting evidence
+  - positive evidence
+  - negative evidence
+
+Evidence existence
+  ≠ support
+  ≠ refutation
+  ≠ polarity verdict
+
+Evidence linked to a Claim
+  ≠ that the Claim is supported by it
+  ≠ that the Claim is contradicted by it
+```
+
+Whether an Evidence is in a contradiction relation is a
+separate, explicit registration done via `register_contradiction`
+(PR9 §19). The contradiction set lives in `self._contradictions`
+and is read via `contradictions_for_claim` /
+`active_contradictions_for_claim` /
+`active_contradictions_by_freshness`. The same `evidence_id`
+may legally appear in `evidences_for_claim` AND in the
+contradiction set for the same Claim — these are different
+read views of overlapping records, not opposing categories.
+
+#### Lock
+
+```text
+evidences_for_claim     returns Evidence records linked to claim_id.
+                        The return carries no polarity.
+
+contradiction relation  is a separately-registered relation,
+                        not a property of the Evidence object.
+```
+
+#### Non-goals (§53.3)
+
+```text
+- no rename of evidences_for_claim
+- no new polarity field on Evidence
+- no support / refute / positive / negative enum
+- no contradiction inference from evidences_for_claim alone
+- no change to insertion-order return semantics
+```
+
+#### Historical phrasing
+
+The runtime docstring on `Engine.evidences_for_claim`
+(`ragcore/engine.py`) currently uses the word "supporting" in
+its summary line. The docstring is a historical artifact and is
+NOT changed by §53 (§12 of the PR68-P04 directive forbids
+edits to `ragcore/`). The authoritative reading is §53.3 above;
+when a consumer reads the docstring, "supporting" must be
+interpreted in the polarity-neutral sense defined here.
+
+A separate later PR may align the runtime docstring with §53.3
+if and when the runtime-edit ban is lifted; §53 explicitly does
+not schedule that work.
+
+---
+
+### §53.4 `effective_confidence` is a policy signal, not a probability
+
+`Engine.compute_effective_confidence(claim_id)` returns a
+`ScoreValue` in `[0.0, 1.0]`. The composition is the existing
+formula:
+
+```text
+effective = base
+          × status_modifier         (PR11-D §24)
+          × freshness_modifier      (PR11-C §26)
+          × gap_modifier            (PR12-D §28, PR23-M §35)
+          × count_modifier          (PR19-E §31, PR24-N §36)
+          × rule_stats_modifier     (PR20-F §32, PR26-R §38)
+          × evidence_type_modifier  (PR21-L §33)
+```
+
+The return value is a **policy-composed confidence signal**. It
+is NOT:
+
+```text
+- a probability that the Claim is true
+- a probability that the Claim is false
+- a Bayesian posterior
+- a frequentist likelihood
+- an empirical truth rate
+- a calibrated probability of any kind
+- a model certainty
+- a human certainty
+- an absolute risk number
+```
+
+`effective_confidence` = 0.8 does NOT mean the Claim is "80%
+likely to be true". It means: under the current Engine state
+and the current modifier policy, the composition formula
+yields 0.8.
+
+`base_confidence`, `observed_precision`, `false_positive_rate`,
+RuleStats fields, and Evidence `strength` are likewise NOT
+truth probabilities. They are caller-supplied or
+policy-composed signals that flow into the formula above.
+
+#### Lock
+
+```text
+effective_confidence            policy-composed score (0.0..1.0)
+                                that exposes current Engine state
+                                under the current modifier policy.
+
+effective_confidence            is NOT a probability of truth.
+                                It is NOT calibrated.
+                                Threshold comparisons are
+                                policy decisions, not statistical
+                                tests.
+```
+
+#### Forbidden phrasings (consumer report / LLM prompt)
+
+```text
+- "X% likely to be true"
+- "truth probability"
+- "P(true) = X"
+- "verified probability"
+- "calibrated certainty"
+- "objective confidence"
+- "real probability"
+- "accuracy probability"
+```
+
+PR44-D AP-CF-1 / AP-X-4 already flag these as anti-patterns at
+the LLM packet boundary; §53.4 generalizes the rule to every
+document that references `effective_confidence` outside the LLM
+packet context.
+
+#### Non-goals (§53.4)
+
+```text
+- no new calibration step
+- no change to any modifier value
+- no change to the composition formula
+- no threshold proposal
+- no probability conversion function
+```
+
+---
+
+### §53.5 `Observation.source_type` and PR59 `SourceType` are distinct
+
+Two names coexist in the codebase:
+
+```text
+ragcore.types.Observation.source_type   (int, default 0)
+PR59 SourceType                          (conceptual axis,
+                                          DataAccessProfile)
+```
+
+They are **not** the same concept and §53 does not introduce
+any bridging map between them.
+
+#### `Observation.source_type`
+
+```text
+- field on the Observation dataclass
+- declared as `source_type: int = 0`
+- caller-supplied integer; ragcore does not enumerate values
+- written via add_observation(...) source_type=...
+- persisted in the snapshot under "observations"
+- ragcore does not validate the value beyond it being an int
+```
+
+#### PR59 `SourceType`
+
+```text
+- conceptual axis defined in
+    docs/architecture/DATA_ACCESS_PROFILE_CONTRACT.md §6
+- one of the six independent DataAccessProfile axes
+- answers "Where did this data come from?" at a policy level
+- illustrative examples include "api", "tool", "file", "log",
+  "operator", "engine", "retrieval_system", "external_system"
+- NOT a ragcore registry, enum, or stored field
+- NOT a caller-domain integer
+- describes provenance for consumer-side policy decisions; it
+  does not grant semantic authority (per §6 lock)
+```
+
+#### Lock
+
+```text
+Observation.source_type
+  is a caller-domain integer field on the ragcore.Observation
+  dataclass.
+
+PR59 SourceType
+  is a conceptual axis in the consumer-side DataAccessProfile
+  contract.
+
+They are not aliases.
+They do not share a registry.
+ragcore does not provide an automatic mapping between them.
+A consumer may define an adapter mapping in its own code; if
+it does, that mapping is consumer-owned and does not become
+part of the framework.
+```
+
+A document MUST NOT write phrases such as:
+
+```text
+- "Observation.source_type is the PR59 SourceType integer"
+- "PR59 SourceType is the enum behind source_type"
+- "source_type and SourceType share a registry"
+- "ragcore translates source_type to SourceType"
+```
+
+#### Non-goals (§53.5)
+
+```text
+- no SourceType enum added to ragcore
+- no source-type registry added to ragcore
+- no automatic mapping function
+- no change to Observation.source_type field type or default
+- no snapshot migration
+- no PR59 §6 illustrative list changed
+```
+
+---
+
+### §53.6 Freshness is evidence-registration order, not wall-clock age
+
+`Engine.evidence_freshness(evidence_id)` returns `evidence.id`
+itself (PR11-A §25.3). The runtime docstring states:
+
+```text
+freshness = evidence.id (PR1 _next_id 기반 등록 순서).
+더 큰 값일수록 더 최근 등록.
+wall-clock 안 봄 (PR10-A / PR10-B 정신 일관). engine-local 의미만
+가짐 (cross-engine 비교 무의미).
+```
+
+§53.6 lifts the same semantics into a normative, English
+clarification.
+
+```text
+freshness                          evidence ingestion order,
+                                    measured as the integer
+                                    evidence_id allocated by
+                                    Engine._allocate_id("evidence").
+                                    Larger value = registered
+                                    later in this Engine.
+
+freshness                          is NOT:
+                                    - a wall-clock timestamp
+                                    - the system clock
+                                    - a UTC instant
+                                    - file or document mtime
+                                    - observation occurrence time
+                                    - elapsed real time
+                                    - real-time staleness
+                                    - TTL
+                                    - expiration
+```
+
+`active_contradictions_by_freshness(claim_id)` returns active
+contradicting `evidence_id`s ordered by descending freshness
+(most recent ingestion first). This ordering is engine-local;
+two Engines that ingested the same evidence in different orders
+will produce different freshness orderings, and the result is
+not comparable across Engine instances.
+
+#### Lock
+
+```text
+freshness                          ingestion-order signal
+                                    derived from evidence_id.
+
+"freshness-aware" method            ingestion-order-aware under
+                                    the current policy.
+
+freshness                           is not a clock.
+                                    is not a timestamp.
+                                    is not a TTL.
+                                    is not a real-time signal.
+```
+
+#### Non-goals (§53.6)
+
+```text
+- no timestamp added to Evidence
+- no datetime added to any dataclass
+- no TTL or expiration introduced
+- no wall-clock dependency in any modifier
+- no freshness algorithm change
+- no _FRESHNESS_PENALTY_WEIGHT change
+- no new freshness API
+```
+
+---
+
+### §53.7 Non-goals (cross-section)
+
+§53 is documentation alignment only. It does **not**:
+
+```text
+- change any runtime behavior
+- change any modifier value
+- change the effective-confidence formula
+- change Evidence / Claim / Observation dataclass shapes
+- change snapshot schema_version or top-level keys
+- add a public ragcore symbol or method
+- add a new dependency
+- add a new exception class
+- rename evidences_for_claim, compute_effective_confidence,
+  evidence_freshness, source_type, or any other public symbol
+- modify ragcore/ source files (the runtime docstring on
+  evidences_for_claim is intentionally preserved as a
+  historical artifact; §53.3 is the authoritative reading)
+- modify tests
+- modify examples Python source
+- introduce a new dataclass or enum
+- merge concerns from PR69-P05 (rule reference / shared gap)
+```
+
+§53 is closed when consumer code and integration documentation
+describe Evidence, evidences_for_claim, effective_confidence,
+Observation.source_type, and freshness in the precise sense
+locked above.

@@ -113,7 +113,7 @@ Subject to PR49 policy, the *read surface* of the Engine may be opened in a cont
 
 ```text
 - claim summary (current status, base_confidence, effective_confidence)
-- supporting evidence summaries (id, type, strength, freshness)
+- evidence summaries (id, type, strength, freshness) — polarity-neutral, per DATA_CONTRACT §53.3
 - unresolved gaps (id, type, required_evidence_type, severity)
 - active and resolved contradictions
 - claim lifecycle history (PR10-B §23 audit trail)
