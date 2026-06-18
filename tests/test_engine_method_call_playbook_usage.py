@@ -297,16 +297,18 @@ class TestPlaybookGuards:
         assert "fire_rule" not in engine_public
 
     def test_engine_public_method_surface_is_40(self) -> None:
+        # PR73-M04 shift: 40 → 41 (added state_identity).
         public_methods = [
             name
             for name in dir(Engine)
             if not name.startswith("_") and callable(getattr(Engine, name))
         ]
-        assert len(public_methods) == 40
+        assert len(public_methods) == 41
 
     def test_ragcore_all_remains_48_symbols(self) -> None:
-        assert len(ragcore.__all__) == 48
-        assert len(set(ragcore.__all__)) == 48
+        # PR73-M04 shift: 48 → 49 (added EngineStateIdentity).
+        assert len(ragcore.__all__) == 49
+        assert len(set(ragcore.__all__)) == 49
 
     def test_translation_function_is_not_identity(self) -> None:
         # Mirrors PR41 §50.9 / §50.10 invariant in the playbook context.

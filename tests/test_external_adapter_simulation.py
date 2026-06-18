@@ -716,14 +716,16 @@ class TestExternalAdapterGenericInvariants:
             assert 0.0 <= score.value <= 1.0
 
     def test_engine_method_surface_remains_frozen(self) -> None:
-        # PR36-PKG _LOCKED_PUBLIC_METHODS still 40, unchanged by these tests.
+        # PR36-PKG _LOCKED_PUBLIC_METHODS was 40; PR73-M04 added
+        # state_identity → 41.
         import inspect
         public_methods = sum(
             1 for n, _ in inspect.getmembers(Engine, callable)
             if not n.startswith("_")
         )
-        assert public_methods == 40
+        assert public_methods == 41
 
     def test_ragcore_all_remains_48_symbols(self) -> None:
-        assert len(ragcore.__all__) == 48
-        assert len(set(ragcore.__all__)) == 48
+        # PR73-M04 shift: 48 → 49 (added EngineStateIdentity).
+        assert len(ragcore.__all__) == 49
+        assert len(set(ragcore.__all__)) == 49

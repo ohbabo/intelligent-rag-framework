@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import asdict, replace
 from typing import Any
+from uuid import uuid4
 
 from ragcore.types import (
     CLAIM_STATUS_CANDIDATE,
@@ -23,6 +24,7 @@ from ragcore.types import (
     KIND_RELATION,
     Claim,
     ClaimLifecycleEvent,
+    EngineStateIdentity,
     Entity,
     Evidence,
     Gap,
@@ -616,11 +618,46 @@ class Engine:
         # framework 는 Evidence.type 정수 의미를 소유하지 않는다 — caller 가
         # register_hint_evidence_types 로 등록한 set 만 modifier 계산에 사용.
         self._hint_evidence_types: set[int] = set()
+        # PR73-M04 §1.1 / §4.1 / §4.2 — per-Engine opaque lineage token + a
+        # completed-mutation revision counter. NOT persisted to snapshot
+        # (§5); a fresh lineage is allocated on Engine() and on
+        # from_snapshot() (§4.4). Public surface: state_identity().
+        self._state_identity_token: str = uuid4().hex
+        self._state_revision: int = 0
 
     def _allocate_id(self, kind: str) -> int:
         next_id = self._next_id.get(kind, 0) + 1
         self._next_id[kind] = next_id
         return next_id
+
+    def _advance_state_revision(self) -> None:
+        """PR73-M04 §2 — advance the completed-mutation revision counter.
+
+        Called from each state-mutating public method **once** at the
+        end of its success path (after the underlying state write).
+        Never called from a documented no-op or failure path. Read-only
+        public methods (including state_identity itself) never call it.
+        """
+        self._state_revision += 1
+
+    def state_identity(self) -> EngineStateIdentity:
+        """PR73-M04 §1.2 — return the current Engine state identity.
+
+        Read-only. Does not mutate Engine state and does not advance
+        ``revision``. The returned value carries this Engine's
+        process-local lineage token and the count of completed logical
+        state changes that have happened within that lineage.
+
+        Comparison is by value equality. The token is opaque; only
+        equality is meaningful for callers. Ordered comparison of
+        ``revision`` is consistent with mutation order within the same
+        lineage and undefined across lineages. See
+        ``docs/architecture/ENGINE_STATE_IDENTITY_PRIMITIVE_CONTRACT.md``.
+        """
+        return EngineStateIdentity(
+            engine_token=self._state_identity_token,
+            revision=self._state_revision,
+        )
 
     def _storage_for_kind(self, kind: int) -> dict[int, object]:
         mapping: dict[int, dict[int, object]] = {
@@ -689,6 +726,7 @@ class Engine:
         """
         entity_id = self._allocate_id("entity")
         self._entities[entity_id] = Entity(id=entity_id, type=entity_type, flags=flags)
+        self._advance_state_revision()  # PR73-M04 §2.1
         return entity_id
 
     def get_entity(self, entity_id: int) -> Entity:
@@ -723,6 +761,7 @@ class Engine:
             type=observation_type,
             source_type=source_type,
         )
+        self._advance_state_revision()  # PR73-M04 §2.1
         return obs_id
 
     def get_observation(self, observation_id: int) -> Observation:
@@ -772,6 +811,7 @@ class Engine:
             base_confidence=ScoreValue(base_confidence),
             flags=flags,
         )
+        self._advance_state_revision()  # PR73-M04 §2.1
         return claim_id
 
     def get_claim(self, claim_id: int) -> Claim:
@@ -810,6 +850,7 @@ class Engine:
             type=evidence_type,
             strength=ScoreValue(strength),
         )
+        self._advance_state_revision()  # PR73-M04 §2.1
         return evidence_id
 
     def get_evidence(self, evidence_id: int) -> Evidence:
@@ -874,6 +915,7 @@ class Engine:
             rule_id=rule_id,
             reason_code=reason_code,
         )
+        self._advance_state_revision()  # PR73-M04 §2.1
         return relation_id
 
     def get_relation(self, relation_id: int) -> Relation:
@@ -925,7 +967,12 @@ class Engine:
 
         if key in self._gap_dedup_index:
             existing_gap_id = self._gap_dedup_index[key]
-            self._claim_gap_refs.setdefault(claim_id, set()).add(existing_gap_id)
+            # PR73-M04 §2.2 — dedup hit advances revision only when
+            # the current Claim's _claim_gap_refs entry actually changes.
+            refs = self._claim_gap_refs.setdefault(claim_id, set())
+            if existing_gap_id not in refs:
+                refs.add(existing_gap_id)
+                self._advance_state_revision()
             return existing_gap_id
 
         gap_id = self._allocate_id("gap")
@@ -939,6 +986,7 @@ class Engine:
         )
         self._gap_dedup_index[key] = gap_id
         self._claim_gap_refs.setdefault(claim_id, set()).add(gap_id)
+        self._advance_state_revision()  # PR73-M04 §2.2 (dedup miss)
         return gap_id
 
     def get_gap(self, gap_id: int) -> Gap:
@@ -992,6 +1040,8 @@ class Engine:
             self._gap_resolutions[gap.id] = evidence_id
             newly_resolved.append(gap.id)
         newly_resolved.sort()
+        if newly_resolved:
+            self._advance_state_revision()  # PR73-M04 §2.3
         return tuple(newly_resolved)
 
     def gap_resolution(self, gap_id: int) -> int | None:
@@ -1044,6 +1094,7 @@ class Engine:
         self._record_claim_lifecycle_transition(
             claim_id, old_status, CLAIM_STATUS_CONFIRMED, "confirm_if_ready",
         )
+        self._advance_state_revision()  # PR73-M04 §2.4
         return True
 
     # ---- Claim refutation (PR7 §19) ---------------------------------------
@@ -1070,6 +1121,7 @@ class Engine:
         if evidence_id in bucket:
             return False
         bucket.add(evidence_id)
+        self._advance_state_revision()  # PR73-M04 §2.3
         return True
 
     def contradictions_for_claim(self, claim_id: int) -> tuple[int, ...]:
@@ -1113,6 +1165,7 @@ class Engine:
         self._record_claim_lifecycle_transition(
             claim_id, old_status, CLAIM_STATUS_REFUTED, "refute_if_ready",
         )
+        self._advance_state_revision()  # PR73-M04 §2.4
         return True
 
     # ---- Disputed lifecycle (PR8 §20) -------------------------------------
@@ -1148,6 +1201,7 @@ class Engine:
         self._record_claim_lifecycle_transition(
             claim_id, old_status, CLAIM_STATUS_DISPUTED, "dispute_if_ready",
         )
+        self._advance_state_revision()  # PR73-M04 §2.4
         return True
 
     # ---- Disputed resolution (PR9-A §21) ----------------------------------
@@ -1183,6 +1237,7 @@ class Engine:
         if evidence_id in resolved:
             return False
         resolved.add(evidence_id)
+        self._advance_state_revision()  # PR73-M04 §2.3
         return True
 
     def resolved_contradictions_for_claim(self, claim_id: int) -> tuple[int, ...]:
@@ -1242,6 +1297,7 @@ class Engine:
         self._record_claim_lifecycle_transition(
             claim_id, old_status, CLAIM_STATUS_CONFIRMED, "resolve_disputed_if_ready",
         )
+        self._advance_state_revision()  # PR73-M04 §2.4
         return True
 
     # ---- Disputed refutation (PR10-A §22) ---------------------------------
@@ -1286,6 +1342,7 @@ class Engine:
                     claim_id, old_status, CLAIM_STATUS_REFUTED,
                     "refute_disputed_if_ready",
                 )
+                self._advance_state_revision()  # PR73-M04 §2.4
                 return True
         return False
 
@@ -1435,6 +1492,7 @@ class Engine:
                 claim_id, old_status, CLAIM_STATUS_REFUTED,
                 "refute_disputed_by_freshness_if_ready",
             )
+            self._advance_state_revision()  # PR73-M04 §2.4
             return True
         return False
 
@@ -1461,6 +1519,7 @@ class Engine:
         self._rule_stats[key] = RuleStats(
             rule_id=definition.id, rule_version=definition.version
         )
+        self._advance_state_revision()  # PR73-M04 §2.1
 
     def get_rule(self, rule_id: int, rule_version: int) -> RuleDefinition:
         """Return the RuleDefinition for the ``(rule_id, rule_version)`` pair.
@@ -1705,9 +1764,12 @@ class Engine:
             TypeError: input 이 str/bytes 컨테이너이거나, element 가 int 가
                 아닌 경우 (bool 포함). partial mutation 발생하지 않음.
         """
-        self._hint_evidence_types.update(
-            self._validate_hint_evidence_type_values(types)
-        )
+        validated = self._validate_hint_evidence_type_values(types)
+        # PR73-M04 §2.5 — advance only on actual set growth.
+        before_size = len(self._hint_evidence_types)
+        self._hint_evidence_types.update(validated)
+        if len(self._hint_evidence_types) != before_size:
+            self._advance_state_revision()
 
     def unregister_hint_evidence_types(self, types: Iterable[int]) -> None:
         """PR25-T §37 — register 의 역연산 (set difference).
@@ -1725,9 +1787,12 @@ class Engine:
         Raises:
             TypeError: register 와 동일한 strict validation. partial mutation 없음.
         """
-        self._hint_evidence_types.difference_update(
-            self._validate_hint_evidence_type_values(types)
-        )
+        validated = self._validate_hint_evidence_type_values(types)
+        # PR73-M04 §2.5 — advance only on actual set shrink.
+        before_size = len(self._hint_evidence_types)
+        self._hint_evidence_types.difference_update(validated)
+        if len(self._hint_evidence_types) != before_size:
+            self._advance_state_revision()
 
     def clear_hint_evidence_types(self) -> None:
         """PR25-T §37 — hint evidence type set 초기화.
@@ -1742,7 +1807,10 @@ class Engine:
         clear 후 첫 호출 시 `if not self._hint_evidence_types: return 1.0`
         가드 (PR21-L Sub-decision AE) 가 자연 적용되어 modifier 1.0.
         """
-        self._hint_evidence_types.clear()
+        # PR73-M04 §2.5 — advance only if set was non-empty.
+        if self._hint_evidence_types:
+            self._hint_evidence_types.clear()
+            self._advance_state_revision()
 
     def _evidence_type_modifier_for_claim(self, claim_id: int) -> float:
         """PR21-L §33 — weak source-quality signal (NOT truth verdict).
@@ -1887,7 +1955,7 @@ class Engine:
         self._assert_rule_stats_pair_exists(rule_id, rule_version)
         key = (rule_id, rule_version)
         current = self._rule_stats[key]
-        self._rule_stats[key] = RuleStats(
+        new_stats = RuleStats(
             rule_id=current.rule_id,
             rule_version=current.rule_version,
             firing_count=current.firing_count + firing_delta,
@@ -1904,6 +1972,11 @@ class Engine:
                 else current.false_positive_rate
             ),
         )
+        self._rule_stats[key] = new_stats
+        # PR73-M04 §2.6 — advance only if RuleStats value actually changed.
+        # RuleStats is a frozen dataclass; value equality is well-defined.
+        if new_stats != current:
+            self._advance_state_revision()
 
     # ============================================================================
     # Region K  —  Snapshot serialize / restore (on Engine)

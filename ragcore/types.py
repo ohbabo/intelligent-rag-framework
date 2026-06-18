@@ -174,3 +174,26 @@ class ClaimLifecycleEvent:
     from_status: int
     to_status: int
     transition: str
+
+
+@dataclass(frozen=True)
+class EngineStateIdentity:
+    """PR73-M04 — opaque per-Engine identity for read-consistency checks.
+
+    Pairs a process-local lineage token with a per-lineage
+    completed-mutation revision counter.
+
+    Supported comparison is value equality. ``engine_token`` is not
+    interpreted, sorted, or pattern-matched by callers; only equality
+    is meaningful. Ordered comparison of ``revision`` is consistent
+    with mutation order **within the same lineage** (same
+    ``engine_token``) and undefined across lineages.
+
+    See ``docs/architecture/ENGINE_STATE_IDENTITY_PRIMITIVE_CONTRACT.md``
+    for the full contract. This value is NOT a truth verdict, NOT a
+    lifecycle status, NOT a timestamp, NOT a cryptographic proof, and
+    NOT a transaction identifier.
+    """
+
+    engine_token: str
+    revision: int

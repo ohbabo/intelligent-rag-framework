@@ -38,6 +38,7 @@ from ragcore.types import (
     RULE_MATURITY_STABLE,
     Claim,
     ClaimLifecycleEvent,
+    EngineStateIdentity,
     Entity,
     Evidence,
     Gap,
@@ -48,7 +49,7 @@ from ragcore.types import (
     ScoreValue,
 )
 
-# Public API surface — 48 symbols, grouped by purpose (§45.5).
+# Public API surface — 49 symbols, grouped by purpose (§45.5 + PR73-M04).
 # Order is documentation, not behavior: tests use frozenset equality.
 __all__ = [
     # Lifecycle status enum (4) — §18 / §42.2 / §43.3-5
@@ -72,9 +73,11 @@ __all__ = [
     "TRACE_REASON_MISMATCH",
     "TRACE_REASON_MISSING_FIELD",
     "TRACE_REASON_TYPE_MISMATCH",
-    # Core dataclasses (7) — §11~§16, §23 lifecycle event
+    # Core dataclasses (8) — §11~§16, §23 lifecycle event,
+    # PR73-M04 Engine state identity
     "Claim",
     "ClaimLifecycleEvent",
+    "EngineStateIdentity",
     "Entity",
     "Evidence",
     "Gap",
