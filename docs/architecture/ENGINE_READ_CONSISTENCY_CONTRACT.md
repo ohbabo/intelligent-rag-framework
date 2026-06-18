@@ -120,17 +120,20 @@ examples/inspector/engine_inspector.py:49
   def build_engine_context_packet(engine: Engine, claim_id: int)
                                     -> dict[str, Any]:
 
-  Reads (in order):
-    engine.get_claim(claim_id)
-    engine.compute_effective_confidence(claim_id)
-    engine.evidences_for_claim(claim_id)
-    engine.contradictions_for_claim(claim_id)
-    engine.active_contradictions_for_claim(claim_id)
-    engine.gaps_for_claim(claim_id)
-    engine.gap_resolution(gap.id)              [N times — one
+  Reads (in order; 7 + N sequential public read calls total):
+    1   engine.get_claim(claim_id)
+    2   engine.compute_effective_confidence(claim_id)
+    3   engine.evidences_for_claim(claim_id)
+    4   engine.contradictions_for_claim(claim_id)
+    5   engine.active_contradictions_for_claim(claim_id)
+    6   engine.gaps_for_claim(claim_id)
+    N   engine.gap_resolution(gap.id)          [N times — one
                                                  per gap returned
                                                  by gaps_for_claim]
-    engine.claim_lifecycle_history(claim_id)
+    7   engine.claim_lifecycle_history(claim_id)
+
+  The packet's seven keys (§13.1) and the seven + N read calls
+  are independent counts; one does not imply the other.
 
   Returns a plain dict with exactly seven keys:
     "claim"
@@ -228,11 +231,14 @@ Twelve load-bearing boundary statements:
 
 ```
 snapshot schema_version          != Engine state revision
-snapshot schema_version          != state instance identity
+snapshot schema_version          != Engine state identity
 snapshot schema_version          != packet revision
 snapshot schema_version          != capture token
 snapshot schema_version          != confidence policy revision
-snapshot instance identity        != packet identity
+snapshot schema validity          != identity of the logical
+                                     Engine state represented
+                                     by the snapshot
+Engine state identity             != packet identity
 packet identity                   != source Engine state identity
 sequential reads                  != atomic capture
 capture-time consistency          != use-time freshness
@@ -250,7 +256,15 @@ Every other section of this contract refines one of these.
 
 ## §4 Identity separation
 
-Four identity concepts must not be collapsed.
+Three identity concepts and one temporal consistency
+distinction must not be collapsed:
+
+```
+§4.1   snapshot schema identity
+§4.2   Engine state identity
+§4.3   packet identity
+§4.4   capture-time vs use-time consistency distinction
+```
 
 ### §4.1 Snapshot schema identity
 
@@ -264,7 +278,7 @@ v2 serialized shape". It says nothing about which Engine state
 instance produced the snapshot.
 
 ```
-schema_version       != state instance identity
+schema_version       != Engine state identity
 schema_version       != Engine state revision
 schema_version       != packet revision
 schema_version       != capture token
@@ -276,7 +290,7 @@ Two Engines that differ in claim count, lifecycle history,
 RuleStats, or any other state field still produce snapshots
 that report `schema_version == 2`.
 
-### §4.2 Engine state instance identity
+### §4.2 Engine state identity
 
 ```
 A way to determine whether two reads originated from the same
@@ -325,9 +339,16 @@ use-time consistency
     capture time
 ```
 
-The two are independent. A consistent capture can become
-stale; a stale packet can still pass a non-state-aware
-structural validator.
+Capture-time consistency and use-time consistency are
+distinct and must not be treated as interchangeable. They are
+not unconditionally independent either: a valid use-time
+consistency claim requires a valid capture-bound basis, so
+the use-time axis presupposes the capture axis.
+
+A consistent capture can become stale; a stale packet can
+still pass a non-state-aware structural validator. A packet
+that lacks a capture-bound basis admits no mechanical
+use-time consistency claim at all (§7.2 / §7.3).
 
 ---
 
@@ -383,21 +404,20 @@ consumer interpretation of the packet."
 
 ### §5.5 Empirical classification of today's packet
 
-Under the conceptual claim levels defined in §7, today's PR51
-packet sits at:
+Under the two-axis vocabulary of §7, today's PR51 packet sits
+at the combination:
 
 ```
-UNBOUND   (default classification)
-
-or
-
-UNKNOWN   (when a consumer wishes to discuss staleness
-            without any comparison basis)
+binding status:                UNBOUND
+use-time comparison status:    UNKNOWN  (mechanically unavailable)
 ```
 
-Neither `CAPTURE_BOUND`, `CURRENTLY_MATCHED`, nor `STALE` can
-be claimed for today's packet without infrastructure that the
-repository does not provide.
+This is one of the four valid combinations enumerated at
+§7.3. Because the binding status is UNBOUND, the use-time
+comparison status is mechanically UNKNOWN by §7.3:
+`CURRENTLY_MATCHED` and `STALE` both require CAPTURE_BOUND as
+a prerequisite, and the repository provides no infrastructure
+that would lift today's packet out of UNBOUND.
 
 ---
 
@@ -407,7 +427,7 @@ repository does not provide.
 "Sequential public read calls" is not "atomic capture".
 ```
 
-The current `build_engine_context_packet` issues 6 + N
+The current `build_engine_context_packet` issues 7 + N
 sequential public read calls (§2.1). A document MUST NOT
 describe that sequence as atomic, transactional, or
 state-bound on the basis of any of:
@@ -447,45 +467,68 @@ must not be made.
 
 ---
 
-## §7 Conceptual consistency claim levels
+## §7 Conceptual consistency vocabulary — two independent axes
 
 The following names are **conceptual vocabulary** used by this
-document to talk about packet-to-state binding. They are
-**not** a runtime enum, not a `ragcore` symbol, not a packet
-field value, not a snapshot value, not a lifecycle status.
+document to talk about a packet's relationship to its source
+Engine state. They are organized as **two independent axes**:
+a binding axis and a use-time comparison axis.
+
+A document MUST NOT collapse the two axes into a single
+five-level list, and MUST NOT lift these strings into a
+runtime field name, an enum value, a packet field value, a
+snapshot value, or a lifecycle status.
+
+### §7.1 Binding axis
 
 ```
 UNBOUND
-  The packet carries no source-state comparison basis at all.
-  The packet may have been produced from any Engine state.
-  Today's PR51 packet is UNBOUND by default.
+  The packet has no source-state identity binding at all.
+  No comparison basis is recorded with the packet.
 
 CAPTURE_BOUND
-  The packet is connected to one source-state identity. The
+  The packet is bound to one source-state identity through a
+  capture that satisfies the §8 minimum requirements. The
   binding establishes the capture-time consistency basis.
-  Use-time identity has not been re-checked.
-
-CURRENTLY_MATCHED
-  At use time, the packet's capture identity has been
-  compared against the current Engine state identity and
-  found equal. This level holds only at the moment of the
-  comparison.
-
-STALE
-  At use time, the packet's capture identity has been
-  compared against the current Engine state identity and
-  found different.
-
-UNKNOWN
-  The information or procedure required to perform the
-  comparison is not available. Today's PR51 packet falls
-  here whenever a consumer wants to talk about staleness
-  without infrastructure.
 ```
 
-A document MUST NOT lift these strings into a runtime field
-name, an enum value, or a snapshot value. They exist only as
-discussion vocabulary for the rest of this contract.
+### §7.2 Use-time comparison axis
+
+```
+UNKNOWN
+  No valid current comparison result is available — either
+  because no capture identity exists (UNBOUND), or because
+  no current comparison has been performed, or because a
+  prior comparison's validity moment (§9.3) has elapsed.
+
+CURRENTLY_MATCHED
+  A valid use-time comparison has just found the packet's
+  capture identity equal to the current Engine state
+  identity.
+
+STALE
+  A valid use-time comparison has just found the packet's
+  capture identity different from the current Engine state
+  identity.
+```
+
+### §7.3 Valid and invalid combinations
+
+```
+Valid:
+  UNBOUND        + UNKNOWN
+  CAPTURE_BOUND  + UNKNOWN
+  CAPTURE_BOUND  + CURRENTLY_MATCHED
+  CAPTURE_BOUND  + STALE
+
+Invalid (CURRENTLY_MATCHED / STALE require CAPTURE_BOUND):
+  UNBOUND        + CURRENTLY_MATCHED
+  UNBOUND        + STALE
+```
+
+A `CURRENTLY_MATCHED` or `STALE` claim requires CAPTURE_BOUND
+as a prerequisite; an `UNBOUND` packet cannot be mechanically
+classified as CURRENTLY_MATCHED or STALE.
 
 ---
 
@@ -554,14 +597,34 @@ Beyond the `CAPTURE_BOUND` requirements (§8), a
         against that current identity using the comparison
         rule of §8.4 and obtains "same state".
 
-§9.3   The claim is scoped to that moment. Re-using a
-        `CURRENTLY_MATCHED` claim after a later mutation is
-        equivalent to dropping back to `UNKNOWN`.
+§9.3   The CURRENTLY_MATCHED comparison result is scoped to
+        the comparison moment. After that moment the
+        comparison result has expired, even if no mutation
+        has been observed. An expired comparison result
+        leaves the packet's binding status unchanged
+        (CAPTURE_BOUND) and resets the comparison status to
+        UNKNOWN. The packet does NOT drop back to UNBOUND.
+```
+
+#### §9.4 Expiry locks
+
+```
+expired comparison result
+  != lost capture binding
+
+CAPTURE_BOUND + comparison UNKNOWN
+  is a valid combination (§7.3); a CAPTURE_BOUND packet whose
+  prior CURRENTLY_MATCHED moment has expired sits here.
+
+re-obtaining CURRENTLY_MATCHED / STALE
+  requires a fresh §9.1 / §9.2 comparison; the prior result
+  cannot be reused.
 ```
 
 `CURRENTLY_MATCHED` is **not** persistent on its own. M03
-does not specify how a consumer chooses to persist this
-fact; consumer-side persistence is OC-B / PR74-M05.
+does not specify how a consumer chooses to persist either the
+capture binding or the comparison result; consumer-side
+persistence is OC-B / PR74-M05.
 
 ---
 
@@ -765,8 +828,9 @@ The existing `to_snapshot` / `from_snapshot` boundary is
 snapshot serialization
   != context packet construction
 
-snapshot schema integrity
-  != snapshot instance identity
+snapshot schema validity
+  != identity of the logical Engine state represented
+     by the snapshot
 
 restorable snapshot
   != decision-time current state
@@ -947,9 +1011,9 @@ M03 fixes the conceptual boundary between:
 ```
 
 The current PR51 packet is a consumer-side read projection.
-With no §8 identity basis available today, it sits at
-`UNBOUND` (or `UNKNOWN` when staleness is the topic). A
-document MUST NOT promote it above that level.
+With no §8 identity basis available today, it sits at the
+two-axis combination `UNBOUND` + `UNKNOWN` (§5.5 / §7.3). A
+document MUST NOT promote it above that combination.
 
 M03 does **not** introduce the mechanism that would lift the
 classification. M03 records the semantic requirements (§15)

@@ -16,7 +16,7 @@ type:            framework-level architecture contract,
 This record captures the M-series investigation context, the
 M01 B3 / OC-C evidence that motivates M03, the empirical
 baseline observed on `main` `f40b811`, the four identity
-concepts M03 separates, the five-level conceptual claim
+concepts M03 separates, the two-axis conceptual claim
 vocabulary, the §8 / §9 / §10 capture / use / stale layers,
 the relationship to PR71-M02 and the future OC-B / PR74-M05
 boundary, the repository-wide contradiction scan, the
@@ -126,7 +126,7 @@ def build_engine_context_packet(engine: Engine, claim_id: int)
                                   -> dict[str, Any]:
 ```
 
-It calls 6 + N public read-only methods in sequence and
+It calls 7 + N public read-only methods in sequence and
 returns a plain dict with exactly seven keys:
 
 ```
@@ -203,16 +203,17 @@ contains 19 top-level sections (§0..§18) and 19 subsections.
 
 ### §5.1 Identity separation (§4 of contract)
 
-Four identity concepts kept distinct:
+Three identity concepts and one temporal consistency
+distinction kept distinct:
 
 ```
 §4.1   Snapshot schema identity
         (schema_version = serialized snapshot shape only;
-         NOT state revision / instance identity / packet
-         revision / capture token / confidence policy
+         NOT Engine state revision / Engine state identity /
+         packet revision / capture token / confidence policy
          revision)
 
-§4.2   Engine state instance identity
+§4.2   Engine state identity
         (named but NOT mechanized; future implementation may
          realize as int revision / opaque token / canonical
          digest / immutable snapshot ref / other)
@@ -221,9 +222,13 @@ Four identity concepts kept distinct:
         (the dict / serialized object's own identity;
          packet identity != source Engine state identity)
 
-§4.4   Capture-vs-use-time distinction
-        (a consistent capture can become stale; a stale
-         packet can still pass a non-state-aware validator)
+§4.4   Capture-time vs use-time consistency distinction
+        (distinct and must not be treated as interchangeable;
+         a valid use-time consistency claim requires a valid
+         capture-bound basis; a consistent capture can become
+         stale; a stale packet can still pass a non-state-aware
+         validator; an unbound packet admits no mechanical
+         use-time consistency claim at all)
 ```
 
 ### §5.2 Today's PR51 packet classification (§5 of contract)
@@ -246,11 +251,15 @@ Forbidden readings (the packet is NOT):
     without an external comparison basis
   "the Engine at time T"
 
-Classification under §7 vocabulary:
-  UNBOUND (default), or UNKNOWN (when staleness is the topic).
-  Neither CAPTURE_BOUND, CURRENTLY_MATCHED, nor STALE can be
-  claimed for today's packet without infrastructure that the
-  repository does not provide.
+Classification under §7 two-axis vocabulary:
+  binding status              UNBOUND
+  use-time comparison status  UNKNOWN (mechanically unavailable)
+
+  This is one of the four valid combinations enumerated in
+  §7.3. UNBOUND + CURRENTLY_MATCHED and UNBOUND + STALE are
+  invalid; today's packet cannot be promoted out of UNBOUND
+  without infrastructure that the repository does not
+  provide.
 ```
 
 ### §5.3 Atomicity boundary (§6 of contract)
@@ -274,14 +283,33 @@ prevents interleaving", "the test is single-threaded", "no
 mutation happened in the test", "the sequence is short", "the
 reads are read-only", or "the example does not race".
 
-### §5.4 Conceptual claim levels (§7 of contract)
+### §5.4 Conceptual consistency vocabulary — two axes (§7 of contract)
+
+§7 organizes the vocabulary as two **independent axes**, not a
+single five-level list.
 
 ```
-UNBOUND            no source-state comparison basis
-CAPTURE_BOUND      one source-state identity recorded
-CURRENTLY_MATCHED  use-time comparison confirms same state
-STALE              use-time comparison confirms different state
-UNKNOWN            comparison information/procedure not available
+Binding axis:
+  UNBOUND        no source-state identity binding
+  CAPTURE_BOUND  bound to one source-state identity through
+                  a capture satisfying §8
+
+Use-time comparison axis:
+  UNKNOWN            no valid current comparison result
+  CURRENTLY_MATCHED  fresh comparison: capture identity
+                      == current identity
+  STALE              fresh comparison: capture identity
+                      != current identity
+
+Valid combinations:
+  UNBOUND        + UNKNOWN
+  CAPTURE_BOUND  + UNKNOWN
+  CAPTURE_BOUND  + CURRENTLY_MATCHED
+  CAPTURE_BOUND  + STALE
+
+Invalid combinations:
+  UNBOUND        + CURRENTLY_MATCHED
+  UNBOUND        + STALE
 ```
 
 These are **vocabulary**, not a runtime enum. They are not a
@@ -531,14 +559,16 @@ new packet key                       0
 
 ```
 + snapshot schema_version != Engine state revision (locked)
-+ snapshot schema_version != state instance identity (locked)
++ snapshot schema_version != Engine state identity (locked)
 + packet identity != source Engine state identity (locked)
 + sequential reads != atomic capture (locked)
 + capture-time consistency != use-time freshness (locked)
 + packet validator pass != source-state freshness (locked)
-+ today's PR51 packet classified as UNBOUND / UNKNOWN (§5.5)
++ today's PR51 packet classified as UNBOUND + UNKNOWN under
+  the two-axis vocabulary (§5.5 / §7.3)
 + §6 atomic-capture (a)/(b)/(c)/(d) requirement list
-+ §7 five-level consistency claim vocabulary
++ §7 two-axis consistency vocabulary (binding axis +
+  use-time comparison axis)
 + §8 five capture-bound minimum requirements + insufficient
   identity basis enumeration
 + §9 currently-matched comparison requirements
@@ -634,21 +664,21 @@ documentation only.
 
 ## §10 Closing Position
 
-PR72-M03 is closed when:
+PR72-M03 is a draft PR with three commits (237차 / 238차 /
+239차) at the time of this record. PR72-M03 is **not** CLOSED
+at this point; the directive explicitly excludes merge from
+this work item, and an internal-contract correction (235차/
+239차 pattern) is part of the draft phase rather than a
+closing event.
 
-- 237차 `docs(architecture)` adds the contract.
-- 238차 `docs(dev)` records this development record.
-
-This PR is opened as draft; merge is not part of PR72-M03 per
-the directive.
-
-After merge, M-series state advances by one step:
+Until a separate final-audit-and-merge directive is issued,
+the M-series state is:
 
 ```
 P-series   CLOSED
 PR70-M01   CLOSED
 PR71-M02   CLOSED
-PR72-M03   ready (this PR — draft)
+PR72-M03   CORRECTED — OPEN, DRAFT, NOT MERGED
 PR73-M04   CONDITIONAL / NOT STARTED
 PR74-M05   NOT STARTED
 PR75-M06   NOT STARTED
@@ -657,7 +687,23 @@ PR77-M08   NOT STARTED
 PR78-M09   NOT STARTED
 ```
 
-No follow-up PR is auto-scheduled by PR72-M03.
+After that separate directive squash-merges this PR, and only
+then, the M-series state becomes:
+
+```
+P-series   CLOSED
+PR70-M01   CLOSED
+PR71-M02   CLOSED
+PR72-M03   CLOSED
+PR73-M04   CONDITIONAL / NOT STARTED
+PR74-M05   NOT STARTED
+PR75-M06   NOT STARTED
+PR76-M07   NOT STARTED
+PR77-M08   NOT STARTED
+PR78-M09   NOT STARTED
+```
+
+PR72-M03 does not auto-schedule any follow-up PR.
 
 PR72-M03는 현재 Engine context packet이 제공하는 read projection과
 제공하지 않는 state-binding·atomicity·freshness 보장을 분리하고,
@@ -668,3 +714,231 @@ comparison basis가 필요함을 정의했으며, stale 처리 정책과 persist
 operator decision record는 PR74-M05 책임으로 남겼다. runtime behavior,
 Engine judgment semantics, packet shape, snapshot schema는 변경하지
 않았다.
+
+---
+
+## Post-review correction — 239차
+
+After the initial 237차 / 238차 commits, a final audit of the
+contract found six internal contract defects (not runtime
+defects). The corrections are made on the same branch as a
+single post-review commit; the prior two commits are not
+amended, rebased, or squashed.
+
+These corrections do not change M03's direction. The OC-C
+investigation, the fact-and-basis layer scope, the §2
+empirical baseline observations, the M02 boundary
+preservation, the M05 deferral, and the docs-only scope are
+all preserved.
+
+**C1 — Actual read-call count corrected to 7 + N.**
+The initial wording counted `6 + N` sequential public read
+calls. The actual call path of `build_engine_context_packet`
+(verified at `examples/inspector/engine_inspector.py:49`)
+contains seven distinct named public reads in addition to
+the N `gap_resolution(gap.id)` lookups:
+
+```
+1   get_claim
+2   compute_effective_confidence
+3   evidences_for_claim
+4   contradictions_for_claim
+5   active_contradictions_for_claim
+6   gaps_for_claim
+N   gap_resolution (one per gap returned by gaps_for_claim)
+7   claim_lifecycle_history
+```
+
+The contract §2.1 list is now annotated `7 + N sequential
+public read calls total` with each call labeled. §6 atomic
+capture boundary reads `7 + N`. The packet's seven keys and
+the seven + N read calls are explicitly noted as
+**independent counts**; one does not imply the other.
+
+**C2 — Two-axis vocabulary in place of a five-level list.**
+The initial §7 organized `UNBOUND / CAPTURE_BOUND /
+CURRENTLY_MATCHED / STALE / UNKNOWN` as a single list. That
+collapsed a binding-axis classification (UNBOUND /
+CAPTURE_BOUND) with a use-time comparison-axis classification
+(UNKNOWN / CURRENTLY_MATCHED / STALE).
+
+§7 is now split into:
+
+```
+§7.1   Binding axis        UNBOUND / CAPTURE_BOUND
+§7.2   Use-time comparison axis
+                            UNKNOWN / CURRENTLY_MATCHED / STALE
+§7.3   Valid and invalid combinations
+        valid:    UNBOUND       + UNKNOWN
+                  CAPTURE_BOUND + UNKNOWN
+                  CAPTURE_BOUND + CURRENTLY_MATCHED
+                  CAPTURE_BOUND + STALE
+        invalid:  UNBOUND       + CURRENTLY_MATCHED
+                  UNBOUND       + STALE
+```
+
+§3 core boundary now includes
+`A CURRENTLY_MATCHED or STALE claim requires CAPTURE_BOUND`.
+§5.5 (today's PR51 packet classification) is now stated as
+the combination `UNBOUND + UNKNOWN (mechanically
+unavailable)`, citing §7.3 explicitly. The §18 closing
+position reflects the same combination.
+
+**C3 — Expired CURRENTLY_MATCHED separated from lost capture
+binding.**
+The initial §9.3 read "re-using a CURRENTLY_MATCHED claim
+after a later mutation is equivalent to dropping back to
+UNKNOWN", which collapsed the binding and comparison axes
+again.
+
+§9.3 now reads "the CURRENTLY_MATCHED comparison result is
+scoped to the comparison moment ... an expired comparison
+result leaves the packet's binding status unchanged
+(CAPTURE_BOUND) and resets the comparison status to UNKNOWN.
+The packet does NOT drop back to UNBOUND."
+
+A new §9.4 "Expiry locks" enumerates:
+
+```
+expired comparison result        != lost capture binding
+CAPTURE_BOUND + comparison UNKNOWN is a valid combination
+                                    (§7.3)
+re-obtaining CURRENTLY_MATCHED /
+  STALE                          requires a fresh §9.1 / §9.2
+                                    comparison; the prior result
+                                    cannot be reused
+```
+
+**C4 — Identity terminology and identity count corrected.**
+The initial §4 prologue read "Four identity concepts must not
+be collapsed", and the §3 core boundary list referenced an
+undefined "snapshot instance identity" / "state instance
+identity".
+
+The contract now:
+
+- §4 prologue reads "Three identity concepts and one temporal
+  consistency distinction must not be collapsed" with an
+  explicit list of (§4.1 / §4.2 / §4.3 / §4.4).
+- §4.2 is titled "Engine state identity" (not "Engine state
+  instance identity").
+- §3 / §4.1 / §14 use `Engine state identity` as the
+  identity-axis term; `snapshot schema validity != identity
+  of the logical Engine state represented by the snapshot`
+  replaces the ambiguous `snapshot instance identity` phrase.
+- `state instance identity` is removed everywhere from the
+  contract and dev record normative bodies.
+
+**C5 — `independent` wording replaced with `distinct +
+prerequisite`.**
+The initial §4.4 ended with "The two are independent." This
+overstated the relationship: use-time consistency cannot stand
+alone without a capture-bound basis.
+
+§4.4 now reads:
+
+```
+Capture-time consistency and use-time consistency are
+distinct and must not be treated as interchangeable. They
+are not unconditionally independent either: a valid use-time
+consistency claim requires a valid capture-bound basis, so
+the use-time axis presupposes the capture axis.
+```
+
+with an explicit note that an unbound packet admits no
+mechanical use-time consistency claim at all (cross-reference
+to §7.2 / §7.3).
+
+**C6 — Draft / merge / CLOSED lifecycle corrected.**
+The initial §10 closing position simultaneously asserted:
+
+```
+"PR72-M03 is closed when 237 / 238 exist"
+"this PR is draft and merge is not part of the directive"
+"After merge: PR72-M03 ready (this PR — draft)"
+```
+
+These three statements form a contradiction: a draft cannot
+be CLOSED, and "ready" describes the pre-merge moment, not
+the after-merge moment.
+
+§10 now distinguishes two states:
+
+```
+- During the draft phase (including 237 / 238 / 239차 and any
+  further post-review corrections), PR72-M03 is
+  CORRECTED — OPEN, DRAFT, NOT MERGED.
+
+- Only after a separate final-audit-and-merge directive
+  squash-merges this PR does PR72-M03 become CLOSED.
+```
+
+The two corresponding M-series state tables are recorded
+explicitly so neither state can be claimed by accident.
+
+### Minor consistency adjustments
+
+- The dev record opening note ("M-series investigation
+  context") aligns "five-level conceptual claim concepts"
+  to "two-axis conceptual claim concepts".
+- The §5.4 description and §7 cross-references inside the
+  dev record now match the two-axis structure of the contract.
+- The Documentation interpretation delta list entry
+  ("today's PR51 packet classified as UNBOUND / UNKNOWN")
+  reads "UNBOUND + UNKNOWN under the two-axis vocabulary
+  (§5.5 / §7.3)".
+- The Documentation interpretation delta list entry
+  ("§7 five-level consistency claim vocabulary") reads
+  "§7 two-axis consistency vocabulary (binding axis +
+  use-time comparison axis)".
+
+### Defect counts
+
+```
+Pre-existing repository normative contradictions found:    0
+M03 internal contract defects found during post-review:    6
+M03 internal contract defects remaining after 239차:        0
+```
+
+### Files changed by 239차
+
+```
+docs/architecture/ENGINE_READ_CONSISTENCY_CONTRACT.md
+docs/dev/PR_072_ENGINE_READ_CONSISTENCY_CONTRACT.md
+```
+
+No `ragcore/` file is touched. No example file is touched. No
+test is touched. No dependency change.
+
+### Re-measured invariants on 239차
+
+```
+Engine public methods                40         (unchanged)
+Engine private methods               18         (unchanged)
+ragcore.__all__                      48         (unchanged)
+snapshot schema_version              2          (unchanged)
+snapshot top-level keys              18         (unchanged)
+PR51 packet keys                     7          (unchanged)
+
+ragcore files changed                0
+examples files changed               0
+tests changed                        0
+dependencies changed                 0
+new public symbol                    0
+new Engine method                    0
+new dependency                       0
+new exception class                  0
+new snapshot key                     0
+new packet key                       0
+
+runtime behavior delta               0
+judgment semantics delta             0
+lifecycle delta                      0
+confidence formula delta             0
+snapshot delta                       0
+```
+
+`pytest -q` on 239차: `1423 passed`.
+
+PR72-M03 remains DRAFT, NOT MERGED. PR73-M04 is NOT
+auto-started by this correction.
