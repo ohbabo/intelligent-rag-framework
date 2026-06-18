@@ -309,7 +309,10 @@ future implementation could realize it as any of:
 ```
 
 The implementation choice is left open. M03 only fixes the
-semantic requirements (§9).
+semantic requirements: §8 (minimum requirements for a
+CAPTURE_BOUND claim), §9 (use-time comparison rules for
+CURRENTLY_MATCHED and STALE), and §15 (semantic requirements
+that a future mutation-revision mechanism must satisfy).
 
 ### §4.3 Packet identity
 
@@ -467,12 +470,15 @@ must not be made.
 
 ---
 
-## §7 Conceptual consistency vocabulary — two independent axes
+## §7 Conceptual consistency vocabulary — two distinct axes with a dependency constraint
 
 The following names are **conceptual vocabulary** used by this
 document to talk about a packet's relationship to its source
-Engine state. They are organized as **two independent axes**:
-a binding axis and a use-time comparison axis.
+Engine state. They are organized as **two distinct axes that
+are not unconditionally independent**: a binding axis and a
+use-time comparison axis. Per §4.4 / §7.3, the use-time axis
+presupposes the binding axis, so the two axes are separate
+but not unconditionally independent.
 
 A document MUST NOT collapse the two axes into a single
 five-level list, and MUST NOT lift these strings into a

@@ -285,8 +285,12 @@ reads are read-only", or "the example does not race".
 
 ### §5.4 Conceptual consistency vocabulary — two axes (§7 of contract)
 
-§7 organizes the vocabulary as two **independent axes**, not a
-single five-level list.
+§7 organizes the vocabulary as **two distinct axes with a
+prerequisite relation** — a binding axis and a use-time
+comparison axis — not as a single five-level list. The two
+axes are separate but not unconditionally independent: the
+use-time axis presupposes the binding axis per §4.4 and
+§7.3.
 
 ```
 Binding axis:
