@@ -1147,8 +1147,8 @@ it clarifies how M05 records are used in the re-entry context.
 - A downstream investigation result is a NEW decision
   subject. Whatever the prior M05 record disposed of, the
   result trace is a NEW external source artifact (per
-  PR59 / PR63 + M06 §4.2 / §6). It does NOT inherit the
-  prior record's disposition.
+  PR63 + M06 §4.2 / §6). It does NOT inherit the prior
+  record's disposition.
 
 - A result-derived `EngineInputCandidate` (M06 §4.4) is a
   M02 §9 mutation candidate. Its disposition is recorded as
@@ -1161,10 +1161,10 @@ it clarifies how M05 records are used in the re-entry context.
   unchanged. The recorded EngineStateIdentity must equal the
   current Engine.state_identity() (M05 §7.3 A) and the
   exact-content / exact-arguments / referenced-IDs checks
-  (M02 §10 + M06 §8) must all pass. Any mismatch follows
-  M05 §12.2: prior approval cannot be reused; re-inspect;
-  reconstruct candidate if appropriate; new mutation review;
-  new decision record.
+  (M02 §10 + M06 §11 / §12) must all pass. Any mismatch
+  follows M05 §12.2: prior approval cannot be reused;
+  re-inspect; reconstruct candidate if appropriate; new
+  mutation review; new decision record.
 
 - A prior proposal acceptance MUST NOT be reused as
   re-entry mutation approval. The two M05 record families

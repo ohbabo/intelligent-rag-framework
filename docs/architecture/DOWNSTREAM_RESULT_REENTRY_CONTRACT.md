@@ -12,15 +12,24 @@ base:    main 80759048 (PR74-M05 — Operator Decision Record /
 ## Core sentences
 
 ```text
-A downstream result re-enters the framework only as a new
-consumer-side source artifact that is separately translated,
-contextually role-assigned, considered for candidate
-materialization, mutation-reviewed, and explicitly invoked
-through an existing Engine public API.
+A downstream result enters the consumer-side re-entry chain
+only as a NEW external source artifact.
+
+It reaches Engine state ONLY after separate translation,
+contextual role assignment, optional candidate
+materialization, exact-content mutation review, decision
+recording and revalidation, separate ReviewedMutationRequest
+materialization, and an explicit caller-written invocation of
+one existing state-mutating Engine public method.
+
+consumer workflow re-entry
+  != Engine state entry
 
 The result does not become Engine evidence, Engine truth,
 execution authority, or lifecycle-transition authority merely
 because it exists or because an investigation produced it.
+The chain may legitimately terminate at any stage with no
+Engine mutation (§4.4 / §10).
 ```
 
 ---
@@ -165,8 +174,8 @@ Existing addendum coverage:
 
 ```
 PR57   OPERATOR_DECISION_BOUNDARY_SPEC         §19 Post-M05
-PR59   EXTERNAL_ADAPTER_TRANSLATION_BOUNDARY   §1 ~ §31
-PR61   ROLE_ASSIGNMENT_POLICY_SPEC             §1 ~ §24
+PR60   ROLE_ASSIGNMENT_POLICY_SPEC             §1 ~ §24
+PR63   EXTERNAL_ADAPTER_TRANSLATION_BOUNDARY   §1 ~ §31
 M02    REVIEWED_ENGINE_MUTATION_HANDOFF        §23 Post-M04 /
                                                 §24 Post-M05
 M03    ENGINE_READ_CONSISTENCY_CONTRACT        §19 Post-M04 /
@@ -175,13 +184,23 @@ M04    ENGINE_STATE_IDENTITY_PRIMITIVE         §11 Post-M05
 M05    OPERATOR_DECISION_RECORD_REVALIDATION   §0 ~ §20
 ```
 
+(PR59 = Data Access Profile Contract, separated the six
+independent interpretation axes. PR60 = Role Assignment
+Policy Spec, defines contextual role assignment over those
+axes. PR61 = Minimal Consumer-Side Role Assignment Example,
+demonstrates one local consumer representation. PR63 =
+External Adapter Translation Boundary Spec, records the
+boundary an adapter follows when translating an external
+source artifact. M06 reuses PR60 + PR63 normative content;
+PR59 axes and PR61 example are unchanged.)
+
 M06 normative addenda land at:
 
 ```
-External adapter spec    §32  Post-M06 addendum
-Role assignment spec     §25  Post-M06 addendum
-M02 handoff contract     §25  Post-M06 addendum
-M05 decision contract    §21  Post-M06 addendum
+PR63 external adapter spec  §32  Post-M06 addendum
+PR60 role assignment spec   §25  Post-M06 addendum
+M02 handoff contract        §25  Post-M06 addendum
+M05 decision contract       §21  Post-M06 addendum
 ```
 
 ---
@@ -197,22 +216,32 @@ proposal automatically.
 A downstream result does NOT become an Engine fact merely by
 existing.
 
-A downstream result enters the framework only by being
-treated as a NEW external source artifact and being run
-through the six-stage chain in §4.
+A downstream result enters the consumer-side re-entry chain
+only by being treated as a NEW external source artifact. It
+reaches Engine state only by being run through the
+seven-stage chain in §4 / §3.2.
 ```
 
-### §3.2 The chain is six explicitly separate stages
+### §3.2 The chain is seven explicitly separate stages
 
 ```
-1. consumer investigation initiation
-2. downstream result trace
-3. contextual result role assignment
-4. EngineInputCandidate materialization consideration
-5. M02 mutation review and M05 decision record
-6. explicit invocation of one existing state-mutating
-   Engine public method
+1.   consumer investigation initiation
+2.   downstream result trace
+3.   contextual result role assignment
+4.   EngineInputCandidate materialization consideration
+5.   M02 mutation review and M05 decision record
+5.5  separate ReviewedMutationRequest materialization
+     (M02 §10 / §11)
+6.   explicit invocation of one existing state-mutating
+     Engine public method
 ```
+
+Stage 5.5 is the M02 four-layer model's `EngineInputCandidate
+-> ReviewedMutationRequest` step. M05 mutation-review-family
+record (Stage 5) and ReviewedMutationRequest (Stage 5.5) are
+distinct artifacts. The `ReviewedMutationRequest` is
+materialized only when the M05 §7.3 A revalidation + M02 §10
+exact-content checks all pass at the materialization moment.
 
 A success at stage N does NOT authorize stage N+1.
 
@@ -336,7 +365,7 @@ level. A single investigation run that produced several
 result fragments produces several independent role-assignment
 decisions.
 
-Per PR61 (Role Assignment Policy Spec), assignment considers
+Per PR60 (Role Assignment Policy Spec), assignment considers
 at least:
 
 ```
@@ -411,6 +440,11 @@ EngineInputCandidate
   -> M05 mutation-review-family decision record
 ```
 
+The M05 mutation-review-family record holds the disposition.
+It does NOT itself carry invocation authority. The
+proposal-gate family (M05 §4.1) cannot serve in this role at
+all.
+
 Hard locks:
 
 ```
@@ -421,15 +455,77 @@ approved disposition record      != ReviewedMutationRequest
 ReviewedMutationRequest          != Engine invocation
 ```
 
-The mutation-review-family decision record is the **only**
-M05 record family that may carry the eligibility for the
-explicit invocation in Stage 6. The proposal-gate family
-(M05 §4.1) cannot.
+The mutation-review-family is the only M05 record family that
+may participate in determining whether a separately
+materialized `ReviewedMutationRequest` (Stage 5.5) remains
+eligible for downstream invocation consideration. The record
+itself carries no invocation authority.
+
+### §4.5.5 Stage 5.5 — Separate `ReviewedMutationRequest` materialization
+
+The M02 four-layer model from §4 is
+
+```
+RoleAssignment
+  -> EngineInputCandidate
+  -> ReviewedMutationRequest
+  -> explicit invocation
+```
+
+Stage 5 produces an approved (or rejected / hold)
+mutation-review-family decision record. It does NOT produce a
+`ReviewedMutationRequest`. The `ReviewedMutationRequest`, when
+created, is a separate consumer-side artifact under M02 §10 /
+§11.
+
+```
+approved exact review
+  + exact-content checks
+  + EngineStateIdentity revalidation
+  -> MAY permit separate ReviewedMutationRequest
+     materialization under M02
+
+ReviewedMutationRequest
+  != invocation
+```
+
+Hard locks:
+
+```
+approved disposition record            != ReviewedMutationRequest
+M05 mutation-review-family record      != ReviewedMutationRequest
+materialized ReviewedMutationRequest   != Engine invocation
+```
+
+A `ReviewedMutationRequest` is materialized only when the
+consumer has verified, immediately before materialization
+(M05 §7.3 A + M02 §10 + M06 §12):
+
+```
+- exact candidate content unchanged
+- reviewed method name unchanged
+- reviewed exact arguments unchanged
+- referenced Engine IDs unchanged
+- result trace reference unchanged
+- role-assignment context reference unchanged
+- decision-time EngineStateIdentity equals
+  Engine.state_identity() at this moment
+- M02 §12.3 caller checks still pass at this moment
+```
+
+If any check fails, no `ReviewedMutationRequest` is
+materialized. The consumer follows M05 §12.2: re-inspect,
+reconstruct candidate if appropriate, perform a new mutation
+review, create a new decision record. The cycle restarts at
+Stage 5 (or earlier, at Stages 2 / 3 / 4 depending on which
+input changed).
 
 ### §4.6 Stage 6 — Explicit Engine invocation
 
-The only way an Engine state-mutating public method runs is
-that the caller explicitly writes and invokes that method.
+Stage 6 takes the Stage 5.5 `ReviewedMutationRequest` as
+input. The only way an Engine state-mutating public method
+runs is that the caller explicitly writes and invokes that
+method against the current Engine.
 
 Forbidden execution mechanisms (carried forward from M02
 §12.3):
@@ -472,10 +568,14 @@ arguments. It does NOT prove the external result is true.
 - when an investigation completes, the consumer separately
   decides whether to enter Stage 2 with its result
 
-- a M05 proposal-family `accept` on a `schedule-manual-
-  inspection` proposal does NOT mean an inspection has been
-  scheduled, that any inspection will run, or that any tool
-  will be executed
+- a M05 proposal-family `schedule-manual-inspection` or
+  `request-evidence` disposition does NOT mean that an
+  investigation has been scheduled, that any inspection
+  will run, or that any tool has received execution
+  authority. The seven proposal-family dispositions
+  (`accept` / `reject` / `rewrite` / `request-evidence` /
+  `schedule-manual-inspection` / `archive` / `cite`) per
+  M05 §4.1 are sibling outcomes; they are not nested.
 ```
 
 ---
@@ -736,20 +836,26 @@ The M02 four-layer model is reused verbatim.
 The mutation-review record is created and persisted under M05
 unchanged.
 
-At Stage 6, before the explicit invocation, the consumer must
-verify (M05 §12.1 + M06 §8 extension):
+Before the consumer **materializes** a `ReviewedMutationRequest`
+at Stage 5.5, AND again **at the invocation moment** at Stage 6,
+the consumer must verify (M05 §12.1 + M06 §11 extension):
 
 ```
 - exact candidate content unchanged                    (M02 §10)
 - reviewed method name unchanged                       (M02 §10)
 - reviewed exact arguments unchanged                   (M02 §10)
 - referenced Engine IDs unchanged                      (M02 §10)
-- result trace reference unchanged                     (M06)
-- role-assignment context reference unchanged          (M06)
+- result trace reference unchanged                     (M06 §11)
+- role-assignment context reference unchanged          (M06 §11)
 - decision-time EngineStateIdentity equals
-  Engine.state_identity() at invocation time           (M05 §7.3 A)
-- M02 §12.3 caller checks still pass at invocation time
+  Engine.state_identity() at this moment               (M05 §7.3 A)
+- M02 §12.3 caller checks still pass at this moment
 ```
+
+The two verification moments are distinct in time. A check that
+passed at Stage 5.5 materialization does NOT remain proven at
+Stage 6 invocation; the consumer re-verifies (M05 §9
+moment-scoped comparison).
 
 If any of the above fails:
 
@@ -770,6 +876,7 @@ identity. Decision-state revalidation operates on
 
 ## §13 Explicit invocation boundary
 
+Stage 6 takes the Stage 5.5 `ReviewedMutationRequest` as input.
 The only Engine state-mutating event in M06's chain is at
 Stage 6: a caller explicitly invokes one existing
 state-mutating Engine public method (one of the 20 listed at
@@ -965,18 +1072,22 @@ persistent role assignment
 
 ## §18 Relationship to earlier contracts and M-series
 
-### §18.1 PR59 / PR63 (External Adapter Translation Boundary)
+### §18.1 PR63 (External Adapter Translation Boundary)
 
 Preserved. A result adapter is one external adapter under
-PR63. M06 §32 addendum restates the lock.
+PR63. M06 §32 addendum (in the PR63 spec) restates the lock.
+PR59 (Data Access Profile Contract) axes are reused unchanged
+through PR60 / PR63; PR59 itself is not modified by M06.
 
-### §18.2 PR61 (Role Assignment Policy)
+### §18.2 PR60 (Role Assignment Policy)
 
-Preserved. Result-level role assignment uses PR61's
+Preserved. Result-level role assignment uses PR60's
 `SourceType` / `BaseRecordType` / `SemanticRole` /
 `DataAccessProfile` / `AllowedUse` / `ForbiddenUse` axes
-unchanged. M06 §25 addendum restates target granularity
-(result record / field / fragment).
+unchanged. M06 §25 addendum (in the PR60 spec) restates
+target granularity (result record / field / fragment).
+PR61 (Minimal Consumer-Side Role Assignment Example) is
+unchanged.
 
 ### §18.3 PR57 / M05 (Operator Decision Records)
 
@@ -1055,8 +1166,11 @@ M03 §1 ~ §18 historical body
 M04 §1 ~ §10 historical body
 M05 §1 ~ §20 historical body
 PR57 §1 ~ §18 historical body
-PR59 §1 ~ §31 historical body
-PR61 §1 ~ §24 historical body
+PR59 historical body (Data Access Profile Contract)
+PR60 §1 ~ §24 historical body
+PR61 historical body (Minimal Consumer-Side Role
+                       Assignment Example)
+PR63 §1 ~ §31 historical body
 M02 §23 / §24 historical addenda
 M03 §19 / §20 historical addenda
 M04 §11 historical addendum

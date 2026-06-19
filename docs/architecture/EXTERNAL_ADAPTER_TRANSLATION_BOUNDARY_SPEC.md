@@ -1331,8 +1331,8 @@ PR75-M06 (`DOWNSTREAM_RESULT_REENTRY_CONTRACT.md`) closes the
 conceptual boundary for OC-E (M01 Lane C, stages C2 ~ C7) by
 defining how a downstream investigation result becomes
 eligible for an explicit Engine state-mutating invocation. The
-result trace from such an investigation is, in PR59 / PR63
-terms, **a new external source artifact**.
+result trace from such an investigation is, in PR63 terms,
+**a new external source artifact**.
 
 ```
 - A downstream investigation result re-enters the framework
@@ -1345,15 +1345,14 @@ terms, **a new external source artifact**.
 
 - An investigation result adapter (consumer-side adapter that
   ingests a downstream tool's or process's output) is one
-  adapter under PR63. It is NOT a "canonical adapter" — PR59 /
-  PR63 declare no canonical adapter, and PR75-M06 does not
-  add one.
+  adapter under PR63. It is NOT a "canonical adapter" — PR63
+  declares no canonical adapter, and PR75-M06 does not add
+  one.
 
 - The adapter's output is NOT a `ragcore.Evidence`, NOT a
   `ragcore.Claim`, NOT a `ragcore.Gap`, NOT a
   `ragcore.Relation`, and NOT a `ReviewedMutationRequest`.
-  This restates PR59 / PR63's locks for the result-adapter
-  case.
+  This restates PR63's locks for the result-adapter case.
 
 - The adapter does NOT call any Engine state-mutating public
   method. Re-entry into Engine state is governed by

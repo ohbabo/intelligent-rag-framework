@@ -20,7 +20,7 @@ This record captures the M-series investigation context, the
 OC-E / C2~C7 origin, the empirical baseline observed on `main`
 `80759048`, the rationale for keeping M06 docs-only, the six
 re-entry stages that M06 fixes, the boundary preservations
-inherited from PR59 / PR61 / PR57 / M02 / M03 / M04 / M05, the
+inherited from PR57 / PR60 / PR63 / M02 / M03 / M04 / M05, the
 files changed, the structural invariants, the pytest result,
 and the repository-wide forbidden-conclusion scan.
 
@@ -117,7 +117,7 @@ M06 is docs-only by deliberate design.
   freedom.
 
 - The framework already partitions Engine behavior into a
-  fact layer (PR59 / PR61 / M02 / M03 / M04 / M05). Each of
+  fact layer (PR57 / PR60 / PR63 / M02 / M03 / M04 / M05). Each of
   those contracts is reused unchanged. M06 does not
   introduce a new layer; it documents how the existing
   layers compose in the re-entry direction.
@@ -171,7 +171,7 @@ M06 owns:
 ```
 - investigation initiation as a consumer-side decision
 - result trace as a NEW external source artifact (PR63 reuse)
-- result-level role assignment (PR61 reuse, target granularity)
+- result-level role assignment (PR60 reuse, target granularity)
 - candidate materialization admission criteria
 - M02 mutation review handoff for result-derived candidates
 - M05 mutation-review-family decision record reuse
@@ -226,9 +226,15 @@ Stage 4 — candidate         C5 EngineInputCandidate
         materialization        UNDEFINED
         consideration       (M06 §4.4 + §10)
 
-Stage 5 — mutation          C6 ReviewedMutationRequest
-        review +               UNDEFINED
-        M05 record          (M06 §4.5 + §11 + §12)
+Stage 5 — mutation          (intermediate review/record step;
+        review +             not a distinct M01 stage —
+        M05 record           M02 §9 + M05 §4.2 conceptual
+                            obligations)
+                            (M06 §4.5 + §11 + §12)
+
+Stage 5.5 — separate        C6 ReviewedMutationRequest
+        ReviewedMutationRequest UNDEFINED
+        materialization     (M06 §4.5.5 + §11 + §12)
 
 Stage 6 — explicit          C7 explicit re-entry
         Engine invocation      authorization  BLOCKED
@@ -237,8 +243,8 @@ Stage 6 — explicit          C7 explicit re-entry
 
 C1 (operator decision record, UNDEFINED → CLOSED by M05) is
 already owned by M05 and remains M05 territory after M06.
-M06 references the M05 record at Stages 5 and 12 but does not
-re-define the M05 contract.
+M06 references the M05 record at Stages 5 / 5.5 / 12 but does
+not re-define the M05 contract.
 
 ---
 
@@ -256,7 +262,9 @@ execution authority, or lifecycle-transition authority merely
 because it exists or because an investigation produced it.
 ```
 
-The chain is six explicitly separate stages (§4). A success
+The chain is seven explicitly separate stages (§4 + §3.2,
+where Stage 5.5 is the M02 four-layer model's separate
+`ReviewedMutationRequest` materialization step). A success
 at stage N does NOT authorize stage N+1. The chain may
 legitimately terminate at any stage; see §7. Each Engine API
 call is its own decision; even when multiple state-mutating
@@ -323,7 +331,7 @@ single `invalid` / `unresolved` label.
 
 §4.3 + §9 — role assignment is at the result-item /
 result-fragment level, not at the source / adapter / tool /
-run level. PR61's `SourceType` / `BaseRecordType` /
+run level. PR60's `SourceType` / `BaseRecordType` /
 `SemanticRole` / `DataAccessProfile` / `AllowedUse` /
 `ForbiddenUse` axes apply unchanged.
 
@@ -360,18 +368,34 @@ valid terminal state.
 
 §4.5 + §11 — review uses M02 §9 exact-content semantics
 unchanged. The disposition is recorded as an M05
-mutation-review-family record. Hard locks (M02 §24 + M05
-§4.3) carry forward:
+mutation-review-family record. The record itself carries no
+invocation authority; it is the consumer-side persistence of
+the review outcome.
+
+§4.5.5 (Stage 5.5) — a `ReviewedMutationRequest` is a
+**separate** artifact under M02 §10 / §11. It is materialized
+only when, immediately before materialization, the consumer
+verifies the M05 §7.3 A revalidation + M02 §10 exact-content
++ M06 §11 result-derived checks. The M05 mutation-review-
+family record is NOT a `ReviewedMutationRequest`; the M05
+record family is the only family that may participate in
+determining whether a separately materialized
+`ReviewedMutationRequest` remains eligible.
+
+Hard locks (M02 §24 + M05 §4.3) carry forward:
 
 ```
-proposal acceptance              != mutation review approval
-result role assignment           != candidate approval
-candidate validator pass         != mutation review approval
-approved disposition record      != ReviewedMutationRequest
-ReviewedMutationRequest          != Engine invocation
+proposal acceptance                    != mutation review approval
+result role assignment                 != candidate approval
+candidate validator pass               != mutation review approval
+approved disposition record            != ReviewedMutationRequest
+M05 mutation-review-family record      != ReviewedMutationRequest
+materialized ReviewedMutationRequest   != Engine invocation
 ```
 
-§12 — at Stage 6, the consumer verifies M02 §10 + M06 §8
+§12 — at Stage 5.5 (ReviewedMutationRequest materialization)
+AND again at Stage 6 (invocation moment), the consumer
+verifies M02 §10 + M06 §11
 + M05 §7.3 A conditions. Any mismatch triggers M05 §12.2: new
 review cycle. The result trace is NOT a PR51 packet capture
 identity; revalidation operates on `EngineStateIdentity`
@@ -425,11 +449,13 @@ semantics are M09 (PR78) territory.
 
 ```
 PR57   operator decision boundary       preserved (M06 §18.3)
-                                         + §21 addendum
-PR59   external adapter translation     preserved (M06 §18.1)
-       boundary                          + §32 addendum
-PR61   role assignment policy           preserved (M06 §18.2)
+PR59   data access profile contract     preserved (unchanged)
+PR60   role assignment policy           preserved (M06 §18.2)
                                          + §25 addendum
+PR61   minimal consumer-side role
+       assignment example               preserved (unchanged)
+PR63   external adapter translation     preserved (M06 §18.1)
+       boundary                          + §32 addendum
 M02    reviewed mutation handoff        preserved (M06 §18.4)
                                          + §25 addendum
 M03    engine read consistency          preserved (M06 §18.5)
@@ -515,8 +541,11 @@ M03 §1 ~ §18 historical body
 M04 §1 ~ §10 historical body
 M05 §1 ~ §20 historical body
 PR57 §1 ~ §18 historical body
-PR59 §1 ~ §31 historical body
-PR61 §1 ~ §24 historical body
+PR59 historical body (Data Access Profile Contract)
+PR60 §1 ~ §24 historical body
+PR61 historical body (Minimal Consumer-Side Role
+                       Assignment Example)
+PR63 §1 ~ §31 historical body
 M02 §23 / §24 historical addenda
 M03 §19 / §20 historical addenda
 M04 §11 historical addendum
