@@ -225,8 +225,9 @@ class TestExternalEngineInspector:
         # boundary. PR51 re-asserts it from the inspector test boundary
         # so the wrapper's "no public surface change" guarantee is
         # explicit at this level too.
-        assert len(ragcore.__all__) == 48
-        assert len(set(ragcore.__all__)) == 48
+        # PR73-M04 shift: 48 → 49 (added EngineStateIdentity).
+        assert len(ragcore.__all__) == 49
+        assert len(set(ragcore.__all__)) == 49
 
     def test_inspector_source_uses_no_private_attribute_access(self) -> None:
         # AST-based check: docstring/comment mentions of private

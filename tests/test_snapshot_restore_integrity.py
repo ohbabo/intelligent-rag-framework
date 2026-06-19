@@ -616,12 +616,15 @@ class TestStructuralInvariantsUnchanged:
                             private += 1
                         else:
                             public += 1
-        assert public == 40
-        assert private == 18
+        # PR73-M04 shift: 40 → 41 public (state_identity);
+        # 18 → 19 private (_advance_state_revision).
+        assert public == 41
+        assert private == 19
 
     def test_ragcore_all_unchanged(self) -> None:
         import ragcore
-        assert len(ragcore.__all__) == 48
+        # PR73-M04 shift: 48 → 49 (added EngineStateIdentity).
+        assert len(ragcore.__all__) == 49
 
     def test_snapshot_schema_version_unchanged(self) -> None:
         assert Engine().to_snapshot()["schema_version"] == 2

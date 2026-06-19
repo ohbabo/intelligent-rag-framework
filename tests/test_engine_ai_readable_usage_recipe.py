@@ -133,6 +133,7 @@ def _gap(
 
 
 # §43 invariant 8 — locked symbol set from PR30-P main 60bf492.
+# PR73-M04 additive shift: EngineStateIdentity added.
 _PR30_BASELINE_PUBLIC_SYMBOLS: frozenset[str] = frozenset({
     "CLAIM_STATUS_CANDIDATE",
     "CLAIM_STATUS_CONFIRMED",
@@ -143,6 +144,7 @@ _PR30_BASELINE_PUBLIC_SYMBOLS: frozenset[str] = frozenset({
     "Combinator",
     "CombinatorTrace",
     "Engine",
+    "EngineStateIdentity",
     "Entity",
     "Evidence",
     "FiringTrace",

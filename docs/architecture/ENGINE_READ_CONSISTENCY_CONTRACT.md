@@ -1033,3 +1033,34 @@ The boundary that M03 closes is purely **fact-and-basis**:
 what a packet does and does not testify to about its source
 Engine state. The decisions a consumer or operator might make
 on top of those facts remain consumer and operator policy.
+
+---
+
+## §19 Post-M04 addendum (PR73-M04, 245차)
+
+This section is a current-state addendum. It does **not**
+rewrite the M03 baseline investigation above (§1 ~ §18). M03's
+empirical observations on `main` `f40b811` and its semantic
+requirements (§15) remain the historical baseline.
+
+```
+- M03 baseline state had no mechanized Engine state identity.
+- After PR73-M04 merges, ragcore exposes
+  EngineStateIdentity (engine_token: str, revision: int) and
+  Engine.state_identity().
+- That mechanism alone does NOT lift today's PR51 packet out
+  of UNBOUND + UNKNOWN.
+- The current PR51 packet remains UNBOUND + UNKNOWN; the
+  builder does not call state_identity() and the packet does
+  not carry an engine_token / revision field.
+- atomic capture (§6) and packet binding (§8) are NOT
+  provided by PR73-M04.
+- CURRENTLY_MATCHED (§9), STALE (§10), and stale-rejection
+  policy remain out of scope.
+```
+
+PR73-M04 satisfies the §15 semantic requirements as a primitive,
+but does not by itself produce a CAPTURE_BOUND packet, a
+CURRENTLY_MATCHED claim, or a stale determination. Any of those
+would be **separate, explicitly-directed future work**, and is
+**not** automatically scheduled by M04.

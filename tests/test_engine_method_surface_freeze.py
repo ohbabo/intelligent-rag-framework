@@ -34,7 +34,7 @@ from ragcore import Engine
 
 
 # ----------------------------------------------------------------------
-# Locked public method surface (40 methods, §48.2)
+# Locked public method surface (41 methods, §48.2 + PR73-M04)
 # ----------------------------------------------------------------------
 
 _LOCKED_PUBLIC_METHODS: frozenset[str] = frozenset({
@@ -90,7 +90,9 @@ _LOCKED_PUBLIC_METHODS: frozenset[str] = frozenset({
     # snapshot persistence (2)
     "to_snapshot",
     "from_snapshot",
-})  # = 40 methods
+    # PR73-M04 — engine state identity primitive (1)
+    "state_identity",
+})  # = 41 methods (PR36-PKG 40 + PR73-M04 1)
 
 
 # ----------------------------------------------------------------------
@@ -137,10 +139,12 @@ class TestPublicNamespaceFreeze:
     """§48.2 — ragcore.__all__ public namespace freeze."""
 
     def test_ragcore_all_has_exactly_48_symbols(self) -> None:
-        assert len(ragcore.__all__) == 48
+        # PR73-M04 shift: 48 → 49 (added EngineStateIdentity).
+        assert len(ragcore.__all__) == 49
 
     def test_ragcore_all_has_no_duplicates(self) -> None:
-        assert len(set(ragcore.__all__)) == 48
+        # PR73-M04 shift: 48 → 49 (added EngineStateIdentity).
+        assert len(set(ragcore.__all__)) == 49
 
     def test_engine_is_exposed_in_ragcore_all(self) -> None:
         assert "Engine" in ragcore.__all__
@@ -154,11 +158,12 @@ class TestEngineMethodNameFreeze:
     """§48.2 / §48.5 — Engine public method names frozen."""
 
     def test_engine_public_method_count_is_40(self) -> None:
+        # PR73-M04 shift: 40 → 41 (added state_identity).
         count = sum(
             1 for name, _ in inspect.getmembers(Engine, callable)
             if not name.startswith("_")
         )
-        assert count == 40
+        assert count == 41
 
     def test_engine_public_method_names_match_locked_set(self) -> None:
         actual = frozenset(

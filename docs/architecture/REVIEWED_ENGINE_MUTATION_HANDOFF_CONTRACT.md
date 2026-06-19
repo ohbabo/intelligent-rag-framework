@@ -1361,3 +1361,39 @@ caller explicitly invoking one existing **state-mutating**
 Engine public method. M02 does not introduce a faster path, an
 automatic path, a reflective path, or any alternative path to
 that invocation.
+
+---
+
+## §23 Post-M04 public surface addendum (PR73-M04, 245차)
+
+This section is a current-state addendum. M02's historical
+baseline of 40 public methods / 18 read-only / 20 state-mutating
+/ 2 serialization on `main` `896e01e` is preserved unchanged in
+§12.1.
+
+After PR73-M04, the post-M04 public surface counts are:
+
+```
+state-mutating public methods   20  (unchanged set; PR73-M04
+                                     instruments each with a
+                                     revision advance call on
+                                     the success path)
+read-only public methods        19  (was 18; +state_identity)
+serialization boundary           2  (unchanged set: to_snapshot,
+                                     from_snapshot)
+total public methods            41
+```
+
+Explicit classification of the new entry:
+
+```
+state_identity
+  = read-only
+  = NOT a M02 mutation candidate target
+  = NOT eligible to appear in a ReviewedMutationRequest
+  = NOT instrumented to advance the revision
+```
+
+No method was re-classified from read-only to state-mutating or
+vice versa. The 20 state-mutating set in §12.1 remains the
+exhaustive list of M02 candidate targets.
