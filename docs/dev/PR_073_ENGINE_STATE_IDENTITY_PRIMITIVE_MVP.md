@@ -19,10 +19,25 @@ branch:          feat/engine-state-identity-primitive
                             identity invariants
 243차 commit:    9aa65dc   feat(engine): add Engine state
                             identity primitive
-244차 commit:    (this record, docs/dev)
+244차 commit:    e352ec4   docs(dev): record PR73-M04 Engine
+                            state identity primitive MVP
+                            (initial pre-review checkpoint)
+245차 commit:    2456149   fix(engine): close state identity
+                            audit gaps (C1 ~ C7 post-review
+                            correction)
+246차 commit:    docs(dev): reconcile M04 final audit record
+                            (this record, docs-only final
+                            cleanup — current revision)
 type:            framework-level runtime change, additive only;
                   no judgment-semantics delta, no snapshot
-                  schema change, no PR51 packet shape change
+                  schema change, no PR51 packet shape change.
+
+The §2 ~ §13 sections of this record were authored as the
+244차 pre-review checkpoint with the four-commit cycle and
+1501 / +78 totals; §14 records the 245차 audit correction;
+§15 records the 246차 documentation reconciliation and is
+authoritative for the final branch totals (1517 / +94 across
+the six-commit history).
 ```
 
 PR73-M04 is the first M-series PR that touches `ragcore/`. The
@@ -77,16 +92,19 @@ The acceptance criteria stated upfront in the directive:
 7. examples/* 무수정
 8. pyproject.toml 무수정
 9. 모든 baseline test (1423) 유지
-10. 새 test 78 추가, 1501 passing
+10. 새 test 78 추가, 1501 passing (244차 pre-review checkpoint)
 11. EngineStateIdentity / Engine.state_identity 만 추가
 12. __all__ 48 → 49, public methods 40 → 41
 13. private methods 18 → 19 (_advance_state_revision)
 14. failure / no-op / read-only call → revision 불변
 ```
 
-All fourteen are met by the branch's four-commit cycle. The PR
-is opened as Draft and has not been merged; closure language is
-deferred until squash merge.
+The initial four-commit cycle (241~244차) implemented the M04
+surface. The 245차 post-review correction closed the audit
+findings, bringing the verified branch total to 1517 tests (see
+§15 for the consolidated final accounting). The PR is opened as
+Draft and has not been merged; closure language is deferred
+until squash merge.
 
 ---
 
@@ -106,10 +124,13 @@ M-series state:               M01 / M02 / M03 CLOSED;
                               M05 ~ M09 NOT STARTED
 ```
 
-After PR73-M04:
+After PR73-M04 244차 pre-review checkpoint:
 
 ```
 tests:                        1501 passing (= 1423 + 78)
+                              [244차 pre-review checkpoint
+                               value; superseded by §15 for
+                               the final branch total]
 Engine public methods:        41 (+ state_identity)
 Engine private methods:       19 (+ _advance_state_revision)
 ragcore.__all__:              49 (+ EngineStateIdentity)
@@ -121,6 +142,9 @@ M-series state:               M01 / M02 / M03 CLOSED on main;
                                   (this PR);
                               M05 ~ M09 NOT STARTED
 ```
+
+The final branch totals (after 245차 audit correction and 246차
+documentation reconciliation) are consolidated in §15.
 
 ---
 
@@ -162,6 +186,11 @@ The contract pins §0~§10:
 
 ```
 tests/test_engine_state_identity.py    +821 (new, 78 tests)
+                                        [244차 pre-review
+                                         checkpoint; §14.8
+                                         adds 16 more tests,
+                                         §15 records the
+                                         final total]
 ```
 
 15 test classes:
@@ -430,6 +459,8 @@ RuleStats.confirmed_true_count    PR2 baseline preserved
 _REFUTATION_STRENGTH_THRESHOLD    0.8 preserved
 _status_modifier table            7 entries preserved
 test count                        1423 → 1501 (+78)
+                                  [244차 pre-review checkpoint;
+                                   §15 records final 1517 / +94]
 ```
 
 ### §9.2 Behavioral invariants (delta = 0)
@@ -449,15 +480,23 @@ dependency surface                  delta = 0
 
 ### §9.3 New invariants pinned by tests
 
+This inventory was authored as the 244차 pre-review checkpoint
+(78 tests across the classes listed below). §14.8 records the
+245차 additions (16 more tests across two new classes plus the
+real-call coverage adjustment to `TestReadOnlyDoesNotAdvance`).
+§15 records the consolidated final test inventory.
+
 ```
-fresh-lineage on Engine()              78-test class TestNewEngine
-fresh-lineage on from_snapshot()       78-test class TestRestoreSemantics
-two Engine() → distinct tokens         78-test class TestLineageSeparation
+fresh-lineage on Engine()              TestNewEngine
+fresh-lineage on from_snapshot()       TestRestoreSemantics
+two Engine() → distinct tokens         TestLineageSeparation
 6 always-advance methods               TestAlwaysAdvancingMutations
 14 conditional methods                 TestConditionalMutations
 9 idempotent no-ops                    TestIdempotentNoops
 5 error paths preserve revision        TestErrorPaths
 18 read-only methods preserve revision TestReadOnlyDoesNotAdvance
+                                       [245차 §14.8: real-call
+                                        coverage now 19/19]
 add_gap dedup semantics                TestAddGapDedupSemantics
 multi-object single advance            TestMultiObjectSingleAdvance
 snapshot exclusion (3 keys absent)     TestSnapshotExclusion
@@ -467,6 +506,10 @@ PR51 packet unchanged                  TestPR51PacketUnchanged
 ---
 
 ## §10 Regression result
+
+The result below is the 244차 pre-review checkpoint
+(post-implementation, pre-audit). §15 records the consolidated
+final regression result for the verified branch.
 
 ```
 $ python -m pytest -q
@@ -588,12 +631,31 @@ design.
 > external caller can actually use. The mechanism is one frozen
 > value type, one read-only method, one private advance helper,
 > a token allocator in `__init__`, and one advance call-site
-> per logical mutation. Every other property the M-series
-> requires — capture-binding, currently-matched comparison,
-> stale determination, operator decision recording, packet
-> binding — is reachable from this primitive, but is not
-> introduced here. PR73-M04 stays as small as M03 demands and
-> as additive as the structural-freeze tests require.*
+> per logical mutation. Other read-consistency capabilities
+> discussed by M03 — such as packet binding or mechanical
+> comparison helpers — are separate explicitly-directed future
+> work unless already assigned by the M01 plan. PR73-M04 stays
+> as small as M03 demands and as additive as the
+> structural-freeze tests require.*
+
+Explicit separation of responsibilities at the M04 boundary:
+
+```
+M05 (PR74-M05):
+  operator decision record / stale revalidation policy
+  — M01-locked OC-B responsibility, unchanged
+
+separate, unscheduled work (NOT assigned to M06-M09):
+  CAPTURE_BOUND packet binding
+  CURRENTLY_MATCHED helper
+  mechanical stale-availability mechanism
+
+M06-M09 (PR75-M06 ~ PR78-M09):
+  M01-locked responsibilities unchanged
+  (downstream re-entry / effective-confidence trace /
+   complete domain-neutral reference operation /
+   RuleStats provenance)
+```
 
 PR73-M04 is opened as **Draft** and is **not** merged. Closure
 language (`CLOSED`) is reserved for the post-squash-merge state.
@@ -628,23 +690,41 @@ audit-defect corrections without amending or rebasing 241~244차.
 raise after the id counter had advanced, leaving:
 
 ```
-_next_id          advanced
+_next_id           advanced
 state revision     unchanged
-to_snapshot        unchanged
+to_snapshot()      changed (because the snapshot includes
+                    next_id under the "next_id" top-level key)
 registered object  absent
 ```
 
 That violated the §1 contract that *equal `EngineStateIdentity`
 implies equal observable Engine logical state*. Two engines could
-diverge by one id step with no detectable difference at the
-identity surface.
+end up with the **same `EngineStateIdentity` but a different
+serialized Engine state** — the identity surface said "same",
+while `to_snapshot()` said "different" by one id step.
+
+**Note on the 245차 commit message.** The 245차 commit message
+phrase implying that the pre-fix `to_snapshot()` stayed unchanged
+was imprecise. Because `to_snapshot()` includes `next_id`, the
+pre-fix failed call **did** change the snapshot while leaving
+`EngineStateIdentity` unchanged. The 245차 commit message is not
+amended (history rewrite forbidden by directive); **this dev
+record is the authoritative correction** of the pre-fix
+characterization.
 
 The fix moves `ScoreValue(...)` admission to **before**
-`_allocate_id` in both methods. `add_gap` already had the correct
-order (severity validated before allocate). The remaining four
-allocation paths (`add_entity`, `add_observation`, `add_relation`,
-`register_rule` — though `register_rule` does not allocate) have
-**no** post-allocate validation hazard:
+`_allocate_id` in both methods. After the fix, an invalid score
+leaves `_next_id`, `to_snapshot()`, and `state_identity()` all
+unchanged.
+
+Six-always-changing methods re-audit. Among the id-allocating
+methods, `add_entity`, `add_observation`, and `add_relation` have
+no post-allocation dataclass admission (their dataclasses have no
+`__post_init__`). `register_rule` does not allocate an id at all
+— it registers `(rule_id, rule_version)` keyed entries that the
+caller supplies. `add_gap` is a conditional mutation that already
+validates `severity` before allocation. Only `add_claim` and
+`add_evidence` needed the validation-order fix:
 
 | Method | Constructor admission | Post-allocate hazard |
 |--------|----------------------|----------------------|
@@ -761,8 +841,8 @@ revision:
 
 `Engine.state_identity()` continues to return admissible values
 under the normal Engine path. `TestEngineStateIdentityAdmission`
-covers the nine admission branches plus the
-Engine-returned-value sanity check.
+covers the admission branches in nine test methods, including
+the Engine-returned-value sanity check.
 
 ### §14.6 C6 — Draft state wording
 
@@ -876,3 +956,150 @@ docs/dev/PR_073_ENGINE_STATE_IDENTITY_PRIMITIVE_MVP.md
 
 No `examples/*` file is touched. No `pyproject.toml` change. No
 other test file's expectations are changed.
+
+---
+
+## §15 Final audit reconciliation — 246차
+
+PR73-M04 is held in Draft for a docs-only final cleanup. The
+246차 commit `docs(dev): reconcile M04 final audit record`
+reconciles the dev record and architecture contracts so that
+this file accurately describes the verified branch HEAD. No
+runtime code, no test code, no `examples/*` file, and no
+`pyproject.toml` is touched by 246차.
+
+### §15.1 Six-commit history
+
+```
+241차  86ce33e   docs(contract): define Engine state identity
+                  primitive
+242차  b6bcdde   test(core): lock Engine state identity invariants
+243차  9aa65dc   feat(engine): add Engine state identity primitive
+244차  e352ec4   docs(dev): record PR73-M04 Engine state identity
+                  primitive MVP
+                  (initial pre-review checkpoint — §2 ~ §13)
+245차  2456149   fix(engine): close state identity audit gaps
+                  (C1 ~ C7 post-review correction — §14)
+246차  (this)    docs(dev): reconcile M04 final audit record
+                  (docs-only final cleanup — §15)
+```
+
+The five preceding commits are **not** amended, rebased, or
+squashed. The 245차 commit message phrasing about pre-fix
+snapshot state is corrected by §14.1 (this dev record is
+authoritative).
+
+### §15.2 Final branch totals (authoritative)
+
+```
+baseline tests                 1423   (main 7ce41b3)
+initial M04 cycle (241~244차)   +78
+post-review correction (245차)  +16
+M04 branch total               1517 passing
+test delta from baseline       +94
+```
+
+Test delta breakdown for 245차:
+
+```
+TestFailedAllocationDoesNotConsumeId           6  (C1 regression)
+TestEngineStateIdentityAdmission                9  (C5 admission)
+TestReadOnlyDoesNotAdvance parameterization
+  — get_relation added                          +1
+```
+
+### §15.3 Final structural counts
+
+```
+Engine public methods          41   (unchanged since 243차)
+Engine private methods         19   (unchanged since 243차)
+state-mutating public methods  20   (unchanged set; instrumented)
+read-only public methods       19   (real-call coverage 19/19)
+serialization boundary          2   (unchanged set)
+ragcore.__all__                49   (unchanged since 243차)
+snapshot schema_version          2   (unchanged)
+snapshot top-level keys        18   (unchanged set)
+PR51 packet keys                7   (unchanged set, same order)
+```
+
+### §15.4 Final regression result
+
+```
+$ python -m pytest -q
+[...]
+1517 passed
+$ git diff --check
+(clean)
+```
+
+### §15.5 246차 file footprint (docs-only)
+
+```
+docs/dev/PR_073_ENGINE_STATE_IDENTITY_PRIMITIVE_MVP.md
+  — §14.1 pre-fix snapshot wording corrected (R1)
+  — top commit block, §2, §3.2, §9.1, §9.3, §10 annotated as
+    244차 pre-review checkpoint (R2, R3)
+  — §13 closing position rewritten to separate M05 / M06-M09
+    from unscheduled future work (R5)
+  — §14.1 register_rule re-classified as non-allocator (R6)
+  — §14.5 admission test count corrected to nine test methods
+    (R7)
+  — §15 added (this section)
+
+docs/architecture/ENGINE_STATE_IDENTITY_PRIMITIVE_CONTRACT.md
+  — §4.5 / §8.2 M05 process-boundary wording tightened: M05
+    persists operator decision record references, NOT Engine
+    runtime lineage (R4)
+
+No runtime file is touched. No test file is touched. No
+examples/* file is touched. No pyproject.toml change.
+```
+
+### §15.6 Repository scan after 246차
+
+```
+pre-fix "_next_id advanced + to_snapshot unchanged" residue   0
+unqualified final "1501 passed" residue                        0
+unqualified final "+78 tests" residue                          0
+"four-commit cycle completed all criteria" residue             0
+"cross-process Engine lineage persistence = M05" residue       0
+"M-series requires CAPTURE_BOUND/CURRENTLY_MATCHED" residue    0
+M06-M09 responsibility drift                                   0
+_claim_gap_refs[gap_id] residue                                0
+M04 CLOSED / CLOSED (this PR, Draft) residue                   0
+```
+
+(The scan covers current repository files and the PR body.
+The 245차 commit message is preserved as-is in git history.)
+
+### §15.7 246차 invariants
+
+```
+tests                          1517   (no test added / removed)
+runtime delta from 245차        0
+test delta from 245차           0
+examples/* delta               0
+pyproject.toml delta           0
+judgment semantics delta       0
+dependency delta               0
+packet runtime shape delta     0
+snapshot runtime shape delta   0
+```
+
+### §15.8 Final M-series state
+
+```
+P-series   CLOSED
+PR70-M01   CLOSED
+PR71-M02   CLOSED
+PR72-M03   CLOSED
+PR73-M04   OPEN — DRAFT, NOT MERGED (this PR)
+PR74-M05   NOT STARTED
+PR75-M06   NOT STARTED
+PR76-M07   NOT STARTED
+PR77-M08   NOT STARTED
+PR78-M09   NOT STARTED
+```
+
+No automatic next PR. PR remains Draft. Framework waits for
+directive.

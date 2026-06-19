@@ -314,8 +314,22 @@ equivalence does not imply runtime lineage identity.
 A new process produces a new lineage with a fresh token,
 even when the same Engine code path is replayed.
 
-PR73-M04 does NOT define cross-process state-identity
-persistence; that is OC-B / PR74-M05 territory.
+PR73-M04 does NOT continue an Engine runtime lineage across
+process restart or `from_snapshot()` restore. The
+engine_token and revision counter are per-process / per-
+instance, allocated fresh on `Engine()` and on
+`Engine.from_snapshot(...)`.
+
+M05 (PR74-M05, OC-B) may persist an operator decision record
+that references an `EngineStateIdentity` value observed at
+decision time. That persisted reference does NOT mean that a
+restored Engine, or a new Engine instance, inherits or
+resumes the same `engine_token` / revision lineage. The two
+concepts are explicitly separated:
+
+  persistent operator decision record
+    ≠
+  persistent Engine runtime lineage
 ```
 
 ---
@@ -423,6 +437,18 @@ fact-and-basis layer and does **not**:
 - define what an operator decision record looks like
 - define how M04 identity is to be persisted in any operator
   audit
+```
+
+M05 may record the captured `EngineStateIdentity` value as
+part of an operator audit. M05 does NOT automatically make
+that captured value comparable to a fresh Engine lineage
+created after process restart or `from_snapshot()` restore.
+The two concepts are kept distinct by M04:
+
+```
+persistent operator decision record
+  ≠
+persistent Engine runtime lineage
 ```
 
 The 243차 implementation purposely emits a fresh lineage on
