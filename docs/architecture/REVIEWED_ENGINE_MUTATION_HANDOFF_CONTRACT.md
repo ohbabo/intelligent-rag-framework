@@ -1454,3 +1454,69 @@ boundary, or the §15 Rule / RuleStats separation. The §12.1
 historical baseline of 40 methods on `main` `896e01e` and the
 §23 post-M04 counts (20 state-mutating / 19 read-only / 2
 serialization = 41 total) are preserved unchanged.
+
+---
+
+## §25 Post-M06 addendum (PR75-M06, 2026-06-19)
+
+PR75-M06 (`DOWNSTREAM_RESULT_REENTRY_CONTRACT.md`) consumes
+the M02 four-layer model unchanged for the special case where
+the candidate is derived from a downstream investigation
+result.
+
+```
+- A result-derived EngineInputCandidate uses the same
+  four-layer model from §4: RoleAssignment ->
+  EngineInputCandidate -> ReviewedMutationRequest ->
+  explicit invocation of one existing state-mutating Engine
+  public method.
+
+- PR75-M06 does NOT introduce a separate "re-entry
+  executor", a separate "re-entry request type", a separate
+  "result request" dispatcher, or any alternative
+  materialization path. The existing four-layer model is
+  reused verbatim.
+
+- A result-derived candidate must record, in addition to the
+  §7 minimum content:
+    * the exact result trace or fragment reference
+    * the role-assignment context reference
+    * the argument translation basis (how the candidate's
+      proposed arguments were derived from the result trace +
+      role assignment)
+  These are M06 source-basis fields. They do NOT modify §7's
+  conceptual obligations.
+
+- Direct substitutions remain forbidden (M06 §4.3 / §9.3 /
+  §20):
+    external result   != Evidence
+    tool output       != Evidence
+    result score      != Evidence.strength
+    severity label    != Gap.severity
+    external status   != Claim.status
+
+- Lifecycle / Gap / contradiction separation (§14.1 / §14.2 /
+  §14.3) and Rule / RuleStats separation (§15) are preserved.
+  M06 explicitly forbids automatic chaining of, e.g.,
+  add_evidence -> confirm_claim_if_ready into one pipeline.
+  Each transition is its own candidate / review / decision /
+  revalidation / invocation cycle.
+
+- The §12.3 forbidden execution mechanisms (reflection,
+  name-string dispatch, request.execute(engine),
+  engine.apply_request(request), queue / scheduler / worker
+  invocation, stored decision auto-execution) remain
+  forbidden for result-derived candidates.
+
+- The §13 call-success semantics are unchanged: a successful
+  Stage 6 invocation under M06 proves the Engine accepted
+  the supplied arguments and applied that method's existing
+  runtime behavior. It does NOT prove that the external
+  result is true.
+```
+
+PR75-M06 does not modify the four-layer model, the §11
+exact-content review binding, the §12 / §12.3 invocation
+boundary, the §15 separation principles, or the §23 / §24
+historical addenda. §1 ~ §22 historical body and §23 / §24
+addenda remain unchanged.

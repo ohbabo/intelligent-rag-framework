@@ -1322,3 +1322,55 @@ or validated output into Engine authority.
 
 The boundary remains domain-neutral, adapter-side, and outside
 Engine judgment semantics.
+
+---
+
+## §32 Post-M06 addendum (PR75-M06, 2026-06-19)
+
+PR75-M06 (`DOWNSTREAM_RESULT_REENTRY_CONTRACT.md`) closes the
+conceptual boundary for OC-E (M01 Lane C, stages C2 ~ C7) by
+defining how a downstream investigation result becomes
+eligible for an explicit Engine state-mutating invocation. The
+result trace from such an investigation is, in PR59 / PR63
+terms, **a new external source artifact**.
+
+```
+- A downstream investigation result re-enters the framework
+  as a NEW external source artifact. The PR63 §3 ~ §9
+  obligations (provenance / retention / loss / derivation /
+  unresolved ambiguity / failure) apply to that artifact
+  unchanged. The downstream result does NOT continue a prior
+  proposal subject or a prior decision subject; it is its own
+  source.
+
+- An investigation result adapter (consumer-side adapter that
+  ingests a downstream tool's or process's output) is one
+  adapter under PR63. It is NOT a "canonical adapter" — PR59 /
+  PR63 declare no canonical adapter, and PR75-M06 does not
+  add one.
+
+- The adapter's output is NOT a `ragcore.Evidence`, NOT a
+  `ragcore.Claim`, NOT a `ragcore.Gap`, NOT a
+  `ragcore.Relation`, and NOT a `ReviewedMutationRequest`.
+  This restates PR59 / PR63's locks for the result-adapter
+  case.
+
+- The adapter does NOT call any Engine state-mutating public
+  method. Re-entry into Engine state is governed by
+  PR75-M06 §4.4 / §4.5 / §4.6: candidate materialization
+  consideration -> M02 §9 mutation review -> M05 mutation-
+  review-family decision record -> M05 §7 state revalidation
+  -> M02 §12 explicit invocation. The adapter participates
+  only at the trace-translation layer.
+
+- Operational failure (tool failed to run, parse failed,
+  unsupported shape, translation failed) and semantic
+  ambiguity (role unresolved, intended use unclear) are
+  distinct PR63 conditions and PR75-M06 §7 preserves the
+  distinction. They MUST NOT be collapsed into a single
+  `invalid` / `unresolved` label.
+```
+
+PR75-M06 does not modify any of §1 ~ §31 of this spec, the
+PR63 boundary, or the §28 anti-patterns. §28 ~ §31 historical
+body and §0 ~ §27 normative body remain unchanged.
