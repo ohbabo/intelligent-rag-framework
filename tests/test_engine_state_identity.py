@@ -828,16 +828,19 @@ class TestStructuralCounts:
     def test_engine_public_method_count(self):
         public, _ = self._ast_counts()
         # 40 baseline + 1 new (state_identity)
-        assert public == 41
+        # PR76-M07 shift: + 1 (compute_effective_confidence_with_trace)
+        assert public == 42
 
     def test_engine_private_method_count(self):
         _, private = self._ast_counts()
         # 18 baseline + 1 new (_advance_state_revision)
-        assert private == 19
+        # PR76-M07 shift: + 1 (_compute_effective_confidence_core)
+        assert private == 20
 
     def test_ragcore_all_count(self):
         # 48 baseline + 1 (EngineStateIdentity)
-        assert len(ragcore.__all__) == 49
+        # PR76-M07 shift: + 1 (EffectiveConfidenceTrace)
+        assert len(ragcore.__all__) == 50
 
     def test_engine_state_identity_in_all(self):
         assert "EngineStateIdentity" in ragcore.__all__

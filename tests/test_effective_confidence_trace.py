@@ -1,0 +1,696 @@
+"""Tests for PR76-M07 — Effective Confidence Calculation Trace.
+
+Locks the §0~§20 contract invariants from the test side. These
+tests are added before the 257차 implementation; running them
+on 256차 produces expected import / AttributeError failures only
+(the new public type and method are not yet implemented).
+
+Categories (per §15 of the directive):
+  A. value type / export / frozen behavior / field order
+  B. public method existence / signature / read-only / KeyError
+  C. single calculation source (value-equality with old API,
+     deterministic re-call)
+  D. status modifier breakdown (4 statuses)
+  E. freshness modifier breakdown
+     (no contradiction / one active / multi active most-recent /
+      resolved excluded)
+  F. gap modifier breakdown (0 / 1 / 2 / 3 / 4 unresolved;
+     resolved excluded)
+  G. count modifier (0 / 1 active -> 1.0; 2+ active penalty;
+     resolved excluded)
+  H. RuleStats modifier (sentinel rule id 0 / lookup miss /
+     observed_precision None / firing_count tiers /
+     false_positive_rate ignored)
+  I. evidence-type modifier (empty hint set / no direct /
+     all hint / mixed / contradiction excluded /
+     resolved contradiction excluded)
+  J. policy identity exact-string + stable across reads +
+     forbidden equivalences
+  K. source state identity equals state_identity() / read-only /
+     mutation advances / from_snapshot fresh lineage
+  L. preserved boundaries
+     (PR51 packet 7 keys / snapshot 18 keys schema_version 2 /
+      trace not serialized / no probability / no lifecycle /
+      no RuleStats update)
+"""
+
+from __future__ import annotations
+
+import ast
+import dataclasses
+import importlib.util
+from copy import deepcopy
+from pathlib import Path
+
+import pytest
+
+import ragcore
+from ragcore import (
+    CLAIM_STATUS_CANDIDATE,
+    CLAIM_STATUS_CONFIRMED,
+    CLAIM_STATUS_DISPUTED,
+    CLAIM_STATUS_REFUTED,
+    Engine,
+    RULE_MATURITY_DEPRECATED,
+    RULE_MATURITY_EXPERIMENTAL,
+    RULE_MATURITY_STABLE,
+    RuleDefinition,
+    ScoreValue,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+_EXPECTED_POLICY_ID = "ragcore.effective-confidence.v1"
+
+
+_EXPECTED_FIELD_ORDER = (
+    "claim_id",
+    "source_state_identity",
+    "calculation_policy_id",
+    "base_confidence",
+    "status_modifier",
+    "freshness_modifier",
+    "gap_modifier",
+    "count_modifier",
+    "rule_stats_modifier",
+    "evidence_type_modifier",
+    "effective_confidence",
+)
+
+
+def _build_basic(engine, *, base_confidence: float = 0.8, status=CLAIM_STATUS_CANDIDATE):
+    ent = engine.add_entity(entity_type=1)
+    cid = engine.add_claim(
+        subject_id=ent,
+        claim_type=1,
+        rule_id=1,
+        rule_version=1,
+        reason_code=0,
+        base_confidence=base_confidence,
+        status=status,
+    )
+    return ent, cid
+
+
+# ===========================================================================
+# A. value type / export / frozen / field order
+# ===========================================================================
+
+
+class TestValueType:
+
+    def test_value_type_exported(self):
+        assert hasattr(ragcore, "EffectiveConfidenceTrace")
+        assert "EffectiveConfidenceTrace" in ragcore.__all__
+
+    def test_value_type_is_frozen_dataclass(self):
+        T = ragcore.EffectiveConfidenceTrace
+        assert dataclasses.is_dataclass(T)
+        assert T.__dataclass_params__.frozen is True
+
+    def test_value_type_field_order_locked(self):
+        T = ragcore.EffectiveConfidenceTrace
+        names = tuple(f.name for f in dataclasses.fields(T))
+        assert names == _EXPECTED_FIELD_ORDER
+
+    def test_value_type_has_no_extra_fields(self):
+        T = ragcore.EffectiveConfidenceTrace
+        names = {f.name for f in dataclasses.fields(T)}
+        forbidden = {
+            "probability", "verdict", "risk_label", "lifecycle_recommendation",
+            "modifier_reason", "wall_clock_timestamp", "packet_identity",
+            "snapshot_digest", "stale_flag", "caller_identity",
+            "rule_stats_update_provenance", "freshness_verdict",
+            "error", "error_message",
+        }
+        assert names.isdisjoint(forbidden)
+
+
+# ===========================================================================
+# B. public method existence / read-only / KeyError
+# ===========================================================================
+
+
+class TestPublicMethod:
+
+    def test_method_exists(self):
+        assert hasattr(Engine, "compute_effective_confidence_with_trace")
+        assert callable(Engine.compute_effective_confidence_with_trace)
+
+    def test_method_returns_trace(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert isinstance(trace, ragcore.EffectiveConfidenceTrace)
+
+    def test_method_unknown_claim_raises_keyerror(self):
+        e = Engine()
+        with pytest.raises(KeyError):
+            e.compute_effective_confidence_with_trace(99999)
+
+    def test_method_is_read_only_revision(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        before = e.state_identity()
+        e.compute_effective_confidence_with_trace(cid)
+        after = e.state_identity()
+        assert before == after
+
+    def test_method_is_read_only_snapshot(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        before = e.to_snapshot()
+        e.compute_effective_confidence_with_trace(cid)
+        after = e.to_snapshot()
+        assert before == after
+
+
+# ===========================================================================
+# C. single calculation source
+# ===========================================================================
+
+
+class TestSingleCalculationSource:
+
+    def test_trace_effective_equals_old_api(self):
+        e = Engine()
+        _, cid = _build_basic(e, base_confidence=0.7)
+        old = e.compute_effective_confidence(cid)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.effective_confidence == old
+
+    def test_trace_effective_equals_six_modifier_product(self):
+        e = Engine()
+        _, cid = _build_basic(e, base_confidence=0.6)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        expected = trace.base_confidence.value * (
+            trace.status_modifier
+            * trace.freshness_modifier
+            * trace.gap_modifier
+            * trace.count_modifier
+            * trace.rule_stats_modifier
+            * trace.evidence_type_modifier
+        )
+        assert trace.effective_confidence == ScoreValue(expected)
+
+    def test_repeated_reads_return_equal_trace(self):
+        e = Engine()
+        _, cid = _build_basic(e, base_confidence=0.5)
+        a = e.compute_effective_confidence_with_trace(cid)
+        b = e.compute_effective_confidence_with_trace(cid)
+        assert a == b
+
+    def test_old_api_signature_and_return_type_preserved(self):
+        e = Engine()
+        _, cid = _build_basic(e, base_confidence=0.4)
+        result = e.compute_effective_confidence(cid)
+        assert isinstance(result, ScoreValue)
+
+
+# ===========================================================================
+# D. status_modifier breakdown (4 statuses)
+# ===========================================================================
+
+
+class TestStatusModifier:
+
+    def _build_with_status(self, status: int):
+        e = Engine()
+        _, cid = _build_basic(e, base_confidence=1.0, status=status)
+        return e, cid
+
+    def test_candidate_status_modifier_is_one(self):
+        e, cid = self._build_with_status(CLAIM_STATUS_CANDIDATE)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.status_modifier == 1.0
+
+    def test_confirmed_status_modifier_is_one(self):
+        e, cid = self._build_with_status(CLAIM_STATUS_CONFIRMED)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.status_modifier == 1.0
+
+    def test_disputed_status_modifier_is_half(self):
+        e, cid = self._build_with_status(CLAIM_STATUS_DISPUTED)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.status_modifier == 0.5
+
+    def test_refuted_status_modifier_is_zero(self):
+        e, cid = self._build_with_status(CLAIM_STATUS_REFUTED)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.status_modifier == 0.0
+
+
+# ===========================================================================
+# E. freshness_modifier breakdown
+# ===========================================================================
+
+
+class TestFreshnessModifier:
+
+    def test_no_active_contradiction_freshness_is_one(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.freshness_modifier == 1.0
+
+    def test_one_active_contradiction_freshness_below_one(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        ev = e.add_evidence(claim_id=cid, raw_ref_id=0, evidence_type=1, strength=0.5)
+        e.register_contradiction(cid, ev)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.freshness_modifier < 1.0
+
+    def test_resolved_contradiction_does_not_apply_to_freshness(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        ev = e.add_evidence(claim_id=cid, raw_ref_id=0, evidence_type=1, strength=0.5)
+        e.register_contradiction(cid, ev)
+        e.register_contradiction_resolution(cid, ev)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.freshness_modifier == 1.0
+
+
+# ===========================================================================
+# F. gap_modifier breakdown
+# ===========================================================================
+
+
+class TestGapModifier:
+
+    def _build_with_gaps(self, n: int):
+        e = Engine()
+        _, cid = _build_basic(e)
+        for k in range(n):
+            e.add_gap(
+                claim_id=cid, gap_type=k+1, required_evidence_type=k+1,
+                severity=0.5, rule_id=1,
+            )
+        return e, cid
+
+    def test_zero_gaps_modifier_is_one(self):
+        e, cid = self._build_with_gaps(0)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.gap_modifier == 1.0
+
+    def test_one_gap_modifier_is_nine_tenths(self):
+        e, cid = self._build_with_gaps(1)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.gap_modifier == 0.9
+
+    def test_two_gaps_modifier_is_eight_tenths(self):
+        e, cid = self._build_with_gaps(2)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.gap_modifier == 0.8
+
+    def test_three_gaps_modifier_is_seven_tenths(self):
+        e, cid = self._build_with_gaps(3)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.gap_modifier == 0.7
+
+    def test_four_gaps_modifier_is_seven_tenths(self):
+        e, cid = self._build_with_gaps(4)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.gap_modifier == 0.7
+
+    def test_resolved_gap_does_not_count(self):
+        e, cid = self._build_with_gaps(1)
+        gap_id = e.gaps_for_claim(cid)[0].id
+        ev = e.add_evidence(
+            claim_id=cid, raw_ref_id=0,
+            evidence_type=e.get_gap(gap_id).required_evidence_type,
+            strength=0.9,
+        )
+        e.resolve_gaps_for_evidence(ev)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.gap_modifier == 1.0
+
+
+# ===========================================================================
+# G. count_modifier (active contradiction count)
+# ===========================================================================
+
+
+class TestCountModifier:
+
+    def test_zero_active_count_modifier_is_one(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.count_modifier == 1.0
+
+    def test_one_active_count_modifier_is_one(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        ev = e.add_evidence(claim_id=cid, raw_ref_id=0, evidence_type=1, strength=0.5)
+        e.register_contradiction(cid, ev)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.count_modifier == 1.0
+
+    def test_two_active_count_modifier_below_one(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        ev1 = e.add_evidence(claim_id=cid, raw_ref_id=0, evidence_type=1, strength=0.5)
+        ev2 = e.add_evidence(claim_id=cid, raw_ref_id=1, evidence_type=1, strength=0.5)
+        e.register_contradiction(cid, ev1)
+        e.register_contradiction(cid, ev2)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.count_modifier < 1.0
+
+    def test_resolved_contradiction_does_not_count_for_count_modifier(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        ev1 = e.add_evidence(claim_id=cid, raw_ref_id=0, evidence_type=1, strength=0.5)
+        ev2 = e.add_evidence(claim_id=cid, raw_ref_id=1, evidence_type=1, strength=0.5)
+        e.register_contradiction(cid, ev1)
+        e.register_contradiction(cid, ev2)
+        e.register_contradiction_resolution(cid, ev2)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.count_modifier == 1.0
+
+
+# ===========================================================================
+# H. rule_stats_modifier
+# ===========================================================================
+
+
+class TestRuleStatsModifier:
+
+    def test_sentinel_rule_id_zero_modifier_is_one(self):
+        e = Engine()
+        ent = e.add_entity(entity_type=1)
+        cid = e.add_claim(
+            subject_id=ent, claim_type=1, rule_id=0, rule_version=0,
+            reason_code=0, base_confidence=0.7,
+        )
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.rule_stats_modifier == 1.0
+
+    def test_lookup_miss_modifier_is_one(self):
+        e = Engine()
+        ent = e.add_entity(entity_type=1)
+        cid = e.add_claim(
+            subject_id=ent, claim_type=1, rule_id=42, rule_version=1,
+            reason_code=0, base_confidence=0.7,
+        )
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.rule_stats_modifier == 1.0
+
+    def test_registered_rule_observed_precision_none_modifier_is_one(self):
+        e = Engine()
+        e.register_rule(RuleDefinition(
+            id=7, version=1, maturity=RULE_MATURITY_STABLE,
+            prior_confidence=ScoreValue(0.8),
+        ))
+        ent = e.add_entity(entity_type=1)
+        cid = e.add_claim(
+            subject_id=ent, claim_type=1, rule_id=7, rule_version=1,
+            reason_code=0, base_confidence=0.7,
+        )
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.rule_stats_modifier == 1.0
+
+    def test_false_positive_rate_does_not_affect_modifier(self):
+        e = Engine()
+        e.register_rule(RuleDefinition(
+            id=8, version=1, maturity=RULE_MATURITY_STABLE,
+            prior_confidence=ScoreValue(0.8),
+        ))
+        ent = e.add_entity(entity_type=1)
+        cid = e.add_claim(
+            subject_id=ent, claim_type=1, rule_id=8, rule_version=1,
+            reason_code=0, base_confidence=0.7,
+        )
+        base = e.compute_effective_confidence_with_trace(cid).rule_stats_modifier
+        e.update_rule_stats(
+            rule_id=8, rule_version=1,
+            false_positive_rate=ScoreValue(0.9),
+        )
+        new = e.compute_effective_confidence_with_trace(cid).rule_stats_modifier
+        assert new == base
+
+
+# ===========================================================================
+# I. evidence_type_modifier
+# ===========================================================================
+
+
+class TestEvidenceTypeModifier:
+
+    def test_empty_hint_set_modifier_is_one(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        e.add_evidence(claim_id=cid, raw_ref_id=0, evidence_type=42, strength=0.5)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.evidence_type_modifier == 1.0
+
+    def test_no_direct_evidence_modifier_is_one(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        e.register_hint_evidence_types([42])
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.evidence_type_modifier == 1.0
+
+    def test_all_direct_hint_modifier_is_nine_tenths(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        e.register_hint_evidence_types([42])
+        e.add_evidence(claim_id=cid, raw_ref_id=0, evidence_type=42, strength=0.5)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.evidence_type_modifier == 0.9
+
+    def test_mixed_direct_modifier_is_one(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        e.register_hint_evidence_types([42])
+        e.add_evidence(claim_id=cid, raw_ref_id=0, evidence_type=42, strength=0.5)
+        e.add_evidence(claim_id=cid, raw_ref_id=1, evidence_type=99, strength=0.5)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.evidence_type_modifier == 1.0
+
+    def test_contradiction_evidence_excluded(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        e.register_hint_evidence_types([42])
+        e.add_evidence(claim_id=cid, raw_ref_id=0, evidence_type=42, strength=0.5)
+        ev_contra = e.add_evidence(claim_id=cid, raw_ref_id=1, evidence_type=99, strength=0.5)
+        e.register_contradiction(cid, ev_contra)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        # only direct supporting evidence remains; that one is a hint -> 0.9
+        assert trace.evidence_type_modifier == 0.9
+
+
+# ===========================================================================
+# J. policy identity
+# ===========================================================================
+
+
+class TestPolicyIdentity:
+
+    def test_policy_id_exact_string(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.calculation_policy_id == _EXPECTED_POLICY_ID
+
+    def test_policy_id_is_str(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert type(trace.calculation_policy_id) is str
+
+    def test_policy_id_stable_across_reads(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        a = e.compute_effective_confidence_with_trace(cid).calculation_policy_id
+        b = e.compute_effective_confidence_with_trace(cid).calculation_policy_id
+        assert a == b
+
+    def test_policy_id_not_schema_version_stringification(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        snap_version = e.to_snapshot()["schema_version"]
+        assert trace.calculation_policy_id != str(snap_version)
+        assert trace.calculation_policy_id != f"schema_version:{snap_version}"
+
+    def test_policy_id_not_re_exported_in_all(self):
+        # _EFFECTIVE_CONFIDENCE_POLICY_ID is module-private.
+        assert "_EFFECTIVE_CONFIDENCE_POLICY_ID" not in ragcore.__all__
+        assert "EFFECTIVE_CONFIDENCE_POLICY_ID" not in ragcore.__all__
+
+
+# ===========================================================================
+# K. source state identity
+# ===========================================================================
+
+
+class TestSourceStateIdentity:
+
+    def test_source_state_equals_engine_state(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.source_state_identity == e.state_identity()
+
+    def test_source_state_type_is_engine_state_identity(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert isinstance(
+            trace.source_state_identity, ragcore.EngineStateIdentity,
+        )
+
+    def test_trace_read_leaves_revision_unchanged(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        r0 = e.state_identity().revision
+        e.compute_effective_confidence_with_trace(cid)
+        assert e.state_identity().revision == r0
+
+    def test_state_mutating_call_produces_new_revision_in_subsequent_trace(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        t1 = e.compute_effective_confidence_with_trace(cid)
+        e.add_evidence(claim_id=cid, raw_ref_id=0, evidence_type=1, strength=0.5)
+        t2 = e.compute_effective_confidence_with_trace(cid)
+        assert t1.source_state_identity.revision != t2.source_state_identity.revision
+
+    def test_from_snapshot_produces_fresh_lineage_token(self):
+        e1 = Engine()
+        _, cid = _build_basic(e1)
+        t1 = e1.compute_effective_confidence_with_trace(cid)
+        snap = e1.to_snapshot()
+        e2 = Engine.from_snapshot(snap)
+        t2 = e2.compute_effective_confidence_with_trace(cid)
+        assert t1.source_state_identity.engine_token != t2.source_state_identity.engine_token
+
+
+# ===========================================================================
+# L. preserved boundaries
+# ===========================================================================
+
+
+class TestPreservedBoundaries:
+
+    def test_pr51_packet_still_7_keys(self):
+        spec = importlib.util.spec_from_file_location(
+            "engine_inspector", "examples/inspector/engine_inspector.py",
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        e = Engine()
+        _, cid = _build_basic(e)
+        pkt = mod.build_engine_context_packet(e, cid)
+        assert len(pkt) == 7
+        for forbidden in (
+            "effective_confidence_trace",
+            "calculation_policy_id",
+            "source_state_identity",
+            "modifier_breakdown",
+        ):
+            assert forbidden not in pkt
+
+    def test_snapshot_still_18_keys_schema_v2(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        e.compute_effective_confidence_with_trace(cid)
+        snap = e.to_snapshot()
+        assert len(snap) == 18
+        assert snap["schema_version"] == 2
+
+    def test_trace_not_serialized_in_snapshot(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        e.compute_effective_confidence_with_trace(cid)
+        snap = e.to_snapshot()
+        for forbidden in (
+            "effective_confidence_trace",
+            "trace_log",
+            "calculation_policy_id",
+            "last_traced_at",
+        ):
+            assert forbidden not in snap
+
+    def test_effective_confidence_is_scorevalue_not_float(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        # ScoreValue (not raw float / probability)
+        assert isinstance(trace.effective_confidence, ScoreValue)
+        assert isinstance(trace.base_confidence, ScoreValue)
+
+    def test_trace_does_not_change_lifecycle(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        history_before = e.claim_lifecycle_history(cid)
+        e.compute_effective_confidence_with_trace(cid)
+        assert e.claim_lifecycle_history(cid) == history_before
+
+    def test_trace_does_not_change_rule_stats(self):
+        e = Engine()
+        e.register_rule(RuleDefinition(
+            id=7, version=1, maturity=RULE_MATURITY_STABLE,
+            prior_confidence=ScoreValue(0.5),
+        ))
+        ent = e.add_entity(entity_type=1)
+        cid = e.add_claim(
+            subject_id=ent, claim_type=1, rule_id=7, rule_version=1,
+            reason_code=0, base_confidence=0.5,
+        )
+        before = e.get_rule_stats(7, 1)
+        e.compute_effective_confidence_with_trace(cid)
+        assert e.get_rule_stats(7, 1) == before
+
+
+# ===========================================================================
+# M. structural counts (post-M07)
+# ===========================================================================
+
+
+class TestStructuralCounts:
+
+    def _ast_counts(self):
+        src = open("ragcore/engine.py").read()
+        tree = ast.parse(src)
+        public, private = 0, 0
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "Engine":
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        if item.name.startswith("_"):
+                            private += 1
+                        else:
+                            public += 1
+        return public, private
+
+    def test_engine_public_method_count(self):
+        public, _ = self._ast_counts()
+        # 41 baseline (post-M04) + 1 (compute_effective_confidence_with_trace)
+        assert public == 42
+
+    def test_engine_private_method_count(self):
+        _, private = self._ast_counts()
+        # 19 baseline (post-M04) + 1 (_compute_effective_confidence_core)
+        assert private == 20
+
+    def test_ragcore_all_count(self):
+        # 49 baseline (post-M04) + 1 (EffectiveConfidenceTrace)
+        assert len(ragcore.__all__) == 50
+
+    def test_effective_confidence_trace_in_all(self):
+        assert "EffectiveConfidenceTrace" in ragcore.__all__
+
+    def test_compute_with_trace_method_present(self):
+        assert "compute_effective_confidence_with_trace" in [
+            name for name in dir(Engine) if not name.startswith("_")
+        ]
+
+    def test_compute_core_private_method_present(self):
+        assert "_compute_effective_confidence_core" in [
+            name for name in dir(Engine) if name.startswith("_")
+        ]

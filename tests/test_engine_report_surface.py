@@ -705,7 +705,9 @@ class TestReportSurfaceNoEngineHelper:
 # §44.12 invariant 10 — the PR30-P baseline frozenset locked by PR31-S
 # remains the public surface after PR32-V.
 # PR73-M04 additive shift: EngineStateIdentity added.
+# PR76-M07 additive shift: EffectiveConfidenceTrace added.
 _PR30_BASELINE_PUBLIC_SYMBOLS: frozenset[str] = frozenset({
+    "EffectiveConfidenceTrace",
     "CLAIM_STATUS_CANDIDATE",
     "CLAIM_STATUS_CONFIRMED",
     "CLAIM_STATUS_DISPUTED",
