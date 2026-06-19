@@ -401,11 +401,18 @@ class TestRuleStatsModifier:
         assert trace.rule_stats_modifier == 1.0
 
     def test_registered_rule_observed_precision_none_modifier_is_one(self):
+        # §9.5 — observed_precision None -> precision_modifier 1.0. The
+        # overall rule_stats_modifier also lifts to 1.0 only when the
+        # maturity floor has been cleared (firing_count >= 2 per PR26-R).
+        # With firing_count >= 2 AND observed_precision None, both the
+        # maturity and precision factors are 1.0, so the combined modifier
+        # equals 1.0.
         e = Engine()
         e.register_rule(RuleDefinition(
             id=7, version=1, maturity=RULE_MATURITY_STABLE,
             prior_confidence=ScoreValue(0.8),
         ))
+        e.update_rule_stats(rule_id=7, rule_version=1, firing_delta=2)
         ent = e.add_entity(entity_type=1)
         cid = e.add_claim(
             subject_id=ent, claim_type=1, rule_id=7, rule_version=1,
