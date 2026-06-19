@@ -10,19 +10,39 @@ base:            main 80759048 (PR74-M05 — Operator Decision
 branch:          docs/downstream-result-reentry
 251차 commit:    1cf934f   docs(architecture): define downstream
                             result re-entry contract
-252차 commit:    (this record, docs/dev)
+252차 commit:    f669161   docs(dev): record PR75-M06 downstream
+                            result re-entry (initial pre-review
+                            checkpoint — §1 ~ §18)
+253차 commit:    e30ecd5   docs(review): correct M06 references
+                            and handoff sequence (C1 ~ C5
+                            post-review correction)
+254차 commit:    docs(review): align M06 stage 5.5 references
+                            and current records (R1 ~ R8
+                            current-record alignment — current
+                            revision; SHA filled in at commit
+                            time)
+current HEAD:    advanced past 252차 as of 253차 and 254차
+                  corrections; see §19 for the consolidated
+                  current-record summary
 type:            framework-level architecture contract,
                   documentation only
 status:          normative
 ```
 
+The §1 ~ §18 sections of this record were authored as the
+252차 initial dev record. §19 records the 253차 / 254차
+post-review corrections and is authoritative for the current
+branch state.
+
 This record captures the M-series investigation context, the
 OC-E / C2~C7 origin, the empirical baseline observed on `main`
-`80759048`, the rationale for keeping M06 docs-only, the six
-re-entry stages that M06 fixes, the boundary preservations
-inherited from PR57 / PR60 / PR63 / M02 / M03 / M04 / M05, the
-files changed, the structural invariants, the pytest result,
-and the repository-wide forbidden-conclusion scan.
+`80759048`, the rationale for keeping M06 docs-only, the seven
+re-entry stages that M06 fixes (including the separate Stage
+5.5 `ReviewedMutationRequest` materialization step), the
+boundary preservations inherited from PR57 / PR60 / PR63 /
+M02 / M03 / M04 / M05, the files changed, the structural
+invariants, the pytest result, and the repository-wide
+forbidden-conclusion scan.
 
 PR75-M06 does **not** implement, execute, or schedule any
 runtime change. It defines the conceptual boundary between an
@@ -624,8 +644,10 @@ No test added. No test removed. No test expectation modified.
 ## §16 Forbidden-conclusion scan
 
 The M06 contract §20 lists 25 anti-pattern phrases that the
-contract is normative against. Repository-wide scan after the
-251차 commit:
+contract is normative against. The scan below was performed at
+the **current branch HEAD** (post-253차, refreshed by 254차
+to confirm the §20 list still contains zero positive
+assertions after the Stage-5.5 propagation edits):
 
 ```
 request-evidence == tool execution authority                 0 positive
@@ -703,14 +725,16 @@ any M07 / M08 / M09 slot, NOT automatically scheduled:
 > M02 exact-content mutation review, persists the disposition
 > as an M05 mutation-review-family record, revalidates the
 > decision-time identity against the current Engine identity,
-> and explicitly invokes one existing state-mutating Engine
-> public method. It introduces no tool runner, no
-> investigation launcher, no adapter / role-assignment /
-> candidate / review / decision-record executor, no
-> dispatcher, no packet binding, no stale detector, no
-> automatic RuleStats update, and no lifecycle chaining.
-> Everything else — a complete domain-neutral reference
-> operation, effective-confidence trace, RuleStats
+> separately materializes a `ReviewedMutationRequest` under
+> M02 §10 / §11 (M06 Stage 5.5), revalidates again at the
+> invocation moment, and explicitly invokes one existing
+> state-mutating Engine public method. It introduces no tool
+> runner, no investigation launcher, no adapter /
+> role-assignment / candidate / review / decision-record
+> executor, no dispatcher, no packet binding, no stale
+> detector, no automatic RuleStats update, and no lifecycle
+> chaining. Everything else — a complete domain-neutral
+> reference operation, effective-confidence trace, RuleStats
 > provenance — remains M07 / M08 / M09 responsibility and is
 > NOT auto-scheduled by M06.*
 
@@ -729,3 +753,136 @@ PR78-M09   RuleStats Update Provenance (OC-G) NOT STARTED
 ```
 
 No automatic next PR. Framework waits for directive.
+
+---
+
+## §19 Current-record summary — 253차 / 254차
+
+PR75-M06 is held in Draft for post-review correction. Two
+correction commits were applied after the 252차 initial dev
+record. The §1 ~ §18 sections above were authored as the 252차
+checkpoint and are preserved verbatim except for the inline
+updates that 253차 / 254차 made to keep cross-references
+consistent.
+
+### §19.1 Commit history (current branch)
+
+```
+251차  1cf934f   docs(architecture): define downstream result
+                  re-entry contract
+252차  f669161   docs(dev): record PR75-M06 downstream result
+                  re-entry (initial pre-review checkpoint)
+253차  e30ecd5   docs(review): correct M06 references and
+                  handoff sequence
+                  (C1 C2 C3 C4 C5 post-review correction)
+254차  (this)    docs(review): align M06 stage 5.5 references
+                  and current records
+                  (R1 R2 R3 R4 R5 R6 R7 R8 — current-record
+                   alignment)
+```
+
+The 251차 / 252차 / 253차 commits are NOT amended.
+
+### §19.2 254차 corrections
+
+```
+R1   M06 §8 adapter-cannot-bypass list now includes Stage 5.5
+     separate ReviewedMutationRequest materialization.
+
+R2   PR63 §32 addendum chain updated to
+       PR75-M06 §4.4 / §4.5 / §4.5.5 / §4.6
+     with Stage 5.5 materialization + second revalidation moment
+     spelled out.
+
+R3   M06 §14 lifecycle separation list adds
+       separate ReviewedMutationRequest materialization (Stage 5.5)
+       identity/content revalidation (Stage 5.5 + Stage 6)
+     M06 §16.2 per-fragment continuation lists
+       Stage 4 once, Stage 5 once, Stage 5.5 once, Stage 6 once.
+     M05 §21 addendum splits revalidation into
+       "Before Stage 5.5 materialization, AND again before
+        Stage 6 invocation"
+     with M05 §9 moment-scoped comparison cited.
+
+R4   M06 §3.5 internal cross-reference to §15 removed.
+     §15 is RuleStats separation, not vocabulary. §3.5 now
+     reads directly without a cross-reference.
+
+R5   Dev record §intro "six re-entry stages" → "seven
+     re-entry stages, including the separate Stage 5.5
+     ReviewedMutationRequest materialization step".
+
+R6   Dev record header lists 251 / 252 / 253 / 254 commits and
+     references §19 (this section) for the consolidated
+     current-record summary.
+
+R7   Dev §16 forbidden-conclusion scan label updated from
+     "after the 251차 commit" to "the current branch HEAD
+     (post-253차, refreshed by 254차)".
+
+R8   Dev §18 closing-position quote rewritten to include
+     "separately materializes a ReviewedMutationRequest under
+      M02 §10 / §11 (M06 Stage 5.5), revalidates again at the
+      invocation moment".
+```
+
+### §19.3 Files changed by 254차 (docs-only)
+
+```
+docs/architecture/DOWNSTREAM_RESULT_REENTRY_CONTRACT.md
+  §3.5     domain-neutrality cross-ref removed (R4)
+  §8       adapter bypass list adds Stage 5.5 (R1)
+  §14      lifecycle separation list adds Stage 5.5 +
+           second revalidation (R3)
+  §16.2    per-fragment continuation lists Stage 5.5 (R3)
+
+docs/architecture/EXTERNAL_ADAPTER_TRANSLATION_BOUNDARY_SPEC.md
+  §32      addendum chain references
+           §4.4 / §4.5 / §4.5.5 / §4.6 (R2)
+
+docs/architecture/OPERATOR_DECISION_RECORD_REVALIDATION_CONTRACT.md
+  §21      addendum revalidation now two moments (R3)
+
+docs/dev/PR_075_DOWNSTREAM_RESULT_REENTRY_CONTRACT.md
+  header   251 / 252 / 253 / 254 commit list (R6)
+  intro    "six" → "seven" stages (R5)
+  §16      scan-time label = current branch HEAD (R7)
+  §18      closing quote includes Stage 5.5 (R8)
+  §19      this section
+```
+
+No `ragcore/`, `examples/`, `tests/`, or `pyproject.toml`
+files are touched. No PR60 spec, no M02 contract, no M03
+contract, no M04 contract is touched by 254차.
+
+### §19.4 254차 invariants
+
+```
+tests                          1517   (no test added / removed)
+runtime delta from 253차        0
+test delta from 253차           0
+examples/* delta               0
+pyproject.toml delta           0
+judgment semantics delta       0
+dependency delta               0
+packet runtime shape delta     0
+snapshot runtime shape delta   0
+```
+
+### §19.5 Final M-series state
+
+```
+P-series   CLOSED
+PR70-M01   CLOSED
+PR71-M02   CLOSED
+PR72-M03   CLOSED
+PR73-M04   CLOSED
+PR74-M05   CLOSED
+PR75-M06   OPEN — DRAFT, NOT MERGED (this PR)
+PR76-M07   NOT STARTED
+PR77-M08   NOT STARTED
+PR78-M09   NOT STARTED
+```
+
+No automatic next PR. PR remains Draft. Framework waits for
+directive.

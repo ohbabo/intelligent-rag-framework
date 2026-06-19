@@ -1356,11 +1356,18 @@ result trace from such an investigation is, in PR63 terms,
 
 - The adapter does NOT call any Engine state-mutating public
   method. Re-entry into Engine state is governed by
-  PR75-M06 §4.4 / §4.5 / §4.6: candidate materialization
-  consideration -> M02 §9 mutation review -> M05 mutation-
-  review-family decision record -> M05 §7 state revalidation
-  -> M02 §12 explicit invocation. The adapter participates
-  only at the trace-translation layer.
+  PR75-M06 §4.4 / §4.5 / §4.5.5 / §4.6:
+    candidate materialization consideration
+    -> exact-content M02 §9 mutation review
+    -> M05 mutation-review-family decision record
+    -> M05 §7 / §12.1 state revalidation
+    -> separate `ReviewedMutationRequest` materialization
+       under M02 §10 / §11
+    -> M05 §7 / §12.1 state revalidation again at the
+       invocation moment
+    -> explicit caller-written invocation under M02 §12.
+  The adapter participates only at the trace-translation
+  layer.
 
 - Operational failure (tool failed to run, parse failed,
   unsupported shape, translation failed) and semantic

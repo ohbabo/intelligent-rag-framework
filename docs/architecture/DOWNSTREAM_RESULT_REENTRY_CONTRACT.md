@@ -260,10 +260,10 @@ invocation.
 
 ### §3.5 Domain neutrality
 
-M06 normative text uses only the domain-neutral vocabulary
-listed in §15. Specific tool names, scanner output schemas,
-vulnerability identifiers, or product-specific identifiers
-are NOT load-bearing M06 terms.
+M06 normative text uses domain-neutral framework vocabulary.
+Specific tool names, scanner output schemas, vulnerability
+identifiers, and product-specific identifiers are NOT
+load-bearing M06 terms.
 
 ---
 
@@ -686,7 +686,9 @@ M06 adds:
   The framework does not declare any one adapter privileged.
 - a downstream result adapter does NOT bypass Stage 3
   role assignment, Stage 4 candidate consideration, Stage 5
-  review, or Stage 6 explicit invocation.
+  mutation review and decision record, Stage 5.5 separate
+  `ReviewedMutationRequest` materialization, or Stage 6
+  explicit invocation.
 - a downstream result adapter does NOT call any Engine
   state-mutating public method.
 - a downstream result adapter's output is not a `Claim`,
@@ -929,11 +931,14 @@ M06 explicitly forbids chaining these in one automatic
 pipeline. Each transition requires its own:
 
 ```
-- candidate
-- exact-content review
-- M05 mutation-review-family decision record
-- decision-state revalidation
-- explicit invocation
+- candidate                              (Stage 4)
+- exact-content mutation review          (Stage 5)
+- M05 mutation-review-family decision    (Stage 5)
+  record
+- identity / content revalidation        (Stage 5.5 + Stage 6)
+- separate ReviewedMutationRequest       (Stage 5.5)
+  materialization
+- explicit caller-written invocation     (Stage 6)
 ```
 
 In particular, the pattern
@@ -1003,9 +1008,9 @@ Each fragment may produce:
 ```
 - zero candidates                (terminate at Stage 3 or §10)
 - one candidate                  (Stage 4 once, Stage 5 once,
-                                   Stage 6 once)
+                                   Stage 5.5 once, Stage 6 once)
 - multiple separately-reviewed
-  candidates                     (Stage 4 / 5 / 6 once each)
+  candidates                     (Stage 4 / 5 / 5.5 / 6 once each)
 ```
 
 ### §16.3 Operational and semantic dedup

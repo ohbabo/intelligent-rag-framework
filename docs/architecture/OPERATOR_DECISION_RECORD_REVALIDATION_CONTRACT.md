@@ -1156,15 +1156,20 @@ it clarifies how M05 records are used in the re-entry context.
   proposal-family `accept` does NOT serve as a
   mutation-review-family `approved`.
 
-- Before the explicit Engine invocation at M06 §4.6 / §13,
-  the M05 §7 / §12.1 decision-state revalidation applies
-  unchanged. The recorded EngineStateIdentity must equal the
-  current Engine.state_identity() (M05 §7.3 A) and the
+- Before the separate `ReviewedMutationRequest`
+  materialization at Stage 5.5 (M06 §4.5.5), AND again
+  before the explicit Engine invocation at Stage 6
+  (M06 §4.6 / §13), the M05 §7 / §12.1 decision-state
+  revalidation applies unchanged. Both verification moments
+  must pass; passing one does NOT prove the other (M05 §9
+  moment-scoped comparison). At each moment, the recorded
+  EngineStateIdentity must equal the current
+  Engine.state_identity() (M05 §7.3 A) and the
   exact-content / exact-arguments / referenced-IDs checks
-  (M02 §10 + M06 §11 / §12) must all pass. Any mismatch
-  follows M05 §12.2: prior approval cannot be reused;
-  re-inspect; reconstruct candidate if appropriate; new
-  mutation review; new decision record.
+  (M02 §10 + M06 §11 / §12) must all pass. Any mismatch at
+  either moment follows M05 §12.2: prior approval cannot be
+  reused; re-inspect; reconstruct candidate if appropriate;
+  new mutation review; new decision record.
 
 - A prior proposal acceptance MUST NOT be reused as
   re-entry mutation approval. The two M05 record families
