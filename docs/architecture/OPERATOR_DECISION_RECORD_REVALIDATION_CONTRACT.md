@@ -1121,3 +1121,61 @@ PR78-M09   RuleStats Update Provenance    (OC-G) NOT STARTED
 ```
 
 No automatic next PR. Framework waits for directive.
+
+---
+
+## §21 Post-M06 addendum (PR75-M06, 2026-06-19)
+
+PR75-M06 (`DOWNSTREAM_RESULT_REENTRY_CONTRACT.md`) is the
+first consumer of M05's mutation-review-family records under
+the OC-E re-entry chain. M06 does NOT alter M05's contract;
+it clarifies how M05 records are used in the re-entry context.
+
+```
+- `request-evidence` and `schedule-manual-inspection` (M05
+  §4.1 proposal-family dispositions) are NOT tool execution
+  authorizations. They are PROVENANCE for a subsequent
+  consumer-side decision to launch an investigation. The
+  decision to launch is itself a consumer-side action
+  outside the M05 record (M06 §4.1 / §5).
+
+- The originating M05 record (whichever family) referenced
+  from a downstream investigation is PROVENANCE for "why
+  this investigation was run". It is NOT execution
+  authority for any subsequent Engine state-mutating call.
+
+- A downstream investigation result is a NEW decision
+  subject. Whatever the prior M05 record disposed of, the
+  result trace is a NEW external source artifact (per
+  PR63 + M06 §4.2 / §6). It does NOT inherit the prior
+  record's disposition.
+
+- A result-derived `EngineInputCandidate` (M06 §4.4) is a
+  M02 §9 mutation candidate. Its disposition is recorded as
+  a M05 mutation-review-family record (M05 §4.2 / §5). A
+  proposal-family `accept` does NOT serve as a
+  mutation-review-family `approved`.
+
+- Before the separate `ReviewedMutationRequest`
+  materialization at Stage 5.5 (M06 §4.5.5), AND again
+  before the explicit Engine invocation at Stage 6
+  (M06 §4.6 / §13), the M05 §7 / §12.1 decision-state
+  revalidation applies unchanged. Both verification moments
+  must pass; passing one does NOT prove the other (M05 §9
+  moment-scoped comparison). At each moment, the recorded
+  EngineStateIdentity must equal the current
+  Engine.state_identity() (M05 §7.3 A) and the
+  exact-content / exact-arguments / referenced-IDs checks
+  (M02 §10 + M06 §11 / §12) must all pass. Any mismatch at
+  either moment follows M05 §12.2: prior approval cannot be
+  reused; re-inspect; reconstruct candidate if appropriate;
+  new mutation review; new decision record.
+
+- A prior proposal acceptance MUST NOT be reused as
+  re-entry mutation approval. The two M05 record families
+  remain separate (M05 §4 / §4.3 hard locks).
+```
+
+PR75-M06 does not modify any of §1 ~ §20 of this contract.
+§14 boundary preservations (PR57 / M02 / M03 / M04), §15
+files locked, and §16 invariants are preserved unchanged.

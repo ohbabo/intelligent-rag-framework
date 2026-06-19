@@ -871,3 +871,59 @@ It does not create Engine truth.
 
 The policy remains domain-neutral, consumer-side, and outside
 Engine judgment semantics.
+
+---
+
+## §25 Post-M06 addendum (PR75-M06, 2026-06-19)
+
+PR75-M06 (`DOWNSTREAM_RESULT_REENTRY_CONTRACT.md`) applies
+this policy unchanged to result-level role assignment for
+downstream investigation results re-entering the framework.
+
+```
+- Assignment targets at the re-entry layer are
+  result-level units: result record, result field, result
+  fragment, result relation, derived fragment. The
+  source / adapter / tool / run as a whole is NOT an
+  assignment target.
+
+- A producer or adapter does NOT carry a permanent
+  SemanticRole. Each result item is interpreted in the
+  current re-entry context. A subsequent investigation that
+  reuses the same producer / adapter does NOT inherit a
+  prior role assignment.
+
+- Each assignment considers PR61's axes unchanged:
+  SourceType / BaseRecordType / SemanticRole /
+  DataAccessProfile / AllowedUse / ForbiddenUse.
+
+- AllowedUse / ForbiddenUse are re-evaluated for each
+  result. An AllowedUse value from a prior re-entry context
+  does NOT bind a new re-entry context.
+
+- Unresolved role assignment terminates the re-entry chain
+  at PR75-M06 Stage 3 (M06 §4.3 / §9.4). No candidate is
+  materialized. The result may still be archived or cited
+  by the consumer; archiving / citing is a valid terminal
+  state.
+
+- Role assignment is NEVER a mutation authority. An admitted
+  role assignment does NOT authorize a candidate; a
+  materialized candidate does NOT authorize a review
+  outcome; an approved review does NOT authorize an Engine
+  invocation. Each step requires its own consumer-side
+  action under M06 §4.
+
+- Forbidden mappings (per M06 §4.3 / §9.3):
+    tool output type      -> SemanticRole
+    result source         -> SemanticRole
+    result field name     -> Evidence
+    retrieval method      -> truth
+    result ranking        -> Evidence.strength
+    severity label        -> Gap.severity
+    external status       -> Claim.status
+```
+
+PR75-M06 does not modify any of §1 ~ §24 of this spec, the
+PR61 axes, or the §21 anti-patterns. §0 ~ §24 normative body
+remains unchanged.
