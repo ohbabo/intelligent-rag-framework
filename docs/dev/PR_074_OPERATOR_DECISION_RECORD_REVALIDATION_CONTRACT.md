@@ -672,12 +672,13 @@ PR78-M09 + reserved            0
 > determining whether a prior decision may remain eligible
 > for immediate downstream gate consideration. The two-check
 > basis does NOT replace any downstream gate, does NOT
-> establish check-and-act atomicity, and does NOT promise
-> reuse safety beyond the revalidation moment. Everything
-> else — packet binding, mechanical stale detection,
-> automatic revalidation, automatic execution — remains
-> separate, explicitly-directed future work or M01-locked
-> M06-M09 responsibility.*
+> establish check-and-act atomicity, and does NOT establish
+> reuse safety. Its identity-comparison result is scoped only
+> to the revalidation moment. Everything else — packet
+> binding, mechanical stale detection, automatic
+> revalidation, automatic execution — remains separate,
+> explicitly-directed future work or M01-locked M06-M09
+> responsibility.*
 
 PR74-M05 is opened as **Draft** and is not merged. Closure
 language (`CLOSED`) is reserved for the post-squash-merge

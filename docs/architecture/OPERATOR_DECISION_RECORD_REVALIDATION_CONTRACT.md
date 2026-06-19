@@ -1095,8 +1095,8 @@ EngineStateIdentity equality) for determining whether a prior
 decision may remain eligible for immediate downstream gate
 consideration. The two-check basis does NOT replace any
 downstream gate, does NOT establish check-and-act atomicity,
-and does NOT promise reuse safety beyond the revalidation
-moment.
+and does NOT establish reuse safety. Its identity-comparison
+result is scoped only to the revalidation moment.
 
 It does NOT close OC-C, OC-D, OC-E, OC-F, or OC-G.
 It does NOT promote any decision into Engine truth.
