@@ -1064,3 +1064,58 @@ but does not by itself produce a CAPTURE_BOUND packet, a
 CURRENTLY_MATCHED claim, or a stale determination. Any of those
 would be **separate, explicitly-directed future work**, and is
 **not** automatically scheduled by M04.
+
+---
+
+## §20 Post-M05 addendum (PR74-M05, 2026-06-19)
+
+PR74-M05 (`OPERATOR_DECISION_RECORD_REVALIDATION_CONTRACT.md`)
+defines **consumer-side decision-state revalidation** on top of
+M04's `EngineStateIdentity` primitive. M05 does **not** change
+M03's reading of the PR51 packet.
+
+```
+- M05 decision-state revalidation operates on
+  EngineStateIdentity value equality between
+  a recorded decision identity and a current
+  Engine.state_identity() value.
+
+- M05 decision-state revalidation is NOT packet-level
+  binding. It does NOT lift PR51 packets out of
+  UNBOUND + UNKNOWN.
+
+- M05 "stale for decision reuse" (M05 §7.3 Case B) is a
+  property of a stored consumer-side decision record, not a
+  property of a PR51 packet. It MUST NOT be described as
+  M03 packet STALE.
+
+- M05 does NOT introduce CURRENTLY_MATCHED or STALE for the
+  PR51 packet. The forbidden two-axis combinations from
+  §7.3 (UNBOUND + STALE, UNBOUND + CURRENTLY_MATCHED) remain
+  forbidden.
+
+- M05 does NOT introduce atomic capture (§6), packet binding
+  (§8), or mechanical packet staleness (§10).
+
+- When a consumer rebuilds a PR51 packet after a failed
+  decision-state revalidation, the rebuilt packet remains
+  UNBOUND + UNKNOWN. The new decision-time
+  EngineStateIdentity is NOT carried as a packet capture
+  field.
+
+- M05 honors §11 / §12 distinctions: M02 owns the mutation
+  candidate handoff up to explicit invocation; M03 owns the
+  packet read-consistency vocabulary; M05 owns the
+  consumer-side decision-record reuse policy. The three
+  layers do not overlap.
+
+- M05 honors §15 future-mechanism semantic requirements
+  exactly as M04 implements them. M05 does not introduce or
+  pre-define §15.x extensions.
+```
+
+M05 does not modify M03's empirical baseline (§2), the
+four identity concepts (§4), the two-axis vocabulary (§7),
+the §8 CAPTURE_BOUND requirements, the §9 CURRENTLY_MATCHED
+requirements, the §10 STALE boundary, the §13 PR51 / PR53
+relationship, or the §14 snapshot boundary.
