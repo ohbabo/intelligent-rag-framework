@@ -700,3 +700,39 @@ OperatorAuditRecord remain NOT ragcore symbols.
 
 PR58 / PR59 / Cerberus adapter NOT automatically entered.
 ```
+
+---
+
+## 19. Post-M05 addendum (PR74-M05, 2026-06-19)
+
+PR74-M05 (`OPERATOR_DECISION_RECORD_REVALIDATION_CONTRACT.md`)
+adds **consumer-side persistence and reuse obligations** for
+operator decisions.
+
+```
+- M05 defines a conceptual record shape that preserves the
+  proposal-gate disposition, the exact decision subject content
+  reference, the decision-time EngineStateIdentity, and a
+  family identifier.
+- M05 keeps the PR57 ragcore-symbol lock: none of
+  OperatorDecision / OperatorReview / OperatorApproval /
+  OperatorAction / OperatorTask / OperatorEvent /
+  OperatorAuditRecord becomes a ragcore symbol under M05.
+- M05 keeps `operator acceptance is a gate, not Engine truth`
+  intact. A persisted accept record is not an Engine mutation,
+  not a ReviewedMutationRequest, and not a downstream execution
+  license.
+- M05 adds decision-state revalidation policy (M05 §7) for
+  proposal-family records: when the recorded
+  EngineStateIdentity no longer equals
+  Engine.state_identity() at the reuse moment, the prior accept
+  record cannot be reused, the proposal is reconsidered against
+  current consumer inputs, PR55 and PR56 are rerun, and a new
+  operator decision record is required (M05 §11.1).
+- M05 keeps PR57 historical scope intact: §1 ~ §18 and the
+  Closing meaning section are not rewritten by M05.
+```
+
+M05 does **not** modify the PR57 §13 ragcore-symbol lock, the
+PR57 §10 PR55 / PR56 boundary, or the PR57 §12 downstream
+execution boundary.

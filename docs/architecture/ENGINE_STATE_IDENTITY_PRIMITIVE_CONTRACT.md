@@ -522,3 +522,71 @@ PR73-M04 does NOT make today's PR51 packet state-bound, does
 NOT make sequential reads atomic, and does NOT implement any
 stale-decision policy.
 ```
+
+---
+
+## §11 Post-M05 addendum (PR74-M05, 2026-06-19)
+
+PR74-M05 (`OPERATOR_DECISION_RECORD_REVALIDATION_CONTRACT.md`)
+is the first consumer of the M04 `EngineStateIdentity`
+primitive.
+
+```
+- M05 uses EngineStateIdentity value equality as the
+  mechanical basis for deciding whether a previously
+  recorded operator decision is eligible for reuse.
+
+- M05 obtains the current identity by calling the read-only
+  Engine.state_identity() method at the revalidation moment.
+  This is a read-only call: it does NOT advance the revision
+  (§2.6) and does NOT mutate Engine state.
+
+- M05 records (engine_token, revision) as the decision-time
+  identity, alongside its own decision-record content. The
+  recorded pair is consumer-owned persistence; it does NOT
+  become a snapshot field, a packet field, or a ragcore
+  symbol.
+
+- M05's §7.3 case split corresponds directly to M04
+  semantics:
+    Case A (same token + same revision)
+      = identical lineage and identical revision
+        per §1.1 / §2.
+    Case B (same token + different revision)
+      = identical lineage with at least one completed
+        logical state mutation since the recorded identity.
+    Case C (different token)
+      = a different runtime lineage. Includes process
+        restart and from_snapshot() restore (§4.4 / §4.5).
+        Revisions across different tokens are NOT comparable
+        (§1.1 / §4.3).
+    Case D (missing / malformed)
+      = does not satisfy M04 admission (§1 / §3 C5);
+        mechanical revalidation is unavailable.
+
+- M05 does NOT infer from EngineStateIdentity equality:
+    * atomic packet capture
+    * persistent Engine lineage across processes
+    * cross-lineage revision ordering
+    * packet binding
+    * packet freshness
+
+- M05 does NOT modify the M04 public contract:
+    * the EngineStateIdentity value type shape
+    * Engine.state_identity() signature / return type
+    * advance discipline across the 20 state-mutating
+      methods
+    * from_snapshot() fresh-lineage behavior
+    * snapshot exclusion (§5)
+  remain exactly as M04 specified.
+
+- M05 honors §6 / §7 / §8 atomicity / concurrency / non-
+  goals: it does NOT introduce locks, transactions,
+  retry loops, or seqlocks on top of state_identity().
+```
+
+The §8 / §15 future-mechanism boundary that M04 left open is
+**not** closed by M05. M05 consumes M04's primitive; it does
+not extend M04 into CAPTURE_BOUND packet binding,
+CURRENTLY_MATCHED helpers, or mechanical STALE detection
+(see M03 §20).

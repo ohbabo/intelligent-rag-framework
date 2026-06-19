@@ -1397,3 +1397,60 @@ state_identity
 No method was re-classified from read-only to state-mutating or
 vice versa. The 20 state-mutating set in §12.1 remains the
 exhaustive list of M02 candidate targets.
+
+---
+
+## §24 Post-M05 addendum (PR74-M05, 2026-06-19)
+
+PR74-M05 (`OPERATOR_DECISION_RECORD_REVALIDATION_CONTRACT.md`)
+adds **consumer-side persistence and reuse policy** for the
+mutation-review disposition produced by M02 §9.
+
+```
+- M05 records the exact candidate review disposition
+  (approved / rejected / hold), the reviewed target Engine
+  method name, the reviewed exact arguments, the referenced
+  IDs, the source-basis reference, and the decision-time
+  EngineStateIdentity.
+
+- A persisted approved disposition record is NOT a
+  ReviewedMutationRequest. ReviewedMutationRequest
+  materialization remains §10 / §11's exact-content review
+  binding step, performed against the reviewed candidate at
+  the materialization moment.
+
+- A persisted approved disposition record is NOT an Engine
+  invocation. §12 explicit invocation remains the only path
+  by which an Engine state-mutating public method is called.
+
+- Before a reviewed mutation request remains eligible for
+  explicit invocation per §12, the consumer MUST verify
+  (M05 §12.1):
+    * exact candidate content unchanged                 (§10)
+    * reviewed method name unchanged                    (§10)
+    * reviewed exact arguments unchanged                (§10)
+    * referenced IDs unchanged                          (§10)
+    * decision-time EngineStateIdentity equals current
+      Engine.state_identity()                           (M05 §7.3 A)
+    * §12.3 caller checks still pass at invocation time
+
+- If the decision-time identity differs from the current
+  identity (M05 §7.3 B or C), the existing approval cannot
+  be reused. The consumer must re-inspect current Engine
+  objects, reconstruct the exact candidate if still
+  appropriate, perform a new mutation review per §9, and
+  create a new decision record (M05 §12.2).
+
+- §12.3 forbidden mechanisms remain forbidden: no
+  reflection-based dispatch, no automatic request
+  materialization, no automatic Engine call, no name-based
+  string -> method lookup, no queue / scheduler / worker
+  invocation of a stored approval.
+```
+
+M05 does not modify the M02 four-layer model, the §11
+exact-content review binding, the §12 explicit invocation
+boundary, or the §15 Rule / RuleStats separation. The §12.1
+historical baseline of 40 methods on `main` `896e01e` and the
+§23 post-M04 counts (20 state-mutating / 19 read-only / 2
+serialization = 41 total) are preserved unchanged.
