@@ -539,7 +539,10 @@ primitive.
 - M05 obtains the current identity by calling the read-only
   Engine.state_identity() method at the revalidation moment.
   This is a read-only call: it does NOT advance the revision
-  (§2.6) and does NOT mutate Engine state.
+  (§1.2 defines state_identity() as read-only; the §2 advance
+  discipline covers only the 20 state-mutating methods, of
+  which state_identity() is not one) and does NOT mutate
+  Engine state.
 
 - M05 records (engine_token, revision) as the decision-time
   identity, alongside its own decision-record content. The

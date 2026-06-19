@@ -710,39 +710,58 @@ class TestStructuralCounts:
 
 class TestExactSignatureLock:
     """Lock the new method's exact signature so accidental
-    rename / extra positional / extra keyword cannot land
-    silently. Contract §5 (and §6 for the private core)."""
+    rename / extra positional / extra keyword / default
+    addition / positional-only / keyword-only conversion
+    cannot land silently. Contract §5 (and §6 for the
+    private core).
+
+    260차 audit closure — each test now also locks
+    Parameter.kind (POSITIONAL_OR_KEYWORD) and
+    Parameter.default (Parameter.empty) for both self and
+    claim_id.
+    """
+
+    @staticmethod
+    def _assert_exact_two_positional_or_keyword(sig, expected_return):
+        import inspect
+        params = list(sig.parameters.values())
+        # name order
+        assert [p.name for p in params] == ["self", "claim_id"]
+        # both must be POSITIONAL_OR_KEYWORD (no positional-only,
+        # no keyword-only, no var-positional / var-keyword)
+        assert params[0].kind == inspect.Parameter.POSITIONAL_OR_KEYWORD
+        assert params[1].kind == inspect.Parameter.POSITIONAL_OR_KEYWORD
+        # neither may carry a default
+        assert params[0].default is inspect.Parameter.empty
+        assert params[1].default is inspect.Parameter.empty
+        # claim_id is typed int
+        assert params[1].annotation in (int, "int")
+        # return type matches the API
+        assert sig.return_annotation == expected_return or (
+            isinstance(sig.return_annotation, str)
+            and sig.return_annotation == expected_return.__name__
+        )
 
     def test_compute_with_trace_signature(self):
         import inspect
         sig = inspect.signature(Engine.compute_effective_confidence_with_trace)
-        params = list(sig.parameters.values())
-        # (self, claim_id: int) -> EffectiveConfidenceTrace
-        assert [p.name for p in params] == ["self", "claim_id"]
-        assert params[1].annotation in (int, "int")
-        assert sig.return_annotation in (
-            ragcore.EffectiveConfidenceTrace,
-            "EffectiveConfidenceTrace",
+        self._assert_exact_two_positional_or_keyword(
+            sig, ragcore.EffectiveConfidenceTrace,
         )
 
     def test_compute_core_signature(self):
         import inspect
         sig = inspect.signature(Engine._compute_effective_confidence_core)
-        params = list(sig.parameters.values())
-        assert [p.name for p in params] == ["self", "claim_id"]
-        assert params[1].annotation in (int, "int")
-        assert sig.return_annotation in (
-            ragcore.EffectiveConfidenceTrace,
-            "EffectiveConfidenceTrace",
+        self._assert_exact_two_positional_or_keyword(
+            sig, ragcore.EffectiveConfidenceTrace,
         )
 
     def test_legacy_compute_signature_preserved(self):
         import inspect
         sig = inspect.signature(Engine.compute_effective_confidence)
-        params = list(sig.parameters.values())
-        assert [p.name for p in params] == ["self", "claim_id"]
-        assert params[1].annotation in (int, "int")
-        assert sig.return_annotation in (ScoreValue, "ScoreValue")
+        self._assert_exact_two_positional_or_keyword(
+            sig, ScoreValue,
+        )
 
 
 class TestModifierHelperCallCount:
@@ -869,6 +888,117 @@ class TestSingleMultiplicationSite:
         sites = self._engine_methods_using_helpers()
         helper_bearing = {name for name, _ in sites}
         assert "compute_effective_confidence_with_trace" not in helper_bearing
+
+    def _engine_method_node(self, method_name: str):
+        src = open("ragcore/engine.py").read()
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "Engine":
+                for item in node.body:
+                    if (isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                            and item.name == method_name):
+                        return item
+        raise AssertionError(f"Engine method {method_name!r} not found")
+
+    @staticmethod
+    def _count_mult_ops_in(node) -> int:
+        n = 0
+        for child in ast.walk(node):
+            # ast.Mult appears either as the op of a BinOp or inside the
+            # ops list of an augmented assignment / multi-op expression.
+            # We only enumerate ast.Mult instances.
+            if isinstance(child, ast.Mult):
+                n += 1
+        return n
+
+    @staticmethod
+    def _is_ratio_curve_helper(name: str) -> bool:
+        # Each modifier helper computes its own tier-curve internally
+        # (e.g., 1.0 - x * 0.2). Those are NOT the six-modifier
+        # composition formula; they are private internals owned by the
+        # helper. The single-site lock targets the six-helper
+        # composition only — see contract §6.
+        return name in {
+            "_status_modifier_for_claim",
+            "_freshness_modifier_for_claim",
+            "_gap_modifier_for_claim",
+            "_count_modifier_for_claim",
+            "_rule_stats_modifier_for_claim",
+            "_evidence_type_modifier_for_claim",
+        }
+
+    def test_core_contains_the_six_modifier_multiplication_chain(self):
+        """The private core's body must contain an expression that
+        multiplies base_confidence.value by each of the six
+        modifier-helper return values. The simplest mechanical lock
+        on that property: the core method body contains at least 6
+        ast.Mult operations (base × six modifiers chain at minimum).
+        """
+        core = self._engine_method_node("_compute_effective_confidence_core")
+        mult_count = self._count_mult_ops_in(core)
+        # base × m1 × m2 × m3 × m4 × m5 × m6 -> 6 Mult ops.
+        # The body may contain incidental multiplications in trace
+        # construction / packaging that are not part of the formula,
+        # so we lock the LOWER bound, not the exact count.
+        assert mult_count >= 6, (
+            f"_compute_effective_confidence_core contains only {mult_count} "
+            "Mult ops; the six-modifier composition chain requires "
+            "at least 6. Composition formula appears truncated."
+        )
+
+    def test_legacy_compute_body_contains_no_mult_ops(self):
+        """The legacy compute_effective_confidence is reduced to a
+        single delegating expression. Its body must contain ZERO
+        ast.Mult operations — the formula now lives only in the
+        private core.
+        """
+        legacy = self._engine_method_node("compute_effective_confidence")
+        mult_count = self._count_mult_ops_in(legacy)
+        assert mult_count == 0, (
+            f"compute_effective_confidence body contains {mult_count} "
+            "Mult ops; contract §6 requires it to delegate to the core "
+            "(no second multiplication site)."
+        )
+
+    def test_compute_with_trace_body_contains_no_mult_ops(self):
+        """compute_effective_confidence_with_trace must delegate to
+        the private core without performing any multiplication of its
+        own.
+        """
+        trace_api = self._engine_method_node(
+            "compute_effective_confidence_with_trace",
+        )
+        mult_count = self._count_mult_ops_in(trace_api)
+        assert mult_count == 0, (
+            f"compute_effective_confidence_with_trace body contains "
+            f"{mult_count} Mult ops; contract §6 requires it to "
+            "delegate to the core."
+        )
+
+    def test_no_other_engine_method_contains_six_or_more_mult_ops(self):
+        """No Engine method body, other than the private core and the
+        six modifier helpers, may contain >= 6 ast.Mult operations.
+        Six or more multiplications in a single body strongly suggests
+        a duplicate composition formula."""
+        src = open("ragcore/engine.py").read()
+        tree = ast.parse(src)
+        offenders = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "Engine":
+                for item in node.body:
+                    if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        continue
+                    name = item.name
+                    if name == "_compute_effective_confidence_core":
+                        continue
+                    if self._is_ratio_curve_helper(name):
+                        continue
+                    if self._count_mult_ops_in(item) >= 6:
+                        offenders.append(name)
+        assert offenders == [], (
+            f"Methods with >= 6 Mult ops (potential duplicate "
+            f"composition site): {offenders!r}"
+        )
 
 
 class TestFreshnessMultiActiveMostRecent:

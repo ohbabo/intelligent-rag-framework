@@ -13,13 +13,29 @@ branch:          feat/effective-confidence-calculation-trace
                             trace invariants
 257차 commit:    c29a6c8   feat(engine): add effective confidence
                             calculation trace
-258차 commit:    (this record, docs/dev)
+258차 commit:    ffd4685   docs(dev): record PR76-M07 effective
+                            confidence trace (initial pre-review
+                            checkpoint — §1 ~ §19)
+259차 commit:    31ad2a3   test(review): close M07 trace audit
+                            gaps (C1 ~ C3 post-review correction
+                            — §20)
+260차 commit:    docs(review): finalize M07 audit locks and
+                            records (R1 ~ R5 audit-lock
+                            finalization — §21; current
+                            revision)
 type:            framework-level runtime change, additive only;
                   no judgment-semantics delta, no formula
                   delta, no snapshot schema change, no PR51
                   packet shape change
 status:          normative
 ```
+
+The §1 ~ §19 sections of this record were authored as the
+258차 initial checkpoint and are preserved (1578 tests at
+that moment; structural counts in §14.1 reflect the 258차
+checkpoint). §20 records the 259차 audit-closure (1600
+tests). §21 records the 260차 audit-lock finalization and
+is authoritative for the current branch state.
 
 PR76-M07 is the first M-series PR that adds a new public
 runtime surface since PR73-M04. It introduces one frozen
@@ -546,9 +562,12 @@ docs/architecture/EFFECTIVE_CONFIDENCE_CALCULATION_TRACE_CONTRACT.md
   255차, +1029 lines (§0~§20)
 tests/test_effective_confidence_trace.py
   256차, +703 lines (61 test methods across 13 classes;
-                      259차 audit-closure later appends an
-                      additional ~22 test methods across 7
-                      classes — see §20)
+                      259차 audit-closure later appends 22
+                      test methods across 8 new classes —
+                      see §20; 260차 audit-lock finalization
+                      later appends 4 more multiplication-
+                      site tests + extends signature tests
+                      in place — see §21)
 docs/dev/PR_076_EFFECTIVE_CONFIDENCE_CALCULATION_TRACE.md
   258차, this file
 ```
@@ -665,7 +684,12 @@ ragcore.__all__                  50   (+1 vs PR75-M06)
 snapshot schema_version           2   (unchanged)
 snapshot top-level keys          18   (unchanged set)
 PR51 packet keys                  7   (unchanged set, same order)
-tests                          1578   (= 1517 baseline + 61 new)
+tests                          1578   (= 1517 baseline + 61 new;
+                                        258차 pre-review checkpoint
+                                        value; §20.6 records the
+                                        post-259차 total at 1600;
+                                        §21.6 records the post-260차
+                                        total)
 ```
 
 ### §14.2 Behavioral invariants (delta = 0)
@@ -946,8 +970,8 @@ M05 normative text.
 
 The 256차 test file covered the 6 modifier breakdowns at a
 class level but did not enforce the contract's structural
-invariants. 259차 appends seven new test classes covering 22
-test methods:
+invariants. 259차 appends eight new test classes covering 22
+test methods (later extended by 260차 — see §21):
 
 ```
 TestExactSignatureLock                          (3 tests)
@@ -983,7 +1007,10 @@ TestCountModifierExactStrengthPenalty           (3 tests)
     avg 1.0 -> 0.75
 
 TestRuleStatsModifierTiers                      (6 tests)
-  Maturity × precision exact product across the full matrix:
+  Maturity × precision exact product at six representative
+  lock points (not the full 12-cell maturity-tier ×
+  precision-tier Cartesian; a sufficient subset to detect
+  any maturity-curve or precision-curve drift):
     firing 0, precision None -> 0.80
     firing 1, precision None -> 0.90
     firing 2, precision 0.0  -> 0.90
@@ -1062,7 +1089,7 @@ docs/dev/PR_076_EFFECTIVE_CONFIDENCE_CALCULATION_TRACE.md
   §20 — new audit-closure summary
 
 tests/test_effective_confidence_trace.py
-  + 22 audit-closure test methods across 7 new classes (C2):
+  + 22 audit-closure test methods across 8 new classes (C2):
     TestExactSignatureLock                  (3)
     TestModifierHelperCallCount             (3)
     TestSingleMultiplicationSite            (3)
@@ -1107,6 +1134,272 @@ $ git diff --check
 ```
 
 ### §20.8 Final M-series state
+
+```
+P-series   CLOSED
+PR70-M01   CLOSED
+PR71-M02   CLOSED
+PR72-M03   CLOSED
+PR73-M04   CLOSED
+PR74-M05   CLOSED
+PR75-M06   CLOSED
+PR76-M07   OPEN — DRAFT, NOT MERGED (this PR)
+PR77-M08   NOT STARTED
+PR78-M09   NOT STARTED
+```
+
+No automatic next PR. PR remains Draft. Framework waits for
+directive.
+
+---
+
+## §21 Audit-lock finalization summary — 260차
+
+PR76-M07 is held in Draft for a docs + tests audit-lock
+finalization correction. The 260차 commit `docs(review):
+finalize M07 audit locks and records` resolves five
+residual defects (R1 ~ R5) raised during 259차 review. The
+255차 / 256차 / 257차 / 258차 / 259차 commits are NOT
+amended.
+
+### §21.1 Six-commit history
+
+```
+255차  058756e   docs(contract)
+256차  ffa4345   test(core) — 61 test methods
+257차  c29a6c8   feat(engine) — runtime implementation
+258차  ffd4685   docs(dev) — initial pre-review dev record
+259차  31ad2a3   test(review) — C1 ~ C3 audit closure
+                  (M04 §2.6 → §1.2 sites + 22 audit-closure
+                   tests + dev §20)
+260차  (this)    docs(review) — R1 ~ R5 audit-lock
+                  finalization (M04 §11 missed-site fix,
+                  signature kind+default lock, real AST
+                  multiplication-site lock, class-count
+                  records, dev header + §14.1 alignment,
+                  §21 current-record summary)
+```
+
+### §21.2 R1 — M04 §11 missed §2.6 reference
+
+259차's repository-wide zero-residue claim for the wrong
+`M04 §2.6` citation was incompatible with the simultaneous
+statement that the M05 §11 addendum's prior §2.6 reference
+was deliberately preserved. 260차 corrects that
+inconsistency by fixing the same-file reference in M04 §11
+(no scope expansion — the file is already touched by M07
+via §12). Wording:
+
+```
+- M05 obtains the current identity by calling the read-only
+  Engine.state_identity() method at the revalidation moment.
+  This is a read-only call: it does NOT advance the revision
+  (§1.2 defines state_identity() as read-only; the §2 advance
+  discipline covers only the 20 state-mutating methods, of
+  which state_identity() is not one) and does NOT mutate
+  Engine state.
+```
+
+After 260차, repo-wide `"M04 §2.6" as state_identity() basis`
+residue is genuinely 0.
+
+### §21.3 R2 — Signature tests exact
+
+The 259차 `TestExactSignatureLock` only checked parameter
+names and annotations, allowing keyword-only / default-
+having signatures to pass silently. 260차 extends the test
+class with a shared helper that locks each parameter's
+`Parameter.kind` to `POSITIONAL_OR_KEYWORD` and `default`
+to `Parameter.empty` for `self` and `claim_id`, applied to
+all three methods (`compute_effective_confidence_with_trace`,
+`_compute_effective_confidence_core`, legacy
+`compute_effective_confidence`).
+
+After 260차, any of the following changes would fail the
+signature lock:
+
+```
+- adding a keyword-only `*` before claim_id
+- adding a positional-only `/` after self
+- adding a default to claim_id
+- adding `*args` / `**kwargs`
+- renaming claim_id
+- removing the int annotation on claim_id
+- removing the return annotation
+```
+
+### §21.4 R3 — Real AST multiplication-site lock
+
+The 259차 `TestSingleMultiplicationSite` only checked which
+methods referenced the six modifier helper names. 260차
+extends the class with four new tests that walk the AST and
+count `ast.Mult` operations directly:
+
+```
+test_core_contains_the_six_modifier_multiplication_chain
+  asserts _compute_effective_confidence_core's body contains
+  at least 6 ast.Mult ops (base × six modifiers).
+
+test_legacy_compute_body_contains_no_mult_ops
+  asserts compute_effective_confidence's body contains
+  zero ast.Mult ops (it delegates to core; contract §6).
+
+test_compute_with_trace_body_contains_no_mult_ops
+  asserts compute_effective_confidence_with_trace's body
+  contains zero ast.Mult ops (it delegates to core;
+  contract §6).
+
+test_no_other_engine_method_contains_six_or_more_mult_ops
+  scans every Engine method (excluding the private core and
+  the six modifier helpers whose tier-curve internals
+  legitimately use multiplication) for >= 6 ast.Mult ops; a
+  body matching that threshold strongly suggests a duplicate
+  composition formula.
+```
+
+Together with the existing helper-name lock, the §6
+"single multiplication source" property is now lockable
+mechanically at the AST level.
+
+### §21.5 R4 — Class-count records
+
+The 259차 audit-closure tests live in **8 classes**, not 7
+as written in 259차's records and PR body. The 8 classes:
+
+```
+1. TestExactSignatureLock
+2. TestModifierHelperCallCount
+3. TestSingleMultiplicationSite
+4. TestFreshnessMultiActiveMostRecent
+5. TestCountModifierExactStrengthPenalty
+6. TestRuleStatsModifierTiers
+7. TestEvidenceTypeResolvedContradictionExcluded
+8. TestGapSharedReferenceSemantics
+```
+
+Fixed sites:
+
+```
+dev §13.1   "additional ~22 test methods across 7 classes"
+              → "22 test methods across 8 new classes ... 260차
+                 audit-lock finalization later appends 4 more
+                 multiplication-site tests + extends signature
+                 tests in place"
+dev §20.3   header sentence updated: "appends eight new test
+              classes covering 22 test methods (later extended
+              by 260차 — see §21)"
+dev §20.5   "+ 22 audit-closure test methods across 7 new
+              classes" → "across 8 new classes"
+dev §20.3   TestRuleStatsModifierTiers description
+              "full maturity × precision matrix" → "six
+              representative lock points (not the full 12-cell
+              maturity-tier × precision-tier Cartesian; a
+              sufficient subset to detect any maturity-curve
+              or precision-curve drift)"
+PR body     "across 7 new classes" → "across 8 new classes";
+              "full maturity × precision matrix" → "six
+              representative maturity × precision lock points"
+```
+
+### §21.6 R5 — Dev header + §14.1 alignment
+
+The 259차 dev record had a top-block residue that still
+read `258차 commit: (this record, docs/dev)` while §20
+correctly recorded 259차 `(this)`. 260차 rewrites the top
+commit block to:
+
+```
+255차  058756e
+256차  ffa4345
+257차  c29a6c8
+258차  ffd4685   initial pre-review checkpoint — §1 ~ §19
+259차  31ad2a3   C1 ~ C3 audit closure — §20
+260차  (this)    R1 ~ R5 audit-lock finalization — §21
+                  (current revision)
+```
+
+and adds an explicit "§1 ~ §19 are 258차 pre-review
+checkpoint values" disclaimer below the block.
+
+§14.1 `tests 1578` annotation updated to make the 258차
+checkpoint context explicit and cross-reference §20.6
+(1600) and §21.6 (the current total).
+
+### §21.7 260차 file footprint (docs + tests only)
+
+```
+docs/architecture/
+  ENGINE_STATE_IDENTITY_PRIMITIVE_CONTRACT.md  §11 — same-
+                                                      file §2.6
+                                                      → §1.2
+                                                      + §2
+                                                      advance-
+                                                      discipline
+                                                      clarification
+                                                      (R1)
+
+docs/dev/PR_076_EFFECTIVE_CONFIDENCE_CALCULATION_TRACE.md
+  top commit block — 5 → 6 commits; 258차 checkpoint
+                       disclaimer (R5)
+  §13.1 — class count + 260차 note (R4)
+  §14.1 — 1578 annotation with 258차 checkpoint + §20.6 +
+            §21.6 cross-refs (R5)
+  §20.3 — "seven" → "eight"; "full matrix" lowered to
+            "six representative lock points" (R4)
+  §20.5 — "across 7" → "across 8" (R4)
+  §21   — this section
+
+tests/test_effective_confidence_trace.py
+  TestExactSignatureLock — shared
+    _assert_exact_two_positional_or_keyword helper added;
+    each of the 3 tests now locks Parameter.kind and
+    Parameter.default (R2)
+  TestSingleMultiplicationSite — 4 new tests appended:
+    test_core_contains_the_six_modifier_multiplication_chain
+    test_legacy_compute_body_contains_no_mult_ops
+    test_compute_with_trace_body_contains_no_mult_ops
+    test_no_other_engine_method_contains_six_or_more_mult_ops
+    (R3)
+```
+
+No `ragcore/*` runtime change. No `examples/*` change. No
+PR body update for unrelated content. No
+`pyproject.toml` change.
+
+### §21.8 260차 invariants
+
+```
+tests                          1517 + 87 = 1604
+                                (was 1600 at 259차;
+                                 + 4 from 260차 multiplication
+                                   AST tests
+                                 = 22 audit-closure +
+                                   4 mult-site +
+                                 61 initial)
+runtime delta from 259차        0
+examples/* delta               0
+pyproject.toml delta           0
+judgment semantics delta       0
+formula delta                  0
+modifier value delta           0
+modifier helper body delta     0
+PR51 packet shape delta        0
+snapshot schema delta          0
+dependency delta               0
+automatic execution delta      0
+```
+
+### §21.9 260차 regression result
+
+```
+$ python -m pytest -q
+[...]
+1604 passed in 1.31s
+$ git diff --check
+(clean)
+```
+
+### §21.10 Final M-series state
 
 ```
 P-series   CLOSED
