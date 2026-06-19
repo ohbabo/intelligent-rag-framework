@@ -440,7 +440,7 @@ automatically scheduled**:
 
 ```
 docs/architecture/
-  OPERATOR_DECISION_RECORD_REVALIDATION_CONTRACT.md    +1057 (new)
+  OPERATOR_DECISION_RECORD_REVALIDATION_CONTRACT.md    +1119 (new)
 ```
 
 Sections §0 ~ §20 + core sentences. Authoritative for the
@@ -562,9 +562,9 @@ No test added. No test removed. No test expectation modified.
 
 ## §16 Repository-wide forbidden-conclusion scan
 
-The M05 contract §17 lists 12 anti-pattern phrases that the
-contract is normative against. Repository-wide scan after the
-247차 commit:
+The M05 contract §17 lists 13 anti-pattern conclusions that
+the contract is normative against. Repository-wide scan after
+the 247차 commit:
 
 ```
 operator accepted == Engine truth                       0 positive
@@ -666,13 +666,18 @@ PR78-M09 + reserved            0
 > reuse policy. It does not promote the operator decision
 > into Engine truth, into a `ReviewedMutationRequest`, or
 > into a state-bound PR51 packet. It uses M04's
-> `EngineStateIdentity` equality as the mechanical basis for
-> decision reuse and adds the minimum two-check discipline
-> (exact subject content + Engine-state identity) that makes
-> reuse safe. Everything else — packet binding, mechanical
-> stale detection, automatic revalidation, automatic
-> execution — remains separate, explicitly-directed future
-> work or M01-locked M06-M09 responsibility.*
+> `EngineStateIdentity` equality as the mechanical comparison
+> basis for decision reuse and adds the minimum two-check
+> basis (exact subject content + Engine-state identity) for
+> determining whether a prior decision may remain eligible
+> for immediate downstream gate consideration. The two-check
+> basis does NOT replace any downstream gate, does NOT
+> establish check-and-act atomicity, and does NOT promise
+> reuse safety beyond the revalidation moment. Everything
+> else — packet binding, mechanical stale detection,
+> automatic revalidation, automatic execution — remains
+> separate, explicitly-directed future work or M01-locked
+> M06-M09 responsibility.*
 
 PR74-M05 is opened as **Draft** and is not merged. Closure
 language (`CLOSED`) is reserved for the post-squash-merge

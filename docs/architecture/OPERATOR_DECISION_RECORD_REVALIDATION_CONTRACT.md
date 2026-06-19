@@ -1090,9 +1090,13 @@ M05 closes the conceptual boundary for OC-B at the decision-
 record shape and reuse-policy layer.
 
 It preserves operator decisions as consumer-side facts and
-adds the minimum two-axis discipline (exact subject content +
-EngineStateIdentity equality) that makes mechanical decision
-reuse safe.
+adds the minimum two-check basis (exact subject content +
+EngineStateIdentity equality) for determining whether a prior
+decision may remain eligible for immediate downstream gate
+consideration. The two-check basis does NOT replace any
+downstream gate, does NOT establish check-and-act atomicity,
+and does NOT promise reuse safety beyond the revalidation
+moment.
 
 It does NOT close OC-C, OC-D, OC-E, OC-F, or OC-G.
 It does NOT promote any decision into Engine truth.
