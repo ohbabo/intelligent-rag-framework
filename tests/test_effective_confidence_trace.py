@@ -701,3 +701,411 @@ class TestStructuralCounts:
         assert "_compute_effective_confidence_core" in [
             name for name in dir(Engine) if name.startswith("_")
         ]
+
+
+# ===========================================================================
+# N. 259차 audit-closure locks
+# ===========================================================================
+
+
+class TestExactSignatureLock:
+    """Lock the new method's exact signature so accidental
+    rename / extra positional / extra keyword cannot land
+    silently. Contract §5 (and §6 for the private core)."""
+
+    def test_compute_with_trace_signature(self):
+        import inspect
+        sig = inspect.signature(Engine.compute_effective_confidence_with_trace)
+        params = list(sig.parameters.values())
+        # (self, claim_id: int) -> EffectiveConfidenceTrace
+        assert [p.name for p in params] == ["self", "claim_id"]
+        assert params[1].annotation in (int, "int")
+        assert sig.return_annotation in (
+            ragcore.EffectiveConfidenceTrace,
+            "EffectiveConfidenceTrace",
+        )
+
+    def test_compute_core_signature(self):
+        import inspect
+        sig = inspect.signature(Engine._compute_effective_confidence_core)
+        params = list(sig.parameters.values())
+        assert [p.name for p in params] == ["self", "claim_id"]
+        assert params[1].annotation in (int, "int")
+        assert sig.return_annotation in (
+            ragcore.EffectiveConfidenceTrace,
+            "EffectiveConfidenceTrace",
+        )
+
+    def test_legacy_compute_signature_preserved(self):
+        import inspect
+        sig = inspect.signature(Engine.compute_effective_confidence)
+        params = list(sig.parameters.values())
+        assert [p.name for p in params] == ["self", "claim_id"]
+        assert params[1].annotation in (int, "int")
+        assert sig.return_annotation in (ScoreValue, "ScoreValue")
+
+
+class TestModifierHelperCallCount:
+    """Lock that each of the six modifier helpers is called
+    exactly once per _compute_effective_confidence_core
+    invocation. Contract §6 (single calculation core)."""
+
+    _HELPERS = (
+        "_status_modifier_for_claim",
+        "_freshness_modifier_for_claim",
+        "_gap_modifier_for_claim",
+        "_count_modifier_for_claim",
+        "_rule_stats_modifier_for_claim",
+        "_evidence_type_modifier_for_claim",
+    )
+
+    def _wrap_helpers(self, engine):
+        counts = {name: 0 for name in self._HELPERS}
+        originals = {}
+        for name in self._HELPERS:
+            originals[name] = getattr(Engine, name)
+            def make_wrapper(orig, key):
+                def wrapper(self, *a, **kw):
+                    counts[key] += 1
+                    return orig(self, *a, **kw)
+                return wrapper
+            setattr(Engine, name, make_wrapper(originals[name], name))
+        return counts, originals
+
+    def _restore_helpers(self, originals):
+        for name, orig in originals.items():
+            setattr(Engine, name, orig)
+
+    def test_core_calls_each_helper_exactly_once(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        counts, originals = self._wrap_helpers(e)
+        try:
+            e._compute_effective_confidence_core(cid)
+            assert counts == {name: 1 for name in self._HELPERS}
+        finally:
+            self._restore_helpers(originals)
+
+    def test_compute_with_trace_calls_each_helper_exactly_once(self):
+        e = Engine()
+        _, cid = _build_basic(e)
+        counts, originals = self._wrap_helpers(e)
+        try:
+            e.compute_effective_confidence_with_trace(cid)
+            assert counts == {name: 1 for name in self._HELPERS}
+        finally:
+            self._restore_helpers(originals)
+
+    def test_legacy_compute_calls_each_helper_exactly_once(self):
+        # Legacy API delegates to the same core; same call profile.
+        e = Engine()
+        _, cid = _build_basic(e)
+        counts, originals = self._wrap_helpers(e)
+        try:
+            e.compute_effective_confidence(cid)
+            assert counts == {name: 1 for name in self._HELPERS}
+        finally:
+            self._restore_helpers(originals)
+
+
+class TestSingleMultiplicationSite:
+    """AST-level lock that the six-modifier multiplication
+    expression lives in exactly one Engine method body
+    (_compute_effective_confidence_core). Contract §6
+    explicitly forbids two multiplication sites for the
+    same formula."""
+
+    _HELPER_NAMES = frozenset({
+        "_status_modifier_for_claim",
+        "_freshness_modifier_for_claim",
+        "_gap_modifier_for_claim",
+        "_count_modifier_for_claim",
+        "_rule_stats_modifier_for_claim",
+        "_evidence_type_modifier_for_claim",
+    })
+
+    def _engine_methods_using_helpers(self):
+        """Return Engine method bodies that contain self.<helper>()
+        calls for the six modifier helpers."""
+        src = open("ragcore/engine.py").read()
+        tree = ast.parse(src)
+        sites = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "Engine":
+                for item in node.body:
+                    if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        continue
+                    helper_calls = set()
+                    for inner in ast.walk(item):
+                        if isinstance(inner, ast.Attribute):
+                            if (isinstance(inner.value, ast.Name)
+                                    and inner.value.id == "self"
+                                    and inner.attr in self._HELPER_NAMES):
+                                helper_calls.add(inner.attr)
+                    if helper_calls:
+                        sites.append((item.name, helper_calls))
+        return sites
+
+    def test_exactly_one_method_references_all_six_helpers(self):
+        sites = self._engine_methods_using_helpers()
+        full_sites = [
+            name for name, helpers in sites
+            if helpers == self._HELPER_NAMES
+        ]
+        assert full_sites == ["_compute_effective_confidence_core"], (
+            "Expected exactly _compute_effective_confidence_core to "
+            "reference all six modifier helpers; got "
+            f"{full_sites!r}. Two multiplication sites are forbidden "
+            "by contract §6."
+        )
+
+    def test_legacy_compute_does_not_reference_modifier_helpers(self):
+        sites = self._engine_methods_using_helpers()
+        helper_bearing = {name for name, _ in sites}
+        # compute_effective_confidence must delegate to the core.
+        assert "compute_effective_confidence" not in helper_bearing
+
+    def test_compute_with_trace_does_not_reference_modifier_helpers(self):
+        sites = self._engine_methods_using_helpers()
+        helper_bearing = {name for name, _ in sites}
+        assert "compute_effective_confidence_with_trace" not in helper_bearing
+
+
+class TestFreshnessMultiActiveMostRecent:
+    """Contract §9.2 — when multiple active contradictions
+    exist, only the MOST RECENT (highest evidence_id) one
+    contributes to freshness_modifier."""
+
+    def test_multiple_active_uses_most_recent_strength(self):
+        # Add two active contradictions with very different strengths.
+        # The freshness modifier must reflect the most-recent one
+        # (the one with the higher evidence_id), not the other.
+        e = Engine()
+        _, cid = _build_basic(e)
+        weak = e.add_evidence(
+            claim_id=cid, raw_ref_id=0, evidence_type=1, strength=0.1,
+        )
+        strong = e.add_evidence(
+            claim_id=cid, raw_ref_id=1, evidence_type=1, strength=0.9,
+        )
+        e.register_contradiction(cid, weak)
+        e.register_contradiction(cid, strong)
+        # strong has the higher evidence_id, so it is "most recent".
+        trace = e.compute_effective_confidence_with_trace(cid)
+        # The freshness modifier must use the most recent (strong)
+        # contradiction; compare against a baseline where only the
+        # strong one is active.
+        e_only_strong = Engine()
+        _, cid2 = _build_basic(e_only_strong)
+        # Insert evidence with the same strength as `strong` and
+        # register it as a contradiction.
+        ev2 = e_only_strong.add_evidence(
+            claim_id=cid2, raw_ref_id=0, evidence_type=1, strength=0.9,
+        )
+        e_only_strong.register_contradiction(cid2, ev2)
+        trace_only_strong = e_only_strong.compute_effective_confidence_with_trace(cid2)
+        assert trace.freshness_modifier == trace_only_strong.freshness_modifier
+
+    def test_most_recent_is_highest_evidence_id_not_lowest(self):
+        # Negative: if "most recent" were the lowest evidence_id, the
+        # multi-active freshness would equal the weak baseline. Lock
+        # that this is not the case.
+        e = Engine()
+        _, cid = _build_basic(e)
+        weak = e.add_evidence(
+            claim_id=cid, raw_ref_id=0, evidence_type=1, strength=0.1,
+        )
+        strong = e.add_evidence(
+            claim_id=cid, raw_ref_id=1, evidence_type=1, strength=0.9,
+        )
+        e.register_contradiction(cid, weak)
+        e.register_contradiction(cid, strong)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        e_only_weak = Engine()
+        _, cid_w = _build_basic(e_only_weak)
+        ev_w = e_only_weak.add_evidence(
+            claim_id=cid_w, raw_ref_id=0, evidence_type=1, strength=0.1,
+        )
+        e_only_weak.register_contradiction(cid_w, ev_w)
+        trace_only_weak = e_only_weak.compute_effective_confidence_with_trace(cid_w)
+        assert trace.freshness_modifier != trace_only_weak.freshness_modifier
+
+
+class TestCountModifierExactStrengthPenalty:
+    """Contract §9.4 — count_modifier with 2+ active uses
+    1.0 - avg_strength × 0.25 penalty exactly."""
+
+    def test_two_active_avg_strength_exact_value(self):
+        # 2 active contradictions, strengths 0.4 and 0.8 (avg 0.6).
+        # Expected count_modifier = 1.0 - 0.6 * 0.25 = 0.85.
+        e = Engine()
+        _, cid = _build_basic(e)
+        e1 = e.add_evidence(
+            claim_id=cid, raw_ref_id=0, evidence_type=1, strength=0.4,
+        )
+        e2 = e.add_evidence(
+            claim_id=cid, raw_ref_id=1, evidence_type=1, strength=0.8,
+        )
+        e.register_contradiction(cid, e1)
+        e.register_contradiction(cid, e2)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.count_modifier == pytest.approx(0.85, rel=1e-12)
+
+    def test_two_active_avg_zero_modifier_one(self):
+        # avg = 0.0 -> 1.0 - 0.0 * 0.25 = 1.0
+        e = Engine()
+        _, cid = _build_basic(e)
+        a = e.add_evidence(
+            claim_id=cid, raw_ref_id=0, evidence_type=1, strength=0.0,
+        )
+        b = e.add_evidence(
+            claim_id=cid, raw_ref_id=1, evidence_type=1, strength=0.0,
+        )
+        e.register_contradiction(cid, a)
+        e.register_contradiction(cid, b)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.count_modifier == 1.0
+
+    def test_two_active_avg_one_modifier_three_quarters(self):
+        # avg = 1.0 -> 1.0 - 1.0 * 0.25 = 0.75
+        e = Engine()
+        _, cid = _build_basic(e)
+        a = e.add_evidence(
+            claim_id=cid, raw_ref_id=0, evidence_type=1, strength=1.0,
+        )
+        b = e.add_evidence(
+            claim_id=cid, raw_ref_id=1, evidence_type=1, strength=1.0,
+        )
+        e.register_contradiction(cid, a)
+        e.register_contradiction(cid, b)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.count_modifier == pytest.approx(0.75, rel=1e-12)
+
+
+class TestRuleStatsModifierTiers:
+    """Contract §9.5 — maturity × observed-precision product.
+
+    maturity: clamped firing_count / 2 ratio, modifier
+              = 1.0 - (1.0 - ratio) * 0.2
+        firing 0 -> 0.8 / 1 -> 0.9 / 2+ -> 1.0
+    precision: None -> 1.0, p=0.0 -> 0.9, p=0.5 -> 0.95, p=1.0 -> 1.0
+    """
+
+    def _make_with_stats(self, firing_delta=0, observed_precision=None):
+        e = Engine()
+        e.register_rule(RuleDefinition(
+            id=9, version=1, maturity=RULE_MATURITY_STABLE,
+            prior_confidence=ScoreValue(0.5),
+        ))
+        if firing_delta:
+            e.update_rule_stats(
+                rule_id=9, rule_version=1, firing_delta=firing_delta,
+            )
+        if observed_precision is not None:
+            e.update_rule_stats(
+                rule_id=9, rule_version=1,
+                observed_precision=ScoreValue(observed_precision),
+            )
+        ent = e.add_entity(entity_type=1)
+        cid = e.add_claim(
+            subject_id=ent, claim_type=1, rule_id=9, rule_version=1,
+            reason_code=0, base_confidence=0.7,
+        )
+        return e, cid
+
+    def test_firing_zero_precision_none_modifier_is_zero_point_eight(self):
+        e, cid = self._make_with_stats(firing_delta=0, observed_precision=None)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        # maturity 0.8 × precision 1.0 = 0.8
+        assert trace.rule_stats_modifier == pytest.approx(0.8, rel=1e-12)
+
+    def test_firing_one_precision_none_modifier_is_zero_point_nine(self):
+        e, cid = self._make_with_stats(firing_delta=1, observed_precision=None)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        # maturity 0.9 × precision 1.0 = 0.9
+        assert trace.rule_stats_modifier == pytest.approx(0.9, rel=1e-12)
+
+    def test_firing_two_precision_zero_modifier_is_zero_point_nine(self):
+        e, cid = self._make_with_stats(firing_delta=2, observed_precision=0.0)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        # maturity 1.0 × precision 0.9 = 0.9
+        assert trace.rule_stats_modifier == pytest.approx(0.9, rel=1e-12)
+
+    def test_firing_two_precision_half_modifier_is_zero_point_nine_five(self):
+        e, cid = self._make_with_stats(firing_delta=2, observed_precision=0.5)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        # maturity 1.0 × precision 0.95 = 0.95
+        assert trace.rule_stats_modifier == pytest.approx(0.95, rel=1e-12)
+
+    def test_firing_two_precision_one_modifier_is_one(self):
+        e, cid = self._make_with_stats(firing_delta=2, observed_precision=1.0)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        # maturity 1.0 × precision 1.0 = 1.0
+        assert trace.rule_stats_modifier == pytest.approx(1.0, rel=1e-12)
+
+    def test_firing_zero_precision_half_modifier_is_zero_point_seventy_six(self):
+        e, cid = self._make_with_stats(firing_delta=0, observed_precision=0.5)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        # maturity 0.8 × precision 0.95 = 0.76
+        assert trace.rule_stats_modifier == pytest.approx(0.76, rel=1e-12)
+
+
+class TestEvidenceTypeResolvedContradictionExcluded:
+    """Contract §9.6 — resolved contradiction evidence is
+    excluded from the direct supporting evidence set for the
+    evidence_type_modifier."""
+
+    def test_resolved_contradiction_evidence_excluded(self):
+        # One direct supporting (hint), one resolved contradiction
+        # (non-hint). The resolved contradiction must be excluded so
+        # the modifier reflects only the hint -> 0.9.
+        e = Engine()
+        _, cid = _build_basic(e)
+        e.register_hint_evidence_types([42])
+        e.add_evidence(
+            claim_id=cid, raw_ref_id=0, evidence_type=42, strength=0.5,
+        )
+        ev_contra = e.add_evidence(
+            claim_id=cid, raw_ref_id=1, evidence_type=99, strength=0.5,
+        )
+        e.register_contradiction(cid, ev_contra)
+        e.register_contradiction_resolution(cid, ev_contra)
+        trace = e.compute_effective_confidence_with_trace(cid)
+        assert trace.evidence_type_modifier == 0.9
+
+
+class TestGapSharedReferenceSemantics:
+    """Contract §9.3 — shared-gap reference semantics
+    (PR4-PR4S / §16). The gap_modifier counts gaps via
+    _claim_gap_refs, so a Claim that shares a Gap via dedup
+    still contributes one unresolved-gap reference."""
+
+    def test_shared_gap_counts_as_one_reference(self):
+        e = Engine()
+        ent = e.add_entity(entity_type=1)
+        # Same subject + same rule + same gap_type + same required
+        # evidence type -> dedup hits a single Gap shared across two
+        # Claims.
+        cid1 = e.add_claim(
+            subject_id=ent, claim_type=1, rule_id=1, rule_version=1,
+            reason_code=0, base_confidence=0.8,
+        )
+        cid2 = e.add_claim(
+            subject_id=ent, claim_type=1, rule_id=1, rule_version=1,
+            reason_code=0, base_confidence=0.8,
+        )
+        g1 = e.add_gap(
+            claim_id=cid1, gap_type=1, required_evidence_type=42,
+            severity=0.5, rule_id=1,
+        )
+        g2 = e.add_gap(
+            claim_id=cid2, gap_type=1, required_evidence_type=42,
+            severity=0.5, rule_id=1,
+        )
+        # Dedup -> same Gap id.
+        assert g1 == g2
+        # Each Claim now references one unresolved Gap.
+        trace1 = e.compute_effective_confidence_with_trace(cid1)
+        trace2 = e.compute_effective_confidence_with_trace(cid2)
+        assert trace1.gap_modifier == 0.9
+        assert trace2.gap_modifier == 0.9

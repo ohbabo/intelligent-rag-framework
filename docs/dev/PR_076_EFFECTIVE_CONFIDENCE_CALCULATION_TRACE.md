@@ -168,7 +168,9 @@ M07 owns:
 - equality between the legacy and trace APIs
 - modifier breakdown semantics (mirror of existing helpers)
 - failure semantics (KeyError, unchanged)
-- read-only / no-revision-advance classification (M04 §2.6)
+- read-only / no-revision-advance classification (M04 §1.2
+  for state_identity-style read-only methods; the §2 advance
+  discipline covers only the 20 state-mutating methods)
 - relationship with M03 packet boundary (preserved)
 - relationship with M04 EngineStateIdentity primitive (reuse)
 - relationship with PR32 consumer-report surface (separate)
@@ -431,7 +433,8 @@ schema_version stringification.
 construction.
 
 ```
-- captured via a read-only state_identity() call (M04 §2.6);
+- captured via a read-only state_identity() call (M04 §1.2
+  public method; not in the §2 state-mutating set);
   revision unchanged.
 - value-equality is the only supported comparison.
 - NOT a packet capture identity, NOT CAPTURE_BOUND /
@@ -460,7 +463,12 @@ construction.
 
 ```
 compute_effective_confidence_with_trace
-  - does not advance Engine state revision (M04 §2.6)
+  - does not advance Engine state revision (M04 §2 advance
+    discipline covers only the 20 state-mutating public
+    methods; read-only methods such as state_identity()
+    under §1.2 and the new
+    compute_effective_confidence_with_trace are explicitly
+    out of that set)
   - does not modify snapshot-visible state
   - does not introduce any new exception type
   - unknown claim_id -> KeyError (same surface as the
@@ -537,7 +545,10 @@ M05 / M06 contracts and their dev records are NOT modified
 docs/architecture/EFFECTIVE_CONFIDENCE_CALCULATION_TRACE_CONTRACT.md
   255차, +1029 lines (§0~§20)
 tests/test_effective_confidence_trace.py
-  256차, +730 lines (61 test methods across 13 classes)
+  256차, +703 lines (61 test methods across 13 classes;
+                      259차 audit-closure later appends an
+                      additional ~22 test methods across 7
+                      classes — see §20)
 docs/dev/PR_076_EFFECTIVE_CONFIDENCE_CALCULATION_TRACE.md
   258차, this file
 ```
@@ -700,8 +711,13 @@ Per commit:
                                  tests from test_effective_
                                  confidence_trace.py)
 
-258차  python -m pytest -q  ->  1578 passed in <time>
-                                (docs-only; preserved)
+258차  python -m pytest -q  ->  1578 passed
+                                (docs-only; baseline preserved;
+                                 elapsed-time value from the
+                                 258차 run was not retained in
+                                 the source record. 259차
+                                 records the final post-audit
+                                 run separately at §20.)
 ```
 
 All baseline tests continue to pass with no edit to their
@@ -846,3 +862,264 @@ PR78-M09   RuleStats Update Provenance (OC-G) NOT STARTED
 ```
 
 No automatic next PR. Framework waits for directive.
+
+---
+
+## §20 Audit-closure summary — 259차
+
+PR76-M07 is held in Draft for a docs + tests audit-closure
+correction. The 259차 commit `test(review): close M07 trace
+audit gaps` resolves three blocking defects (C1 ~ C3) raised
+during 258차 review. The 255차 / 256차 / 257차 / 258차 commits
+are NOT amended.
+
+### §20.1 Five-commit history
+
+```
+255차  058756e   docs(contract): define effective confidence
+                  calculation trace
+256차  ffa4345   test(core): lock effective confidence trace
+                  invariants  (61 test methods)
+257차  c29a6c8   feat(engine): add effective confidence
+                  calculation trace
+258차  ffd4685   docs(dev): record PR76-M07 effective
+                  confidence trace (initial pre-review
+                  checkpoint — §1 ~ §19)
+259차  (this)    test(review): close M07 trace audit gaps
+                  (C1 R1 R2 R3 / dev current-record alignment;
+                   ~22 audit-closure tests appended)
+```
+
+### §20.2 C1 corrections — M04 §2.6 → §1.2
+
+The 255차 ~ 258차 documents cited `M04 §2.6` as the basis for
+`state_identity()` being read-only. M04 §2.6 is the
+hint-evidence-type-set revision-advance rule; the actual
+read-only contract for `state_identity()` is M04 §1.2 (and the
+broader §2 advance discipline applies only to the 20
+state-mutating public methods, of which `state_identity()` is
+not one).
+
+Corrected sites:
+
+```
+docs/architecture/
+  EFFECTIVE_CONFIDENCE_CALCULATION_TRACE_CONTRACT.md
+    §8.2  state_identity() is M04 §1.2 read-only; the §2
+          advance discipline covers only state-mutating
+          methods.
+    §11.1 advance-discipline reference rewritten:
+          read-only methods (state_identity() under §1.2 and
+          the new compute_effective_confidence_with_trace)
+          are explicitly out of the §2 set.
+
+docs/architecture/
+  ENGINE_READ_CONSISTENCY_CONTRACT.md  §21
+    addendum's state_identity() reference corrected to
+    M04 §1.2.
+
+docs/architecture/
+  ENGINE_STATE_IDENTITY_PRIMITIVE_CONTRACT.md  §12
+    addendum's state_identity() reference corrected to
+    §1.2 (the M04 self-reference); §2 is mentioned only as
+    the state-mutating-method advance discipline.
+
+docs/dev/PR_076_EFFECTIVE_CONFIDENCE_CALCULATION_TRACE.md
+  §4   OC-D scope's "read-only / no-revision-advance
+       classification" rewritten to reference §1.2 + §2.
+  §10  source_state_identity capture reference corrected to
+       §1.2.
+  §11  read-only / failure semantics reference rewritten to
+       cite §2 advance discipline correctly (covers only the
+       20 state-mutating methods; state_identity() under
+       §1.2 and the new
+       compute_effective_confidence_with_trace are out of
+       that set).
+```
+
+M05 addendum's prior §2.6 reference (M04 §11, landed under
+PR74-M05) is preserved unchanged — it is outside M07 scope and
+would otherwise expand 259차's footprint into already-merged
+M05 normative text.
+
+### §20.3 C2 corrections — audit-closure test locks
+
+The 256차 test file covered the 6 modifier breakdowns at a
+class level but did not enforce the contract's structural
+invariants. 259차 appends seven new test classes covering 22
+test methods:
+
+```
+TestExactSignatureLock                          (3 tests)
+  inspect.signature lock on the new public method,
+  the new private core, and the legacy public method
+  (signature preservation).
+
+TestModifierHelperCallCount                     (3 tests)
+  Wrap each of the six modifier helpers; assert call_count
+  == 1 per core invocation, per
+  compute_effective_confidence_with_trace invocation, and
+  per legacy compute_effective_confidence invocation.
+
+TestSingleMultiplicationSite                    (3 tests)
+  AST scan over ragcore/engine.py:
+    - exactly one Engine method body references all six
+      modifier helpers (the private core)
+    - compute_effective_confidence does NOT reference any
+      modifier helper directly (it delegates)
+    - compute_effective_confidence_with_trace does NOT
+      reference any modifier helper directly
+
+TestFreshnessMultiActiveMostRecent              (2 tests)
+  With two active contradictions of differing strength, the
+  freshness_modifier equals the value computed from the
+  most-recent (highest evidence_id) contradiction. Negative
+  test: not equal to the weak-only baseline.
+
+TestCountModifierExactStrengthPenalty           (3 tests)
+  Exact value at avg strength 0.0, 0.6, and 1.0:
+    avg 0.0 -> 1.0
+    avg 0.6 -> 1.0 - 0.6 * 0.25 = 0.85
+    avg 1.0 -> 0.75
+
+TestRuleStatsModifierTiers                      (6 tests)
+  Maturity × precision exact product across the full matrix:
+    firing 0, precision None -> 0.80
+    firing 1, precision None -> 0.90
+    firing 2, precision 0.0  -> 0.90
+    firing 2, precision 0.5  -> 0.95
+    firing 2, precision 1.0  -> 1.00
+    firing 0, precision 0.5  -> 0.76
+
+TestEvidenceTypeResolvedContradictionExcluded   (1 test)
+  Resolved contradiction evidence is excluded from the
+  direct supporting evidence set (separate scenario from the
+  existing contradiction-evidence exclusion).
+
+TestGapSharedReferenceSemantics                 (1 test)
+  Shared Gap (dedup-hit across two Claims) contributes one
+  unresolved-gap reference per Claim; both traces report
+  gap_modifier = 0.9.
+```
+
+The 259차 audit-closure tests pass without any runtime
+correction; they expose no implementation defect.
+
+### §20.4 C3 corrections — dev current-record accuracy
+
+```
+C3.1  Test file line count corrected:
+        +730 lines -> +703 lines (actual wc -l of the 256차
+        file; was a transcription error in 258차 — verified
+        independently by base→HEAD diff in the GitHub PR
+        compare view).
+
+C3.2  258차 pytest elapsed-time placeholder `<time>` removed.
+        The 258차 elapsed-time value was not retained in the
+        source record. The new §20 records the final
+        post-audit-closure run separately.
+
+C3.3  29 deletions breakdown — the 258차 summary attributed
+        all 29 deletions to the legacy compute_effective_
+        confidence body reduction. Actual distribution is:
+
+           ragcore/engine.py             -7
+             (compute_effective_confidence body reduction)
+           ragcore/__init__.py           -3
+             (`Public API surface — 49 symbols, grouped by
+              purpose (§45.5 + PR73-M04)` comment replaced
+              with `50 symbols`; 49 inline references replaced)
+           surface-lock test files       -19
+             (old `assert count == 41` / `assert ... == 49` /
+              `assert ... == 19` lines replaced; not all such
+              lines are pure deletions — most are replaced
+              by new assertions with adjusted constants, which
+              registers as `-N + N+1` in the diff)
+
+        These are mechanical surface-count adjustments, not
+        semantic changes. The contract delta-zero invariants
+        are preserved unchanged.
+```
+
+### §20.5 259차 file footprint (docs + tests only)
+
+```
+docs/architecture/
+  EFFECTIVE_CONFIDENCE_CALCULATION_TRACE_CONTRACT.md
+    §8.2 / §11.1 — M04 §2.6 → §1.2 + §2 advance discipline
+                     clarification (C1)
+
+  ENGINE_READ_CONSISTENCY_CONTRACT.md  §21
+    M04 §2.6 → §1.2 (C1)
+
+  ENGINE_STATE_IDENTITY_PRIMITIVE_CONTRACT.md  §12
+    §2.6 → §1.2 (C1)
+
+docs/dev/PR_076_EFFECTIVE_CONFIDENCE_CALCULATION_TRACE.md
+  §4 / §10 / §11 — M04 §2.6 → §1.2 (C1)
+  §13.1 — +730 → +703 (C3.1)
+  §15 — 258차 `<time>` placeholder removed (C3.2)
+  §20 — new audit-closure summary
+
+tests/test_effective_confidence_trace.py
+  + 22 audit-closure test methods across 7 new classes (C2):
+    TestExactSignatureLock                  (3)
+    TestModifierHelperCallCount             (3)
+    TestSingleMultiplicationSite            (3)
+    TestFreshnessMultiActiveMostRecent      (2)
+    TestCountModifierExactStrengthPenalty   (3)
+    TestRuleStatsModifierTiers              (6)
+    TestEvidenceTypeResolvedContradictionExcluded (1)
+    TestGapSharedReferenceSemantics         (1)
+```
+
+No `ragcore/*` runtime change. No `examples/*` change. No
+other test file change. No `pyproject.toml` change. No M05
+addendum or any other already-merged normative text change.
+
+### §20.6 259차 invariants
+
+```
+tests                          1517 + 83 = 1600
+                                (was 1578 at 258차; +22 from
+                                 the 259차 audit-closure tests)
+runtime delta from 258차        0
+examples/* delta               0
+pyproject.toml delta           0
+judgment semantics delta       0
+formula delta                  0
+modifier value delta           0
+modifier helper body delta     0
+PR51 packet shape delta        0
+snapshot schema delta          0
+dependency delta               0
+automatic execution delta      0
+```
+
+### §20.7 259차 regression result
+
+```
+$ python -m pytest -q
+[...]
+1600 passed in 1.41s
+$ git diff --check
+(clean)
+```
+
+### §20.8 Final M-series state
+
+```
+P-series   CLOSED
+PR70-M01   CLOSED
+PR71-M02   CLOSED
+PR72-M03   CLOSED
+PR73-M04   CLOSED
+PR74-M05   CLOSED
+PR75-M06   CLOSED
+PR76-M07   OPEN — DRAFT, NOT MERGED (this PR)
+PR77-M08   NOT STARTED
+PR78-M09   NOT STARTED
+```
+
+No automatic next PR. PR remains Draft. Framework waits for
+directive.

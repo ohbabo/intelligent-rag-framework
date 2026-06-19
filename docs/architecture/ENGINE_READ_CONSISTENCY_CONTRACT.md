@@ -1134,8 +1134,9 @@ change M03's reading of the PR51 packet.
 ```
 - The trace's `source_state_identity` field carries an
   EngineStateIdentity value observed at calculation time. It
-  is captured by a read-only state_identity() call (M04 §2.6)
-  inside the trace construction.
+  is captured by a call to the read-only Engine.state_identity()
+  method (M04 §1.2; not in the M04 §2 advance-discipline
+  set) inside the trace construction.
 
 - `source_state_identity` is NOT a PR51 packet capture
   identity. PR51 packets remain UNBOUND + UNKNOWN. The §7

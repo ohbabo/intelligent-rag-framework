@@ -612,7 +612,9 @@ trace construction.
   other M04 property.
 
 - M07 captures source_state_identity by calling the
-  read-only Engine.state_identity() method (§2.6). The
+  read-only Engine.state_identity() public method documented
+  at §1.2. state_identity() is not in the §2 advance-
+  discipline set (the 20 state-mutating methods), so the
   call does NOT advance the revision. M07 adds:
 
     Engine.compute_effective_confidence_with_trace(claim_id)

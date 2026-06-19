@@ -450,8 +450,11 @@ source_state_identity = self.state_identity()
 
 ### §8.2 Read-only call
 
-`state_identity()` is a M04 read-only method that does NOT
-advance the revision (M04 §2.6). The trace call therefore
+`state_identity()` is a M04 read-only public method (M04
+§1.2). Calling it does not mutate Engine state and does not
+advance the revision (M04 §2 — the advance discipline applies
+only to the 20 state-mutating methods, of which
+`state_identity()` is not one). The trace call therefore
 leaves the revision unchanged.
 
 ### §8.3 Supported comparison
@@ -615,8 +618,11 @@ RuleStats unchanged
 lifecycle history unchanged
 ```
 
-The M04 advance discipline (M04 §2.6) classifies both methods
-as read-only-no-advance.
+The M04 advance discipline (M04 §2) applies only to the 20
+state-mutating public methods. The two confidence APIs are
+read-only and are not in that set; the new
+`compute_effective_confidence_with_trace` joins the read-only
+group documented at M04 §1.2 alongside `state_identity()`.
 
 ### §11.2 KeyError on unknown claim
 
