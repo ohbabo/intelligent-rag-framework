@@ -1896,6 +1896,195 @@ def _ids_seen_in_capture(
     return seen
 
 
+# ---------------------------------------------------------------------------
+# Phase-isolated final-block spy infrastructure (271차 R-FINAL correction).
+#
+# The first 271차 cut wrapped Engine.get_* spies around the WHOLE operation,
+# which let two incidental calls (compute_effective_confidence's internal
+# get_claim; Engine internals' gap_resolution) satisfy "called at least
+# once". The corrected design installs the spy ONLY for the lifetime of the
+# example's `_final_state` helper, so reads that happened in Lane B / Engine
+# internals BEFORE `_final_state` was entered are NOT counted as final-block
+# verification evidence. `_final_state` is pinned as the canonical final-
+# verification helper; a future refactor that renames it must update the
+# helper-name lookup here.
+# ---------------------------------------------------------------------------
+
+
+def _require_final_state_callable(module) -> Any:
+    """Return module._final_state or fail the test with a clear message."""
+    if not hasattr(module, "_final_state"):
+        pytest.fail(
+            "example module must expose a module-level `_final_state` "
+            "callable as the canonical final-verification helper; the "
+            "271차 R-FINAL locks wrap this helper to count only reads "
+            "that occur from within it",
+        )
+    return module._final_state
+
+
+def _run_with_final_phase_spies(
+    method_names: tuple[str, ...],
+) -> tuple[
+    Any, Any, dict[str, int], dict[str, list[Any]], dict[str, list[Any]],
+]:
+    """Run the operation with Engine class spies on `method_names`
+    installed ONLY during the lifetime of `_final_state`. Returns
+    (module, report_or_exception, final_counts, final_captured,
+    final_returns). final_returns[name] is the list of return values
+    observed for the spy on `name` (used by derivation tests).
+
+    Reads that happen outside `_final_state` (e.g. in Lane B or inside
+    Engine internals running before `_final_state` is entered) are
+    NOT counted."""
+    module = _load_example_module()
+    original_final_state = _require_final_state_callable(module)
+
+    final_counts: dict[str, int] = {n: 0 for n in method_names}
+    final_captured: dict[str, list[Any]] = {n: [] for n in method_names}
+    final_returns: dict[str, list[Any]] = {n: [] for n in method_names}
+
+    def wrapped_final_state(*args, **kwargs):
+        originals: dict[str, Any] = {}
+        for name in method_names:
+            originals[name] = getattr(Engine, name)
+
+            def make_spy(name=name, orig=originals[name]):
+                def spy(self, *a, **kw):
+                    final_counts[name] += 1
+                    try:
+                        final_captured[name].append(
+                            (copy.deepcopy(a), copy.deepcopy(kw)),
+                        )
+                    except Exception:
+                        final_captured[name].append(("<unpicklable>", {}))
+                    result = orig(self, *a, **kw)
+                    try:
+                        final_returns[name].append(copy.deepcopy(result))
+                    except Exception:
+                        final_returns[name].append(result)
+                    return result
+                spy.__name__ = name
+                spy.__wrapped__ = orig
+                return spy
+
+            setattr(Engine, name, make_spy())
+        try:
+            return original_final_state(*args, **kwargs)
+        finally:
+            for name, orig in originals.items():
+                setattr(Engine, name, orig)
+
+    setattr(module, "_final_state", wrapped_final_state)
+    try:
+        try:
+            report = module.run_complete_domain_neutral_reference_operation()
+        except Exception as exc:
+            report = {"__exception__": repr(exc)}
+    finally:
+        setattr(module, "_final_state", original_final_state)
+    return module, report, final_counts, final_captured, final_returns
+
+
+class _AttrAccessTracker:
+    """Wraps an arbitrary object and records every attribute access
+    performed on it (other than the three private bookkeeping attrs).
+    The wrapped object's actual attribute is returned, and equality
+    / hash / repr delegate to the wrapped value.
+
+    Used by the claim_status derivation lock: wrapping the result of
+    Engine.get_claim with a tracker lets the test prove that
+    `_final_state` actually accessed `.status` on the returned Claim,
+    rather than synthesizing the value from a hardcoded constant or
+    from the confirm_claim_if_ready() return flag."""
+
+    def __init__(self, wrapped):
+        self._wrapped = wrapped
+        self._accessed_attrs: list[str] = []
+        self._returned_values: dict[str, Any] = {}
+
+    def __getattr__(self, name):
+        # __getattr__ fires only when normal attribute lookup misses,
+        # so `_wrapped` / `_accessed_attrs` / `_returned_values` are
+        # resolved directly and never re-enter this path.
+        v = getattr(self._wrapped, name)
+        self._accessed_attrs.append(name)
+        self._returned_values[name] = v
+        return v
+
+    def __eq__(self, other):
+        if isinstance(other, _AttrAccessTracker):
+            return self._wrapped == other._wrapped
+        return self._wrapped == other
+
+    def __hash__(self):
+        return hash(self._wrapped)
+
+    def __repr__(self):
+        return repr(self._wrapped)
+
+
+def _run_with_get_claim_proxy_in_final_state() -> tuple[Any, list[Any]]:
+    """Run the operation with Engine.get_claim wrapped — ONLY during
+    `_final_state` — so the returned Claim is an _AttrAccessTracker.
+
+    Returns (report, trackers) where trackers is a list of
+    (claim_id_arg, tracker) tuples for each get_claim call observed
+    inside `_final_state`."""
+    module = _load_example_module()
+    original_final_state = _require_final_state_callable(module)
+    trackers: list[tuple[int, _AttrAccessTracker]] = []
+    original_get_claim = Engine.get_claim
+
+    def proxy_get_claim(self, claim_id):
+        result = original_get_claim(self, claim_id)
+        tracker = _AttrAccessTracker(result)
+        trackers.append((claim_id, tracker))
+        return tracker
+
+    def wrapped_final_state(*args, **kwargs):
+        Engine.get_claim = proxy_get_claim
+        try:
+            return original_final_state(*args, **kwargs)
+        finally:
+            Engine.get_claim = original_get_claim
+
+    setattr(module, "_final_state", wrapped_final_state)
+    try:
+        try:
+            report = module.run_complete_domain_neutral_reference_operation()
+        except Exception as exc:
+            report = {"__exception__": repr(exc)}
+    finally:
+        setattr(module, "_final_state", original_final_state)
+    return report, trackers
+
+
+def _final_state_function_node() -> ast.FunctionDef | None:
+    """Return the top-level FunctionDef AST node for `_final_state`
+    in the example source. Returns None when the function is absent
+    so callers can fail with their own message."""
+    src = _example_source()
+    tree = ast.parse(src)
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "_final_state":
+            return node
+    return None
+
+
+def _attribute_method_names_called_in(func: ast.FunctionDef) -> set[str]:
+    """Set of attribute names invoked as `<something>.<name>(...)`
+    anywhere inside `func`'s body (e.g. `engine.get_claim(...)` →
+    {'get_claim'} and `engine.state_identity()` → {'state_identity'})."""
+    names: set[str] = set()
+    for node in ast.walk(func):
+        if isinstance(node, ast.Call):
+            func_expr = node.func
+            if isinstance(func_expr, ast.Attribute):
+                names.add(func_expr.attr)
+    return names
+
+
 # ===========================================================================
 # Z. Role validation must actually gate execution
 # ===========================================================================
@@ -2251,85 +2440,133 @@ class TestStage6SuppressionPerCycle:
 
 
 class TestFinalPublicEngineReads:
-    """The happy-path operation must invoke the listed Engine public
-    read methods at least once each from the final verification block,
-    each receiving the actual ID produced by Lane A or Lane C.
-    state_identity() alone does not satisfy this requirement (M08 §15
-    / §16 + 271차 §7~§8)."""
+    """Each listed Engine public read API must be invoked AT LEAST ONCE
+    FROM WITHIN the example's `_final_state` helper. The spy is installed
+    only for the lifetime of `_final_state` so that incidental reads
+    from Lane B or from inside Engine methods running BEFORE
+    `_final_state` is entered (e.g. compute_effective_confidence's
+    internal get_claim, Engine internals' gap_resolution after
+    resolve_gaps_for_evidence) are NOT counted as final-verification
+    evidence. state_identity() alone does not satisfy this requirement
+    (M08 §15 / §16 + 271차 §7 / R-FINAL §1)."""
 
-    def test_each_public_read_invoked_at_least_once(self):
+    def test_each_public_read_invoked_from_final_state(self):
         _skip_if_no_example()
-        _, _, calls, _ = _run_with_engine_spies(_READ_METHOD_NAMES)
+        _, report, final_counts, _, _ = _run_with_final_phase_spies(
+            _READ_METHOD_NAMES,
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.fail(
+                "happy-path operation must not raise; got: "
+                f"{report['__exception__']}"
+            )
         for name in _READ_METHOD_NAMES:
-            assert calls[name] >= 1, (
-                f"happy-path operation must invoke Engine.{name} at "
-                f"least once (final verification block); observed "
-                f"call_count={calls[name]}"
+            assert final_counts[name] >= 1, (
+                f"final verification block (`_final_state`) must invoke "
+                f"Engine.{name} at least once; observed in-final "
+                f"call_count={final_counts[name]} (incidental reads from "
+                "Lane B / Engine internals running BEFORE _final_state "
+                "are intentionally NOT counted)"
             )
 
-    def test_get_entity_called_with_lane_a_entity_id(self):
+    def test_get_entity_called_with_lane_a_entity_id_in_final_state(self):
         _skip_if_no_example()
-        _, report, _, captured = _run_with_engine_spies(_READ_METHOD_NAMES)
-        assert isinstance(report, dict) and "__exception__" not in report
+        _, report, _, final_captured, _ = _run_with_final_phase_spies(
+            _READ_METHOD_NAMES,
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.fail(f"raised: {report['__exception__']}")
         lane_a = report.get("lanes", {}).get("external_ingress", {})
         entity_id = lane_a.get("produced_ids", {}).get("entity_id")
         assert isinstance(entity_id, int)
-        assert entity_id in _ids_seen_in_capture(captured, "get_entity"), (
-            "Engine.get_entity must be called with the Lane A entity_id "
-            f"({entity_id}); observed captured args: "
-            f"{captured.get('get_entity')}"
+        assert entity_id in _ids_seen_in_capture(
+            final_captured, "get_entity",
+        ), (
+            f"Engine.get_entity must be called with the Lane A "
+            f"entity_id ({entity_id}) FROM WITHIN `_final_state`; "
+            f"observed final-phase captured args: "
+            f"{final_captured.get('get_entity')}"
         )
 
-    def test_get_claim_called_with_lane_a_claim_id(self):
+    def test_get_claim_called_with_lane_a_claim_id_in_final_state(self):
         _skip_if_no_example()
-        _, report, _, captured = _run_with_engine_spies(_READ_METHOD_NAMES)
-        assert isinstance(report, dict) and "__exception__" not in report
+        _, report, _, final_captured, _ = _run_with_final_phase_spies(
+            _READ_METHOD_NAMES,
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.fail(f"raised: {report['__exception__']}")
         lane_a = report.get("lanes", {}).get("external_ingress", {})
         claim_id = lane_a.get("produced_ids", {}).get("claim_id")
         assert isinstance(claim_id, int)
-        assert claim_id in _ids_seen_in_capture(captured, "get_claim"), (
-            "Engine.get_claim must be called with the Lane A claim_id "
-            f"({claim_id}); observed captured args: "
-            f"{captured.get('get_claim')}"
+        assert claim_id in _ids_seen_in_capture(
+            final_captured, "get_claim",
+        ), (
+            f"Engine.get_claim must be called with the Lane A claim_id "
+            f"({claim_id}) FROM WITHIN `_final_state`; observed final-"
+            f"phase captured args: {final_captured.get('get_claim')} "
+            "(compute_effective_confidence's internal get_claim that "
+            "fires earlier in Lane B does NOT satisfy this requirement)"
         )
 
-    def test_get_gap_called_with_lane_a_gap_id(self):
+    def test_get_gap_called_with_lane_a_gap_id_in_final_state(self):
         _skip_if_no_example()
-        _, report, _, captured = _run_with_engine_spies(_READ_METHOD_NAMES)
-        assert isinstance(report, dict) and "__exception__" not in report
+        _, report, _, final_captured, _ = _run_with_final_phase_spies(
+            _READ_METHOD_NAMES,
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.fail(f"raised: {report['__exception__']}")
         lane_a = report.get("lanes", {}).get("external_ingress", {})
         gap_id = lane_a.get("produced_ids", {}).get("gap_id")
         assert isinstance(gap_id, int)
-        assert gap_id in _ids_seen_in_capture(captured, "get_gap"), (
-            "Engine.get_gap must be called with the Lane A gap_id "
-            f"({gap_id}); observed captured args: "
-            f"{captured.get('get_gap')}"
+        assert gap_id in _ids_seen_in_capture(
+            final_captured, "get_gap",
+        ), (
+            f"Engine.get_gap must be called with the Lane A gap_id "
+            f"({gap_id}) FROM WITHIN `_final_state`; observed final-"
+            f"phase captured args: {final_captured.get('get_gap')}"
         )
 
-    def test_get_evidence_called_with_lane_c_evidence_id(self):
+    def test_get_evidence_called_with_lane_c_evidence_id_in_final_state(
+        self,
+    ):
         _skip_if_no_example()
-        _, report, _, captured = _run_with_engine_spies(_READ_METHOD_NAMES)
-        assert isinstance(report, dict) and "__exception__" not in report
+        _, report, _, final_captured, _ = _run_with_final_phase_spies(
+            _READ_METHOD_NAMES,
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.fail(f"raised: {report['__exception__']}")
         lane_c = report.get("lanes", {}).get("downstream_reentry", {})
         evidence_id = lane_c.get("produced_ids", {}).get("evidence_id")
         assert isinstance(evidence_id, int)
-        assert evidence_id in _ids_seen_in_capture(captured, "get_evidence"), (
-            "Engine.get_evidence must be called with the Lane C "
-            f"evidence_id ({evidence_id}); observed captured args: "
-            f"{captured.get('get_evidence')}"
+        assert evidence_id in _ids_seen_in_capture(
+            final_captured, "get_evidence",
+        ), (
+            f"Engine.get_evidence must be called with the Lane C "
+            f"evidence_id ({evidence_id}) FROM WITHIN `_final_state`; "
+            f"observed final-phase captured args: "
+            f"{final_captured.get('get_evidence')}"
         )
 
-    def test_gap_resolution_called_with_lane_a_gap_id(self):
+    def test_gap_resolution_called_with_lane_a_gap_id_in_final_state(self):
         _skip_if_no_example()
-        _, report, _, captured = _run_with_engine_spies(_READ_METHOD_NAMES)
-        assert isinstance(report, dict) and "__exception__" not in report
+        _, report, _, final_captured, _ = _run_with_final_phase_spies(
+            _READ_METHOD_NAMES,
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.fail(f"raised: {report['__exception__']}")
         lane_a = report.get("lanes", {}).get("external_ingress", {})
         gap_id = lane_a.get("produced_ids", {}).get("gap_id")
         assert isinstance(gap_id, int)
-        assert gap_id in _ids_seen_in_capture(captured, "gap_resolution"), (
-            "Engine.gap_resolution must be called with the Lane A gap_id "
-            f"({gap_id}) to verify the post-Lane-C resolution; observed "
-            f"captured args: {captured.get('gap_resolution')}"
+        assert gap_id in _ids_seen_in_capture(
+            final_captured, "gap_resolution",
+        ), (
+            f"Engine.gap_resolution must be called with the Lane A "
+            f"gap_id ({gap_id}) FROM WITHIN `_final_state` to verify "
+            f"the post-Lane-C resolution; observed final-phase "
+            f"captured args: {final_captured.get('gap_resolution')} "
+            "(internal gap_resolution calls fired by Engine while "
+            "resolve_gaps_for_evidence was running do NOT satisfy "
+            "this requirement)"
         )
 
 
@@ -2436,6 +2673,134 @@ class TestFinalReadValueBinding:
             f"got: {cs!r}"
         )
 
+    # --- 271차 R-FINAL §3 — derivation locks ---
+    # The two tests below prove that the claim_status value AND the
+    # gap_resolution value carried by `final_state` came from real
+    # Engine reads performed FROM WITHIN `_final_state`, not from a
+    # hardcoded constant and not from the confirm_claim_if_ready()
+    # return flag. `test_final_state_claim_status_..._constant` above
+    # checks the numeric value; these two tests check the source path
+    # of the value.
+
+    def test_final_state_claim_status_derived_from_get_claim_in_final_state(
+        self,
+    ):
+        """Wrap Engine.get_claim during `_final_state` so the returned
+        Claim is an _AttrAccessTracker. Then assert: (a) get_claim was
+        called inside `_final_state` for the Lane A claim_id; (b)
+        `.status` was actually accessed on the returned Claim; and (c)
+        the report's `final_state['claim_status']` equals the value
+        observed via that access. A hardcoded
+        `"claim_status": CLAIM_STATUS_CONFIRMED` cannot pass (a) and
+        (b); a hardcoded value that incidentally equals the constant
+        but is not derived from the read cannot pass (c)."""
+        _skip_if_no_example()
+        report, trackers = _run_with_get_claim_proxy_in_final_state()
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.fail(f"raised: {report['__exception__']}")
+        lane_a = report.get("lanes", {}).get("external_ingress", {})
+        claim_id = lane_a.get("produced_ids", {}).get("claim_id")
+        assert isinstance(claim_id, int)
+        matching = [
+            t for cid, t in trackers if cid == claim_id
+        ]
+        assert matching, (
+            f"`_final_state` must call Engine.get_claim(claim_id="
+            f"{claim_id}); observed get_claim calls inside _final_state "
+            f"were on claim_ids: {[cid for cid, _ in trackers]!r}"
+        )
+        status_access_seen = any(
+            "status" in t._accessed_attrs for t in matching
+        )
+        assert status_access_seen, (
+            f"`_final_state` must access `.status` on the Claim "
+            f"returned by Engine.get_claim(claim_id={claim_id}); "
+            "this is the contract-locked source of "
+            "final_state['claim_status']. Observed attribute accesses "
+            f"on matching trackers: "
+            f"{[t._accessed_attrs for t in matching]}"
+        )
+        observed_status_values = [
+            t._returned_values["status"] for t in matching
+            if "status" in t._returned_values
+        ]
+        assert observed_status_values, (
+            "no `.status` value was captured on the wrapped Claim(s) — "
+            "did `_final_state` access status before this test could "
+            "observe it?"
+        )
+        final = report.get("final_state", {})
+        fs_status = final.get("claim_status")
+        assert fs_status in observed_status_values, (
+            f"final_state['claim_status'] ({fs_status!r}) must equal "
+            f"the `.status` value actually read from "
+            f"Engine.get_claim(claim_id={claim_id}) during "
+            f"`_final_state`; observed status values: "
+            f"{observed_status_values!r}"
+        )
+        assert fs_status == ragcore.CLAIM_STATUS_CONFIRMED, (
+            f"the read status must be ragcore.CLAIM_STATUS_CONFIRMED "
+            f"({ragcore.CLAIM_STATUS_CONFIRMED}); got {fs_status!r}"
+        )
+
+    def test_final_state_gap_resolution_derived_from_gap_resolution_in_final_state(
+        self,
+    ):
+        """Spy Engine.gap_resolution during `_final_state` only; assert
+        that (a) gap_resolution was called for the Lane A gap_id, (b)
+        one of its returns equals the Lane C evidence_id, and (c) the
+        report's `final_state['gap_resolution']` equals that exact
+        observed return — proving the value was derived from the read,
+        not synthesized from the evidence_id elsewhere."""
+        _skip_if_no_example()
+        _, report, _, final_captured, final_returns = (
+            _run_with_final_phase_spies(("gap_resolution",))
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.fail(f"raised: {report['__exception__']}")
+        lane_a = report.get("lanes", {}).get("external_ingress", {})
+        gap_id = lane_a.get("produced_ids", {}).get("gap_id")
+        lane_c = report.get("lanes", {}).get("downstream_reentry", {})
+        evidence_id = lane_c.get("produced_ids", {}).get("evidence_id")
+        assert isinstance(gap_id, int) and isinstance(evidence_id, int)
+
+        captured = final_captured.get("gap_resolution", [])
+        returns = final_returns.get("gap_resolution", [])
+        # Pair captures with their returns by position so the test can
+        # restrict its attention to calls whose argument matched gap_id.
+        matching_returns: list[Any] = []
+        for (args, kwargs), result in zip(captured, returns):
+            arg_ids = [
+                v for v in tuple(args) + tuple(kwargs.values())
+                if isinstance(v, int) and not isinstance(v, bool)
+            ]
+            if gap_id in arg_ids:
+                matching_returns.append(result)
+
+        assert matching_returns, (
+            f"`_final_state` must call Engine.gap_resolution(gap_id="
+            f"{gap_id}); observed final-phase captured args: "
+            f"{captured}"
+        )
+        assert evidence_id in matching_returns, (
+            f"Engine.gap_resolution(gap_id={gap_id}) must return the "
+            f"Lane C evidence_id ({evidence_id}) inside `_final_state`; "
+            f"observed final-phase returns for that gap_id: "
+            f"{matching_returns!r}"
+        )
+        final = report.get("final_state", {})
+        fs_gr = final.get("gap_resolution")
+        assert fs_gr in matching_returns, (
+            f"final_state['gap_resolution'] ({fs_gr!r}) must equal a "
+            f"value actually returned by Engine.gap_resolution(gap_id="
+            f"{gap_id}) during `_final_state`; observed returns: "
+            f"{matching_returns!r}"
+        )
+        assert fs_gr == evidence_id, (
+            f"the read value must equal the Lane C evidence_id "
+            f"({evidence_id}); got {fs_gr!r}"
+        )
+
 
 # ===========================================================================
 # AF. Final block must be backed by source-level evidence of real reads
@@ -2443,54 +2808,62 @@ class TestFinalReadValueBinding:
 
 
 class TestFinalNoHardcodedSummary:
-    """AST-style source scan to rule out a final block implemented as
-    a pure constant dictionary. The combination of these scans with
-    TestFinalPublicEngineReads (runtime spies on the same methods)
-    pins both the source-level presence and the runtime invocation
-    of every required read."""
+    """AST scan limited to the `_final_state` FunctionDef body. The
+    first 271차 cut scanned the whole example source, which would let
+    a dead `def unused(): engine.get_entity(...)` or a Lane B call
+    satisfy the lock while `_final_state` itself stayed a hardcoded
+    boolean dict. The corrected design parses the example with
+    `ast.parse`, locates the `_final_state` FunctionDef, and asserts
+    each required Engine read appears as `<...>.<name>(...)` somewhere
+    inside that function's body."""
 
     @pytest.mark.parametrize(
-        "needle",
+        "method_name",
         [
-            ".get_entity(",
-            ".get_claim(",
-            ".get_gap(",
-            ".get_evidence(",
-            ".gap_resolution(",
+            "get_entity",
+            "get_claim",
+            "get_gap",
+            "get_evidence",
+            "gap_resolution",
         ],
     )
-    def test_example_source_contains_read_call(self, needle):
+    def test_final_state_body_calls_engine_read(self, method_name):
         _skip_if_no_example()
-        src = _example_source()
-        assert needle in src, (
-            f"example source must contain a `{needle}...)` call so the "
-            "final verification block cannot be implemented as a pure "
-            "constant dictionary"
+        node = _final_state_function_node()
+        assert node is not None, (
+            "example source must contain a top-level `_final_state` "
+            "FunctionDef so the AST scan can verify in-scope reads"
+        )
+        calls = _attribute_method_names_called_in(node)
+        assert method_name in calls, (
+            f"`_final_state` body must contain a `.{method_name}(...)` "
+            "call site so the final block cannot be implemented as a "
+            "pure constant dictionary; reads in Lane B / dead helpers "
+            "outside `_final_state` do NOT satisfy this lock. "
+            f"Observed attribute calls inside `_final_state`: {calls}"
         )
 
-    def test_example_source_module_calls_public_reads_not_only_state_identity(
+    def test_final_state_body_calls_a_public_read_not_only_state_identity(
         self,
     ):
-        """A weaker companion lock: ensure that the example does not
-        rely solely on Engine.state_identity() for its final
-        verification. state_identity() may be used, but at least one
-        of the documented public read APIs must also be invoked."""
+        """Companion lock: `_final_state` must invoke at least one
+        public Engine read API beyond `state_identity()`."""
         _skip_if_no_example()
-        src = _example_source()
-        read_call_present = any(
-            needle in src for needle in (
-                ".get_entity(",
-                ".get_claim(",
-                ".get_gap(",
-                ".get_evidence(",
-                ".gap_resolution(",
-            )
+        node = _final_state_function_node()
+        assert node is not None, (
+            "example source must contain a top-level `_final_state` "
+            "FunctionDef so the AST scan can verify in-scope reads"
         )
-        assert read_call_present, (
-            "example source must contain at least one public Engine "
-            "read API call beyond state_identity()"
+        calls = _attribute_method_names_called_in(node)
+        required_any = {
+            "get_entity", "get_claim", "get_gap",
+            "get_evidence", "gap_resolution",
+        }
+        assert calls & required_any, (
+            "`_final_state` body must invoke at least one of "
+            f"{sorted(required_any)} (state_identity() alone is not "
+            f"sufficient); observed attribute calls: {calls}"
         )
-
 
 # ===========================================================================
 # AG. Final packet classification must match Lane B (UNBOUND + UNKNOWN)
