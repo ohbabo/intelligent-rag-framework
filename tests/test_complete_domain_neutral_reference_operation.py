@@ -876,7 +876,15 @@ class TestDecisionReuseRejection:
                 f"probe must not label decision reuse as {forbidden!r}"
             )
         # The acceptable phrase must appear somewhere in the probe.
-        assert "not eligible for decision reuse under M05" in serialized.lower()
+        # 268차 typo fix: lowercase BOTH sides so the case-insensitive
+        # comparison the surrounding loop already uses applies to the
+        # needle as well. The example records the phrase per contract
+        # M08 §13 with uppercase "M05"; this assertion is intended to
+        # match it case-insensitively.
+        assert (
+            "not eligible for decision reuse under M05".lower()
+            in serialized.lower()
+        )
 
 
 # ===========================================================================
