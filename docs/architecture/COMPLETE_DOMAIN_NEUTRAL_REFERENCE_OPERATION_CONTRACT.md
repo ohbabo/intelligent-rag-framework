@@ -776,10 +776,10 @@ path. The probe does NOT call the suppressed invocation.
 
 ## §18 Domain neutrality
 
-Normative text, example source, and test source use
-**only** domain-neutral framework vocabulary. The
-following words must not appear in M08-added files
-(word-boundary scan; case-insensitive):
+Normative text, example source, and test source use only
+domain-neutral framework vocabulary. The following words
+form the forbidden inventory (word-boundary scan; case-
+insensitive):
 
 ```
 cerberus
@@ -791,6 +791,82 @@ port
 service
 CVE
 "security verdict"
+```
+
+The forbidden vocabulary inventory necessarily appears in
+this section and may also appear in tests that implement
+the scan. The zero-occurrence requirement therefore
+applies in two distinct layers:
+
+### §18.1 Raw zero-occurrence layer (example source + serialized report)
+
+The following targets must contain **zero** raw
+word-boundary occurrences (case-insensitive) of any token
+in the §18 inventory:
+
+```
+examples/operation/
+  complete_domain_neutral_reference_operation.py
+
+the dict returned by
+  run_complete_domain_neutral_reference_operation()
+  (and any serialized projection of that dict)
+```
+
+The example may not name these tokens at all, including
+inside string literals, dict keys, dict values, helper
+names, comments, or docstrings.
+
+### §18.2 Positive-assertion layer (contract + test source)
+
+This contract file and the M08 test source legitimately
+need to reference the inventory (the contract enumerates
+it in §18; the test source implements the §18.1 scan and
+records assertion-failure messages). The lock for these
+files is therefore stated at the positive-assertion
+level, not at the raw-occurrence level:
+
+```
+- this contract file (§0 ~ §22):
+    zero positive normative assertions using a token from
+    the inventory outside the §18 inventory itself, its
+    explanatory meta-context (this section), and explicit
+    cross-references that restate the inventory as a
+    prohibition (e.g., the §0.2 out-of-scope enumeration
+    "no cerberus, vulnerability, ...", which is a
+    negation, not a positive use).
+
+- the M08 test source:
+    zero positive operational fixtures, expected operation
+    content, or semantic assertions using a token from the
+    inventory outside the inventory itself, the regex /
+    scan implementation, and assertion-failure messages.
+```
+
+### §18.3 Test-design lock
+
+The following test designs are explicitly forbidden:
+
+```
+- "scan every M08-added file and assert raw occurrence
+  count == 0"
+- "scan the M08 contract file for raw zero occurrences
+  of any token in the §18 inventory"
+- any test that would fail because §18 itself enumerates
+  the inventory
+```
+
+The following test designs are allowed:
+
+```
+1. raw word-boundary scan of the example source file
+   asserts zero occurrences for each inventory token
+2. raw word-boundary scan of the serialized operation
+   report asserts zero occurrences for each inventory
+   token
+3. contract / test-source structural review excludes the
+   §18 inventory block and the scan-implementation
+   context from the positive-assertion check
 ```
 
 The example's local fixtures use neutral terms such as
@@ -919,9 +995,35 @@ the M01 scaffold as INCOMPLETE.
 It does not enter M09.
 ```
 
-PR77-M08 is opened as **Draft** and is not merged.
-Closure language (`CLOSED`) is reserved for the post-
-squash-merge state. The M-series sequence after PR77-M08:
+### Current state after 263차 and 264차
+
+PR77-M08 is on a local branch only. The branch has not
+been pushed. No GitHub pull request has been created. It
+is not merged. The following identities are NOT equivalent:
+
+```
+local branch exists      != GitHub PR opened
+local commit exists      != branch pushed
+planned Draft PR         != current Draft PR
+NOT MERGED               != OPEN
+NOT MERGED               != DRAFT
+```
+
+`OPEN — DRAFT, NOT MERGED` is the **future** state that
+applies only after the branch has been pushed and a Draft
+PR has been explicitly created; it is NOT the current
+state.
+
+```
+PR77-M08   Complete Domain-Neutral
+           Reference Operation         (OC-F)
+                                       LOCAL BRANCH — PR NOT
+                                       OPENED, NOT PUSHED,
+                                       NOT MERGED
+PR78-M09   RuleStats Update Provenance (OC-G) NOT STARTED
+```
+
+### After a separately directed push and Draft PR creation
 
 ```
 PR77-M08   Complete Domain-Neutral
@@ -930,4 +1032,6 @@ PR77-M08   Complete Domain-Neutral
 PR78-M09   RuleStats Update Provenance (OC-G) NOT STARTED
 ```
 
-No automatic next PR. Framework waits for directive.
+Closure language (`CLOSED`) is reserved for the post-
+squash-merge state. No automatic next PR. Framework waits
+for directive.
