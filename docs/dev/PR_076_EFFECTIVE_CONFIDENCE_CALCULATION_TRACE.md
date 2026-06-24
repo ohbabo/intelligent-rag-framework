@@ -19,10 +19,20 @@ branch:          feat/effective-confidence-calculation-trace
 259차 commit:    31ad2a3   test(review): close M07 trace audit
                             gaps (C1 ~ C3 post-review correction
                             — §20)
-260차 commit:    docs(review): finalize M07 audit locks and
-                            records (R1 ~ R5 audit-lock
-                            finalization — §21; current
-                            revision)
+260차 commit:    549eab4   docs(review): finalize M07 audit
+                            locks and records (R1 ~ R5
+                            audit-lock finalization — §21
+                            historical audit-lock checkpoint)
+261차 commit:    b4c8b05   test(review): lock exact M07
+                            composition expression (Defect A
+                            exact composition AST lock +
+                            Defect B PR body correction —
+                            §22 current revision)
+262차 commit:    docs(review): align M07 authoritative
+                            current record (top commit block
+                            now lists all 7 commits; §22 is
+                            authoritative; §21 is checkpoint
+                            — this commit)
 type:            framework-level runtime change, additive only;
                   no judgment-semantics delta, no formula
                   delta, no snapshot schema change, no PR51
@@ -34,8 +44,12 @@ The §1 ~ §19 sections of this record were authored as the
 258차 initial checkpoint and are preserved (1578 tests at
 that moment; structural counts in §14.1 reflect the 258차
 checkpoint). §20 records the 259차 audit-closure (1600
-tests). §21 records the 260차 audit-lock finalization and
-is authoritative for the current branch state.
+tests). §21 records the 260차 audit-lock finalization (1604
+tests). §22 records the 261차 exact-composition AST lock
+(1607 tests) and is authoritative for the current branch
+state. 262차 (this revision) is a docs-only top-block
+alignment correction; the authoritative content is still
+§22.
 
 PR76-M07 is the first M-series PR that adds a new public
 runtime surface since PR73-M04. It introduces one frozen
