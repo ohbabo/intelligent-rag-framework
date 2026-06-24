@@ -1648,3 +1648,1013 @@ class TestTraceIdentityConstructionTimeLock:
                 f"trace block must not assert {forbidden!r}; the "
                 "trace identity is locked at construction time only"
             )
+
+
+# ===========================================================================
+# 271차 — Post-Draft authority-gate and final-verification locks.
+#
+# These tests are added AFTER the 269차 example exists. They are intentionally
+# red against 3d15918 because the 269차 example records review/revalidation
+# verdicts as advisory strings without using them to gate Engine invocation,
+# its final block is a hardcoded boolean summary instead of an actual public
+# Engine read, and it does not carry the contract's positive status
+# vocabulary at the documented positions. Classes Z ~ AH lock those three
+# defects (R-GATE / R-FINAL / R-STATUS) from the test side. The 272차 example
+# implementation is expected to turn these green without weakening any of
+# the 25 existing classes A ~ Y.
+#
+#   Z.  TestRoleValidationGate              — role violation → no mutation
+#   AA. TestRejectedReviewSuppression       — rejected / hold → no mutation
+#   AB. TestStage5_5SuppressionPerCycle     — Stage 5.5 not_eligible per cycle
+#   AC. TestStage6SuppressionPerCycle       — Stage 6 not_eligible per cycle
+#   AD. TestFinalPublicEngineReads          — get_entity/.../gap_resolution
+#                                              actually invoked in final block
+#   AE. TestFinalReadValueBinding           — final fields bound to lane IDs
+#   AF. TestFinalNoHardcodedSummary         — AST evidence of actual reads
+#   AG. TestFinalPacketClassification       — final == Lane B (UNBOUND+UNKNOWN)
+#   AH. TestPositiveStatusVocabulary        — CONSUMER_DECISION/OPERATOR_REVIEW
+#                                              /STATE_REVALIDATED/EXPLICIT_
+#                                              INVOCATION/CONNECTED|COMPLETED
+#                                              /BOUNDARY_PRESERVED
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# Helper utilities for 271차 authority-gate tests.
+# ---------------------------------------------------------------------------
+
+
+_MUTATION_METHOD_NAMES: tuple[str, ...] = (
+    "add_entity",
+    "add_claim",
+    "add_gap",
+    "add_evidence",
+    "resolve_gaps_for_evidence",
+    "confirm_claim_if_ready",
+)
+
+
+_READ_METHOD_NAMES: tuple[str, ...] = (
+    "get_entity",
+    "get_claim",
+    "get_gap",
+    "get_evidence",
+    "gap_resolution",
+)
+
+
+# Cycle index → (engine method, dependent methods following it). The
+# happy-path cycle order is fixed by M08 §6 / §14 (Lane A: add_entity →
+# add_claim → add_gap; Lane C: add_evidence → resolve_gaps_for_evidence
+# → confirm_claim_if_ready), so dependents always follow strict prefix
+# order.
+_CYCLE_DEFINITIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
+    (1, "add_entity", (
+        "add_claim", "add_gap", "add_evidence",
+        "resolve_gaps_for_evidence", "confirm_claim_if_ready",
+    )),
+    (2, "add_claim", (
+        "add_gap", "add_evidence",
+        "resolve_gaps_for_evidence", "confirm_claim_if_ready",
+    )),
+    (3, "add_gap", (
+        "add_evidence",
+        "resolve_gaps_for_evidence", "confirm_claim_if_ready",
+    )),
+    (4, "add_evidence", (
+        "resolve_gaps_for_evidence", "confirm_claim_if_ready",
+    )),
+    (5, "resolve_gaps_for_evidence", (
+        "confirm_claim_if_ready",
+    )),
+    (6, "confirm_claim_if_ready", ()),
+)
+
+
+def _install_engine_method_spies(
+    method_names: tuple[str, ...],
+) -> tuple[dict[str, int], dict[str, list[Any]], typing.Callable[[], None]]:
+    """Install runtime call-count + argument-capture spies on the named
+    Engine methods at the class level. Returns
+    (call_counts, captured, restore_fn). restore_fn MUST be called in a
+    finally block to undo the class-level patching."""
+    call_counts: dict[str, int] = {n: 0 for n in method_names}
+    captured: dict[str, list[Any]] = {n: [] for n in method_names}
+    originals: dict[str, Any] = {}
+
+    for name in method_names:
+        orig = getattr(Engine, name)
+        originals[name] = orig
+
+        def make_spy(orig=orig, name=name):
+            def spy(self, *args, **kwargs):
+                call_counts[name] += 1
+                try:
+                    captured[name].append(
+                        (copy.deepcopy(args), copy.deepcopy(kwargs)),
+                    )
+                except Exception:
+                    captured[name].append(("<unpicklable>", {}))
+                return orig(self, *args, **kwargs)
+            spy.__name__ = name
+            spy.__wrapped__ = orig
+            return spy
+
+        setattr(Engine, name, make_spy())
+
+    def restore() -> None:
+        for name, orig in originals.items():
+            setattr(Engine, name, orig)
+
+    return call_counts, captured, restore
+
+
+def _run_with_engine_spies(
+    method_names: tuple[str, ...],
+    patches: dict[str, Any] | None = None,
+) -> tuple[Any, Any, dict[str, int], dict[str, list[Any]]]:
+    """Load a fresh example module, apply requested module-level
+    monkeypatches, install Engine class spies on the requested method
+    names, run the operation, then restore EVERY patch in a finally
+    block — regardless of whether the operation raised.
+
+    Returns (module, report_or_exception_marker, call_counts, captured).
+    On exception, the second element is a sentinel dict
+    {'__exception__': '<repr>'} so the caller can distinguish from a
+    normal empty report.
+    """
+    module = _load_example_module()
+    patch_records: list[tuple[Any, str, Any]] = []
+    if patches:
+        for name, new_value in patches.items():
+            if not hasattr(module, name):
+                pytest.skip(
+                    "module-level attribute "
+                    f"{name!r} not present in example",
+                )
+            patch_records.append((module, name, getattr(module, name)))
+            setattr(module, name, new_value)
+    call_counts, captured, restore_engine = _install_engine_method_spies(
+        method_names,
+    )
+    try:
+        try:
+            report = module.run_complete_domain_neutral_reference_operation()
+        except Exception as exc:
+            report = {"__exception__": repr(exc)}
+    finally:
+        restore_engine()
+        for mod, attr, orig in patch_records:
+            setattr(mod, attr, orig)
+    return module, report, call_counts, captured
+
+
+def _make_role_violation_patch(violations: list[Any]):
+    def patched(role_example):
+        return list(violations)
+    patched.__name__ = "validate_role_assignment_boundaries"
+    return patched
+
+
+def _make_review_patch(forced_disposition: str):
+    def patched(approved: bool, note: str) -> str:
+        return forced_disposition
+    patched.__name__ = "_explicit_review"
+    return patched
+
+
+def _make_revalidate_patch(
+    target_moment: str, target_call_index: int,
+):
+    """Returns a patched _revalidate that returns not_eligible on the
+    `target_call_index`-th invocation of `target_moment` (1-based,
+    counting only calls whose moment matches target_moment), and
+    delegates the original eligibility computation for every other
+    call. The cycle order in the current happy path is fixed by M08
+    §6 / §14, so the K-th call for a given moment corresponds to
+    cycle K."""
+    state = {"counts_by_moment": {}}
+
+    def patched(decision_identity, current_identity, moment):
+        state["counts_by_moment"][moment] = (
+            state["counts_by_moment"].get(moment, 0) + 1
+        )
+        eligible = decision_identity == current_identity
+        verdict = "eligible" if eligible else "not_eligible"
+        if (
+            moment == target_moment
+            and state["counts_by_moment"][moment] == target_call_index
+        ):
+            verdict = "not_eligible"
+        return {
+            "moment": moment,
+            "decision_state_identity": copy.deepcopy(decision_identity),
+            "current_state_identity": copy.deepcopy(current_identity),
+            "verdict": verdict,
+        }
+
+    patched.__name__ = "_revalidate"
+    return patched
+
+
+def _collect_invocation_records(report: Any) -> list[dict]:
+    """Collect every per-cycle invocation record from the report,
+    across every lane's `explicit_invocation_sequence`. Returns []
+    when no recognizable lane structure is present (which is itself
+    a meaningful signal — the calling test interprets it)."""
+    if not isinstance(report, dict):
+        return []
+    out: list[dict] = []
+    lanes = report.get("lanes", {})
+    if isinstance(lanes, dict):
+        for lane in lanes.values():
+            if not isinstance(lane, dict):
+                continue
+            seq = lane.get("explicit_invocation_sequence", [])
+            if isinstance(seq, list):
+                for entry in seq:
+                    if isinstance(entry, dict):
+                        out.append(entry)
+    return out
+
+
+def _ids_seen_in_capture(
+    captured: dict[str, list[Any]], name: str,
+) -> set[int]:
+    """Collect every int value that was passed as a positional or
+    keyword argument to the spied method `name`."""
+    seen: set[int] = set()
+    for args, kwargs in captured.get(name, []):
+        if isinstance(args, tuple):
+            for v in args:
+                if isinstance(v, int) and not isinstance(v, bool):
+                    seen.add(v)
+        if isinstance(kwargs, dict):
+            for v in kwargs.values():
+                if isinstance(v, int) and not isinstance(v, bool):
+                    seen.add(v)
+    return seen
+
+
+# ===========================================================================
+# Z. Role validation must actually gate execution
+# ===========================================================================
+
+
+class TestRoleValidationGate:
+    """When validate_role_assignment_boundaries returns a non-empty
+    violation list, the example must abort the operation BEFORE any
+    Engine mutation. It must not declare COMPLETE_REFERENCE_OPERATION,
+    must not materialize any ReviewedMutationRequest, and must not
+    record any call receipt."""
+
+    _FORCED_VIOLATIONS = [("role_assignment", "forced test violation")]
+
+    def _patches(self) -> dict[str, Any]:
+        return {
+            "validate_role_assignment_boundaries":
+                _make_role_violation_patch(self._FORCED_VIOLATIONS),
+        }
+
+    def test_role_violation_blocks_every_mutation(self):
+        _skip_if_no_example()
+        _, _, calls, _ = _run_with_engine_spies(
+            _MUTATION_METHOD_NAMES, patches=self._patches(),
+        )
+        for name in _MUTATION_METHOD_NAMES:
+            assert calls[name] == 0, (
+                f"role validation failure must suppress Engine.{name}; "
+                f"observed call_count={calls[name]}"
+            )
+
+    def test_role_violation_returns_termination_report_not_exception(self):
+        _skip_if_no_example()
+        _, report, _, _ = _run_with_engine_spies(
+            _MUTATION_METHOD_NAMES, patches=self._patches(),
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.fail(
+                "role validation failure must produce a local "
+                "termination report rather than an uncaught "
+                f"exception: {report['__exception__']}"
+            )
+        assert isinstance(report, dict)
+        assert report.get("overall_status") != "COMPLETE_REFERENCE_OPERATION", (
+            "role-failed run must not declare "
+            "overall_status == 'COMPLETE_REFERENCE_OPERATION'"
+        )
+
+    def test_role_violation_preserved_in_termination_report(self):
+        _skip_if_no_example()
+        _, report, _, _ = _run_with_engine_spies(
+            _MUTATION_METHOD_NAMES, patches=self._patches(),
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.skip("role-failed run raised; see other test")
+        serialized = _serialize_for_scan(report)
+        assert "forced test violation" in serialized, (
+            "termination report must preserve the injected role "
+            "violation so the reason for termination is visible"
+        )
+
+    def test_role_violation_yields_no_reviewed_request_or_receipt(self):
+        _skip_if_no_example()
+        _, report, _, _ = _run_with_engine_spies(
+            _MUTATION_METHOD_NAMES, patches=self._patches(),
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.skip("role-failed run raised; see other test")
+        invocations = _collect_invocation_records(report)
+        for inv in invocations:
+            assert not inv.get("reviewed_mutation_request"), (
+                "role-failed run must not materialize a "
+                f"ReviewedMutationRequest; got: {inv.get('reviewed_mutation_request')!r}"
+            )
+            assert not inv.get("call_receipt"), (
+                "role-failed run must not produce a call_receipt; "
+                f"got: {inv.get('call_receipt')!r}"
+            )
+
+
+# ===========================================================================
+# AA. Rejected / hold dispositions must suppress invocation
+# ===========================================================================
+
+
+class TestRejectedReviewSuppression:
+    """When _explicit_review yields a rejected or hold disposition,
+    the example must NOT materialize a ReviewedMutationRequest, must
+    NOT call any Engine mutation, and must preserve the disposition
+    text in the termination report."""
+
+    @pytest.mark.parametrize("disposition", ["rejected", "hold"])
+    def test_non_approved_review_blocks_every_mutation(self, disposition):
+        _skip_if_no_example()
+        patches = {"_explicit_review": _make_review_patch(disposition)}
+        _, _, calls, _ = _run_with_engine_spies(
+            _MUTATION_METHOD_NAMES, patches=patches,
+        )
+        for name in _MUTATION_METHOD_NAMES:
+            assert calls[name] == 0, (
+                f"disposition={disposition!r} must suppress "
+                f"Engine.{name}; observed call_count={calls[name]}"
+            )
+
+    @pytest.mark.parametrize("disposition", ["rejected", "hold"])
+    def test_non_approved_review_returns_termination_report(
+        self, disposition,
+    ):
+        _skip_if_no_example()
+        patches = {"_explicit_review": _make_review_patch(disposition)}
+        _, report, _, _ = _run_with_engine_spies(
+            _MUTATION_METHOD_NAMES, patches=patches,
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.fail(
+                f"disposition={disposition!r} must produce a "
+                "termination report rather than an uncaught "
+                f"exception: {report['__exception__']}"
+            )
+        assert isinstance(report, dict)
+        assert report.get("overall_status") != "COMPLETE_REFERENCE_OPERATION"
+        serialized = _serialize_for_scan(report)
+        assert disposition in serialized, (
+            "termination report must preserve the "
+            f"{disposition!r} disposition that blocked the cycle"
+        )
+
+    @pytest.mark.parametrize("disposition", ["rejected", "hold"])
+    def test_non_approved_review_yields_no_request_or_receipt(
+        self, disposition,
+    ):
+        _skip_if_no_example()
+        patches = {"_explicit_review": _make_review_patch(disposition)}
+        _, report, _, _ = _run_with_engine_spies(
+            _MUTATION_METHOD_NAMES, patches=patches,
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.skip(
+                f"disposition={disposition!r} raised; see other test",
+            )
+        invocations = _collect_invocation_records(report)
+        for inv in invocations:
+            assert not inv.get("reviewed_mutation_request"), (
+                f"disposition={disposition!r} must not materialize a "
+                f"ReviewedMutationRequest; got: "
+                f"{inv.get('reviewed_mutation_request')!r}"
+            )
+            assert not inv.get("call_receipt"), (
+                f"disposition={disposition!r} must not produce a "
+                f"call_receipt; got: {inv.get('call_receipt')!r}"
+            )
+
+
+# ===========================================================================
+# AB. Stage 5.5 (materialization) revalidation must gate request creation
+# ===========================================================================
+
+
+class TestStage5_5SuppressionPerCycle:
+    """When _revalidate returns not_eligible for the
+    stage_5_5_materialization moment of cycle K, the example must NOT
+    materialize cycle K's ReviewedMutationRequest, must NOT call
+    cycle K's Engine method, and must NOT call any cycle that depends
+    on K's success."""
+
+    @pytest.mark.parametrize(
+        "cycle_index,target_method,dependents",
+        _CYCLE_DEFINITIONS,
+        ids=[d[1] for d in _CYCLE_DEFINITIONS],
+    )
+    def test_stage_5_5_failure_suppresses_target_and_dependents(
+        self, cycle_index, target_method, dependents,
+    ):
+        _skip_if_no_example()
+        patches = {
+            "_revalidate": _make_revalidate_patch(
+                "stage_5_5_materialization", cycle_index,
+            ),
+        }
+        _, _, calls, _ = _run_with_engine_spies(
+            _MUTATION_METHOD_NAMES, patches=patches,
+        )
+        assert calls[target_method] == 0, (
+            f"Stage 5.5 not_eligible for cycle {cycle_index} "
+            f"({target_method}) must suppress Engine.{target_method}; "
+            f"observed call_count={calls[target_method]}"
+        )
+        for dep in dependents:
+            assert calls[dep] == 0, (
+                f"cycle {target_method} suppressed at Stage 5.5; "
+                f"dependent Engine.{dep} must not be invoked either; "
+                f"observed call_count={calls[dep]}"
+            )
+
+    @pytest.mark.parametrize(
+        "cycle_index,target_method,dependents",
+        _CYCLE_DEFINITIONS,
+        ids=[d[1] for d in _CYCLE_DEFINITIONS],
+    )
+    def test_stage_5_5_failure_omits_request_and_receipt(
+        self, cycle_index, target_method, dependents,
+    ):
+        _skip_if_no_example()
+        patches = {
+            "_revalidate": _make_revalidate_patch(
+                "stage_5_5_materialization", cycle_index,
+            ),
+        }
+        _, report, _, _ = _run_with_engine_spies(
+            _MUTATION_METHOD_NAMES, patches=patches,
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.fail(
+                f"Stage 5.5 not_eligible for cycle {cycle_index} "
+                f"({target_method}) must produce a termination report "
+                f"rather than raise: {report['__exception__']}"
+            )
+        assert isinstance(report, dict)
+        assert report.get("overall_status") != "COMPLETE_REFERENCE_OPERATION"
+        invocations = _collect_invocation_records(report)
+        # No invocation entry may carry both target_method AND a
+        # populated reviewed_mutation_request — Stage 5.5 suppression
+        # must omit materialization of the request entirely.
+        bad_with_request = [
+            inv for inv in invocations
+            if inv.get("target_method") == target_method
+            and inv.get("reviewed_mutation_request")
+        ]
+        assert not bad_with_request, (
+            f"Stage 5.5 suppression for cycle {target_method} must "
+            "omit reviewed_mutation_request; offending entries: "
+            f"{bad_with_request}"
+        )
+        bad_with_receipt = [
+            inv for inv in invocations
+            if inv.get("target_method") == target_method
+            and inv.get("call_receipt")
+        ]
+        assert not bad_with_receipt, (
+            f"Stage 5.5 suppression for cycle {target_method} must "
+            "omit call_receipt; offending entries: "
+            f"{bad_with_receipt}"
+        )
+        # Likewise no dependent cycle may produce a call_receipt.
+        for dep in dependents:
+            dep_with_receipt = [
+                inv for inv in invocations
+                if inv.get("target_method") == dep
+                and inv.get("call_receipt")
+            ]
+            assert not dep_with_receipt, (
+                f"dependent cycle {dep!r} of suppressed "
+                f"{target_method!r} must not produce a call_receipt; "
+                f"offending entries: {dep_with_receipt}"
+            )
+
+
+# ===========================================================================
+# AC. Stage 6 (invocation) revalidation must gate Engine call
+# ===========================================================================
+
+
+class TestStage6SuppressionPerCycle:
+    """When _revalidate returns not_eligible for the stage_6_invocation
+    moment of cycle K (after Stage 5.5 had already returned eligible),
+    the example must NOT call cycle K's Engine method and must NOT
+    call any cycle that depends on K's success. The candidate, the
+    operator decision, AND the ReviewedMutationRequest for cycle K
+    may still appear in the report (their materialization preceded
+    Stage 6), but the call receipt must NOT."""
+
+    @pytest.mark.parametrize(
+        "cycle_index,target_method,dependents",
+        _CYCLE_DEFINITIONS,
+        ids=[d[1] for d in _CYCLE_DEFINITIONS],
+    )
+    def test_stage_6_failure_suppresses_target_and_dependents(
+        self, cycle_index, target_method, dependents,
+    ):
+        _skip_if_no_example()
+        patches = {
+            "_revalidate": _make_revalidate_patch(
+                "stage_6_invocation", cycle_index,
+            ),
+        }
+        _, _, calls, _ = _run_with_engine_spies(
+            _MUTATION_METHOD_NAMES, patches=patches,
+        )
+        assert calls[target_method] == 0, (
+            f"Stage 6 not_eligible for cycle {cycle_index} "
+            f"({target_method}) must suppress Engine.{target_method}; "
+            f"observed call_count={calls[target_method]}"
+        )
+        for dep in dependents:
+            assert calls[dep] == 0, (
+                f"cycle {target_method} suppressed at Stage 6; "
+                f"dependent Engine.{dep} must not be invoked either; "
+                f"observed call_count={calls[dep]}"
+            )
+
+    @pytest.mark.parametrize(
+        "cycle_index,target_method,dependents",
+        _CYCLE_DEFINITIONS,
+        ids=[d[1] for d in _CYCLE_DEFINITIONS],
+    )
+    def test_stage_6_failure_omits_receipt_but_keeps_request(
+        self, cycle_index, target_method, dependents,
+    ):
+        _skip_if_no_example()
+        patches = {
+            "_revalidate": _make_revalidate_patch(
+                "stage_6_invocation", cycle_index,
+            ),
+        }
+        _, report, _, _ = _run_with_engine_spies(
+            _MUTATION_METHOD_NAMES, patches=patches,
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.fail(
+                f"Stage 6 not_eligible for cycle {cycle_index} "
+                f"({target_method}) must produce a termination report "
+                f"rather than raise: {report['__exception__']}"
+            )
+        assert isinstance(report, dict)
+        assert report.get("overall_status") != "COMPLETE_REFERENCE_OPERATION"
+        invocations = _collect_invocation_records(report)
+        bad_with_receipt = [
+            inv for inv in invocations
+            if inv.get("target_method") == target_method
+            and inv.get("call_receipt")
+        ]
+        assert not bad_with_receipt, (
+            f"Stage 6 suppression for cycle {target_method} must "
+            "omit call_receipt; offending entries: "
+            f"{bad_with_receipt}"
+        )
+        for dep in dependents:
+            dep_with_receipt = [
+                inv for inv in invocations
+                if inv.get("target_method") == dep
+                and inv.get("call_receipt")
+            ]
+            assert not dep_with_receipt, (
+                f"dependent cycle {dep!r} of Stage-6-suppressed "
+                f"{target_method!r} must not produce a call_receipt; "
+                f"offending entries: {dep_with_receipt}"
+            )
+
+
+# ===========================================================================
+# AD. Final verification block must invoke Engine public read API
+# ===========================================================================
+
+
+class TestFinalPublicEngineReads:
+    """The happy-path operation must invoke the listed Engine public
+    read methods at least once each from the final verification block,
+    each receiving the actual ID produced by Lane A or Lane C.
+    state_identity() alone does not satisfy this requirement (M08 §15
+    / §16 + 271차 §7~§8)."""
+
+    def test_each_public_read_invoked_at_least_once(self):
+        _skip_if_no_example()
+        _, _, calls, _ = _run_with_engine_spies(_READ_METHOD_NAMES)
+        for name in _READ_METHOD_NAMES:
+            assert calls[name] >= 1, (
+                f"happy-path operation must invoke Engine.{name} at "
+                f"least once (final verification block); observed "
+                f"call_count={calls[name]}"
+            )
+
+    def test_get_entity_called_with_lane_a_entity_id(self):
+        _skip_if_no_example()
+        _, report, _, captured = _run_with_engine_spies(_READ_METHOD_NAMES)
+        assert isinstance(report, dict) and "__exception__" not in report
+        lane_a = report.get("lanes", {}).get("external_ingress", {})
+        entity_id = lane_a.get("produced_ids", {}).get("entity_id")
+        assert isinstance(entity_id, int)
+        assert entity_id in _ids_seen_in_capture(captured, "get_entity"), (
+            "Engine.get_entity must be called with the Lane A entity_id "
+            f"({entity_id}); observed captured args: "
+            f"{captured.get('get_entity')}"
+        )
+
+    def test_get_claim_called_with_lane_a_claim_id(self):
+        _skip_if_no_example()
+        _, report, _, captured = _run_with_engine_spies(_READ_METHOD_NAMES)
+        assert isinstance(report, dict) and "__exception__" not in report
+        lane_a = report.get("lanes", {}).get("external_ingress", {})
+        claim_id = lane_a.get("produced_ids", {}).get("claim_id")
+        assert isinstance(claim_id, int)
+        assert claim_id in _ids_seen_in_capture(captured, "get_claim"), (
+            "Engine.get_claim must be called with the Lane A claim_id "
+            f"({claim_id}); observed captured args: "
+            f"{captured.get('get_claim')}"
+        )
+
+    def test_get_gap_called_with_lane_a_gap_id(self):
+        _skip_if_no_example()
+        _, report, _, captured = _run_with_engine_spies(_READ_METHOD_NAMES)
+        assert isinstance(report, dict) and "__exception__" not in report
+        lane_a = report.get("lanes", {}).get("external_ingress", {})
+        gap_id = lane_a.get("produced_ids", {}).get("gap_id")
+        assert isinstance(gap_id, int)
+        assert gap_id in _ids_seen_in_capture(captured, "get_gap"), (
+            "Engine.get_gap must be called with the Lane A gap_id "
+            f"({gap_id}); observed captured args: "
+            f"{captured.get('get_gap')}"
+        )
+
+    def test_get_evidence_called_with_lane_c_evidence_id(self):
+        _skip_if_no_example()
+        _, report, _, captured = _run_with_engine_spies(_READ_METHOD_NAMES)
+        assert isinstance(report, dict) and "__exception__" not in report
+        lane_c = report.get("lanes", {}).get("downstream_reentry", {})
+        evidence_id = lane_c.get("produced_ids", {}).get("evidence_id")
+        assert isinstance(evidence_id, int)
+        assert evidence_id in _ids_seen_in_capture(captured, "get_evidence"), (
+            "Engine.get_evidence must be called with the Lane C "
+            f"evidence_id ({evidence_id}); observed captured args: "
+            f"{captured.get('get_evidence')}"
+        )
+
+    def test_gap_resolution_called_with_lane_a_gap_id(self):
+        _skip_if_no_example()
+        _, report, _, captured = _run_with_engine_spies(_READ_METHOD_NAMES)
+        assert isinstance(report, dict) and "__exception__" not in report
+        lane_a = report.get("lanes", {}).get("external_ingress", {})
+        gap_id = lane_a.get("produced_ids", {}).get("gap_id")
+        assert isinstance(gap_id, int)
+        assert gap_id in _ids_seen_in_capture(captured, "gap_resolution"), (
+            "Engine.gap_resolution must be called with the Lane A gap_id "
+            f"({gap_id}) to verify the post-Lane-C resolution; observed "
+            f"captured args: {captured.get('gap_resolution')}"
+        )
+
+
+# ===========================================================================
+# AE. Final block must bind to actual reads, not boolean flags
+# ===========================================================================
+
+
+class TestFinalReadValueBinding:
+    """The final verification block must record actual projections /
+    actual-ID-equality evidence for each of {entity, claim, gap,
+    evidence, gap_resolution, claim_status} — boolean success flags
+    alone are not sufficient (271차 §8 / §9). The canonical anchor
+    key is `final_state` (the 269차 example's own naming)."""
+
+    def _final(self):
+        report = _get_report()
+        assert isinstance(report, dict)
+        final = report.get("final_state")
+        assert isinstance(final, dict), (
+            "report must include a `final_state` dict that records "
+            "actual end-of-run reads from the Engine"
+        )
+        return report, final
+
+    def _lane_ids(self, report):
+        lane_a = report.get("lanes", {}).get("external_ingress", {})
+        lane_c = report.get("lanes", {}).get("downstream_reentry", {})
+        ids_a = lane_a.get("produced_ids", {})
+        ids_c = lane_c.get("produced_ids", {})
+        return (
+            ids_a.get("entity_id"),
+            ids_a.get("claim_id"),
+            ids_a.get("gap_id"),
+            ids_c.get("evidence_id"),
+        )
+
+    def test_final_state_has_entity_read_projection(self):
+        _skip_if_no_example()
+        _, final = self._final()
+        ent = final.get("entity")
+        assert ent is not None and not isinstance(ent, bool), (
+            "final_state['entity'] must hold a real projection of "
+            "Engine.get_entity(entity_id); a True / False flag does "
+            "not constitute final-state verification evidence"
+        )
+
+    def test_final_state_has_claim_read_projection(self):
+        _skip_if_no_example()
+        _, final = self._final()
+        cl = final.get("claim")
+        assert cl is not None and not isinstance(cl, bool), (
+            "final_state['claim'] must hold a real projection of "
+            "Engine.get_claim(claim_id); a True / False flag does "
+            "not constitute final-state verification evidence"
+        )
+
+    def test_final_state_has_gap_read_projection(self):
+        _skip_if_no_example()
+        _, final = self._final()
+        g = final.get("gap")
+        assert g is not None and not isinstance(g, bool), (
+            "final_state['gap'] must hold a real projection of "
+            "Engine.get_gap(gap_id); a True / False flag does not "
+            "constitute final-state verification evidence"
+        )
+
+    def test_final_state_has_evidence_read_projection(self):
+        _skip_if_no_example()
+        _, final = self._final()
+        ev = final.get("evidence")
+        assert ev is not None and not isinstance(ev, bool), (
+            "final_state['evidence'] must hold a real projection of "
+            "Engine.get_evidence(evidence_id); a True / False flag "
+            "does not constitute final-state verification evidence"
+        )
+
+    def test_final_state_gap_resolution_equals_evidence_id(self):
+        _skip_if_no_example()
+        report, final = self._final()
+        _, _, _, evidence_id = self._lane_ids(report)
+        assert isinstance(evidence_id, int)
+        gr = final.get("gap_resolution")
+        assert not isinstance(gr, bool), (
+            "final_state['gap_resolution'] must hold the integer "
+            "evidence_id read from Engine.gap_resolution(gap_id); a "
+            "True / False flag is not acceptable"
+        )
+        assert gr == evidence_id, (
+            f"final_state['gap_resolution'] must equal the Lane C "
+            f"evidence_id ({evidence_id}); got: {gr!r}"
+        )
+
+    def test_final_state_claim_status_equals_confirmed_constant(self):
+        _skip_if_no_example()
+        _, final = self._final()
+        cs = final.get("claim_status")
+        assert cs == ragcore.CLAIM_STATUS_CONFIRMED, (
+            f"final_state['claim_status'] must equal "
+            f"ragcore.CLAIM_STATUS_CONFIRMED "
+            f"({ragcore.CLAIM_STATUS_CONFIRMED}) read from "
+            "Engine.get_claim(claim_id).status; a hardcoded "
+            "'\"CONFIRMED\"' string is not sufficient. "
+            f"got: {cs!r}"
+        )
+
+
+# ===========================================================================
+# AF. Final block must be backed by source-level evidence of real reads
+# ===========================================================================
+
+
+class TestFinalNoHardcodedSummary:
+    """AST-style source scan to rule out a final block implemented as
+    a pure constant dictionary. The combination of these scans with
+    TestFinalPublicEngineReads (runtime spies on the same methods)
+    pins both the source-level presence and the runtime invocation
+    of every required read."""
+
+    @pytest.mark.parametrize(
+        "needle",
+        [
+            ".get_entity(",
+            ".get_claim(",
+            ".get_gap(",
+            ".get_evidence(",
+            ".gap_resolution(",
+        ],
+    )
+    def test_example_source_contains_read_call(self, needle):
+        _skip_if_no_example()
+        src = _example_source()
+        assert needle in src, (
+            f"example source must contain a `{needle}...)` call so the "
+            "final verification block cannot be implemented as a pure "
+            "constant dictionary"
+        )
+
+    def test_example_source_module_calls_public_reads_not_only_state_identity(
+        self,
+    ):
+        """A weaker companion lock: ensure that the example does not
+        rely solely on Engine.state_identity() for its final
+        verification. state_identity() may be used, but at least one
+        of the documented public read APIs must also be invoked."""
+        _skip_if_no_example()
+        src = _example_source()
+        read_call_present = any(
+            needle in src for needle in (
+                ".get_entity(",
+                ".get_claim(",
+                ".get_gap(",
+                ".get_evidence(",
+                ".gap_resolution(",
+            )
+        )
+        assert read_call_present, (
+            "example source must contain at least one public Engine "
+            "read API call beyond state_identity()"
+        )
+
+
+# ===========================================================================
+# AG. Final packet classification must match Lane B (UNBOUND + UNKNOWN)
+# ===========================================================================
+
+
+class TestFinalPacketClassification:
+    """The final verification block must record the same packet
+    classification as Lane B: UNBOUND + UNKNOWN. M03 §10 forbids
+    re-classifying the PR51 packet as CAPTURE_BOUND, CURRENTLY_MATCHED
+    or STALE — those terms describe a binding the M08 example does
+    not introduce."""
+
+    def test_final_packet_binding_status_unbound(self):
+        _skip_if_no_example()
+        report = _get_report()
+        final = report.get("final_state", {})
+        assert final.get("packet_binding_status") == "UNBOUND", (
+            "final_state['packet_binding_status'] must equal 'UNBOUND' "
+            "(matching Lane B); the example must not re-bind the packet"
+        )
+
+    def test_final_packet_comparison_status_unknown(self):
+        _skip_if_no_example()
+        report = _get_report()
+        final = report.get("final_state", {})
+        assert final.get("packet_comparison_status") == "UNKNOWN", (
+            "final_state['packet_comparison_status'] must equal "
+            "'UNKNOWN' (matching Lane B); the example must not "
+            "re-classify the packet"
+        )
+
+    def test_final_packet_classification_matches_lane_b(self):
+        _skip_if_no_example()
+        report = _get_report()
+        final = report.get("final_state", {})
+        lane_b = report.get("lanes", {}).get("engine_read_and_proposal", {})
+        assert final.get("packet_binding_status") == lane_b.get(
+            "packet_binding_status",
+        ), (
+            "final_state['packet_binding_status'] must equal "
+            "Lane B's packet_binding_status"
+        )
+        assert final.get("packet_comparison_status") == lane_b.get(
+            "packet_comparison_status",
+        ), (
+            "final_state['packet_comparison_status'] must equal "
+            "Lane B's packet_comparison_status"
+        )
+
+    def test_final_packet_status_not_capture_bound_or_stale(self):
+        _skip_if_no_example()
+        report = _get_report()
+        final = report.get("final_state", {})
+        forbidden_values = {"CAPTURE_BOUND", "CURRENTLY_MATCHED", "STALE"}
+        for key in ("packet_binding_status", "packet_comparison_status"):
+            val = final.get(key)
+            assert val not in forbidden_values, (
+                f"final_state[{key!r}] must not re-classify the packet "
+                f"as {val!r}; M03 §10 forbids "
+                "CAPTURE_BOUND/CURRENTLY_MATCHED/STALE on a still-"
+                "UNBOUND packet"
+            )
+
+
+# ===========================================================================
+# AH. Positive status vocabulary must appear at documented positions
+# ===========================================================================
+
+
+class TestPositiveStatusVocabulary:
+    """The contract §5.4 / §9 / §10 / §13 status vocabulary must
+    appear at the documented positions in the report. record_kind,
+    disposition, and verdict are separate fields and cannot substitute
+    for the positive status label."""
+
+    def test_lane_a_bridge_decision_status_consumer_decision(self):
+        _skip_if_no_example()
+        report = _get_report()
+        lane_a = report.get("lanes", {}).get("external_ingress", {})
+        bridge = lane_a.get("bridge_decision", {})
+        assert isinstance(bridge, dict)
+        assert bridge.get("status") == "CONSUMER_DECISION", (
+            "Lane A bridge_decision must carry status == "
+            f"'CONSUMER_DECISION'; got: {bridge.get('status')!r}"
+        )
+
+    def test_every_operator_decision_record_status_operator_review(self):
+        _skip_if_no_example()
+        report = _get_report()
+        invocations = _collect_invocation_records(report)
+        assert invocations, (
+            "report must contain at least one invocation record for "
+            "the happy path"
+        )
+        for inv in invocations:
+            odr = inv.get("operator_decision_record")
+            assert isinstance(odr, dict), (
+                "every invocation record must include an "
+                "operator_decision_record dict"
+            )
+            assert odr.get("status") == "OPERATOR_REVIEW", (
+                "every OperatorDecisionRecord must carry status == "
+                f"'OPERATOR_REVIEW'; got: {odr.get('status')!r} in "
+                f"cycle {inv.get('target_method')!r}"
+            )
+
+    def test_every_revalidation_record_status_state_revalidated(self):
+        _skip_if_no_example()
+        report = _get_report()
+        invocations = _collect_invocation_records(report)
+        revs_seen = 0
+        for inv in invocations:
+            revs = inv.get("revalidations", {})
+            assert isinstance(revs, dict)
+            for moment, rev in revs.items():
+                if not isinstance(rev, dict):
+                    continue
+                revs_seen += 1
+                assert rev.get("status") == "STATE_REVALIDATED", (
+                    "every revalidation record must carry status == "
+                    f"'STATE_REVALIDATED'; got: {rev.get('status')!r} "
+                    f"in cycle {inv.get('target_method')!r} moment "
+                    f"{moment!r}"
+                )
+        assert revs_seen >= 12, (
+            "happy path must record at least 12 revalidations "
+            "(6 cycles × Stage 5.5 + Stage 6); "
+            f"observed: {revs_seen}"
+        )
+
+    def test_every_invocation_record_status_explicit_invocation(self):
+        _skip_if_no_example()
+        report = _get_report()
+        invocations = _collect_invocation_records(report)
+        for inv in invocations:
+            assert inv.get("status") == "EXPLICIT_INVOCATION", (
+                "every invocation record must carry status == "
+                f"'EXPLICIT_INVOCATION'; got: {inv.get('status')!r} "
+                f"in cycle {inv.get('target_method')!r}"
+            )
+
+    def test_lane_stage_status_in_positive_vocabulary(self):
+        _skip_if_no_example()
+        report = _get_report()
+        allowed = {"CONNECTED", "COMPLETED"}
+        for lane_key in (
+            "external_ingress",
+            "engine_read_and_proposal",
+            "downstream_reentry",
+        ):
+            lane = report.get("lanes", {}).get(lane_key, {})
+            assert isinstance(lane, dict)
+            status = lane.get("stage_status")
+            assert status in allowed, (
+                f"lane {lane_key!r} stage_status must be in {allowed}; "
+                f"got: {status!r}"
+            )
+
+    def test_final_block_status_boundary_preserved(self):
+        _skip_if_no_example()
+        report = _get_report()
+        final = report.get("final_state", {})
+        assert final.get("status") == "BOUNDARY_PRESERVED", (
+            "final_state must carry status == 'BOUNDARY_PRESERVED'; "
+            f"got: {final.get('status')!r}"
+        )
