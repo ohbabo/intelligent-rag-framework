@@ -2085,6 +2085,95 @@ def _attribute_method_names_called_in(func: ast.FunctionDef) -> set[str]:
     return names
 
 
+# ---------------------------------------------------------------------------
+# Gate-path evidence helpers (271-corr2).
+# ---------------------------------------------------------------------------
+
+
+def _collect_report_values(obj: Any, key_name: str) -> list[Any]:
+    """Recursively collect every value stored under `key_name` anywhere
+    in a nested dict / list structure. Lets the gate tests assert the
+    PRESENCE of a specifically-named field (e.g. termination_stage)
+    without fixing where in the report tree the example chooses to put
+    it."""
+    found: list[Any] = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == key_name:
+                found.append(v)
+            found.extend(_collect_report_values(v, key_name))
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            found.extend(_collect_report_values(item, key_name))
+    return found
+
+
+def _preceding_cycle_methods(target_method: str) -> tuple[str, ...]:
+    """Mutation methods that, per the fixed M08 §6 / §14 cycle order,
+    must each have been invoked exactly once before `target_method`
+    is reached. Derived from _CYCLE_DEFINITIONS so the two never drift
+    apart."""
+    order = [d[1] for d in _CYCLE_DEFINITIONS]
+    idx = order.index(target_method)
+    return tuple(order[:idx])
+
+
+def _find_cycle_records(report: Any, target_method: str) -> list[dict]:
+    """Every invocation record across all lanes whose target_method
+    equals `target_method`."""
+    return [
+        inv for inv in _collect_invocation_records(report)
+        if inv.get("target_method") == target_method
+    ]
+
+
+def _matching_returns_for_expected_id(
+    captured: list[Any], returns: list[Any], expected_id: int,
+) -> list[Any]:
+    """Pair captured (args, kwargs) with their positionally-aligned
+    return value and keep only the returns whose call included
+    `expected_id` among its int arguments."""
+    matching: list[Any] = []
+    for (args, kwargs), result in zip(captured, returns):
+        arg_ids = [
+            v for v in tuple(args) + tuple(kwargs.values())
+            if isinstance(v, int) and not isinstance(v, bool)
+        ]
+        if expected_id in arg_ids:
+            matching.append(result)
+    return matching
+
+
+def _assert_cycle_succeeded(
+    report: Any, method: str, target_method: str,
+) -> None:
+    """Assert that the cycle for `method` fully succeeded in the
+    report: exactly one record, a call_receipt present (its Engine
+    method was actually invoked), and both revalidations 'eligible'.
+    Report-record based so the negative probes' throwaway
+    Engine.add_entity calls do not pollute the proof."""
+    records = _find_cycle_records(report, method)
+    assert len(records) == 1, (
+        f"preceding cycle {method!r} (before target {target_method!r}) "
+        f"must have exactly one invocation record; found {len(records)}"
+    )
+    rec = records[0]
+    assert rec.get("call_receipt"), (
+        f"preceding cycle {method!r} must carry a call_receipt proving "
+        f"its Engine method was actually invoked before reaching "
+        f"{target_method!r}; this rules out an early termination that "
+        "never reached the targeted cycle"
+    )
+    revs = rec.get("revalidations", {})
+    assert isinstance(revs, dict)
+    for moment in ("stage_5_5_materialization", "stage_6_invocation"):
+        rev = revs.get(moment)
+        assert isinstance(rev, dict) and rev.get("verdict") == "eligible", (
+            f"preceding cycle {method!r} must have an 'eligible' "
+            f"{moment} verdict; got: {rev!r}"
+        )
+
+
 # ===========================================================================
 # Z. Role validation must actually gate execution
 # ===========================================================================
@@ -2164,6 +2253,64 @@ class TestRoleValidationGate:
                 f"got: {inv.get('call_receipt')!r}"
             )
 
+    # --- 271-corr2 G-ROLE-POSITION ---
+
+    def test_role_violation_sets_termination_stage(self):
+        """The termination must be reported through an explicit
+        `termination_stage` field whose text identifies role
+        validation — not merely by flipping overall_status. The
+        violation text incidentally surviving inside source_basis is
+        NOT sufficient evidence of where the run stopped."""
+        _skip_if_no_example()
+        _, report, _, _ = _run_with_engine_spies(
+            _MUTATION_METHOD_NAMES, patches=self._patches(),
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.fail(f"role-failed run raised: {report['__exception__']}")
+        stages = _collect_report_values(report, "termination_stage")
+        assert stages, (
+            "role-failed run must expose an explicit `termination_stage` "
+            "field in the report; flipping overall_status alone is not "
+            "sufficient"
+        )
+        role_identifying = [
+            s for s in stages
+            if isinstance(s, str)
+            and "role" in s.lower()
+            and "validation" in s.lower()
+        ]
+        assert role_identifying, (
+            "at least one `termination_stage` value must identify role "
+            "validation (lowercase must contain both 'role' and "
+            f"'validation'); observed termination_stage values: {stages!r}"
+        )
+
+    def test_role_violation_sets_termination_reason(self):
+        """The termination must carry an explicit `termination_reason`
+        field that preserves the injected violation text. This is
+        stronger than the whole-report serialized scan, which would
+        pass on an incidental source_basis copy."""
+        _skip_if_no_example()
+        _, report, _, _ = _run_with_engine_spies(
+            _MUTATION_METHOD_NAMES, patches=self._patches(),
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.fail(f"role-failed run raised: {report['__exception__']}")
+        reasons = _collect_report_values(report, "termination_reason")
+        assert reasons, (
+            "role-failed run must expose an explicit `termination_reason` "
+            "field in the report"
+        )
+        preserving = [
+            r for r in reasons
+            if "forced test violation" in _serialize_for_scan(r)
+        ]
+        assert preserving, (
+            "at least one `termination_reason` value must preserve the "
+            "injected violation text 'forced test violation'; observed "
+            f"termination_reason values: {reasons!r}"
+        )
+
 
 # ===========================================================================
 # AA. Rejected / hold dispositions must suppress invocation
@@ -2236,6 +2383,60 @@ class TestRejectedReviewSuppression:
                 f"disposition={disposition!r} must not produce a "
                 f"call_receipt; got: {inv.get('call_receipt')!r}"
             )
+
+    # --- 271-corr2 G-REACH (add_entity decision record) ---
+
+    @pytest.mark.parametrize("disposition", ["rejected", "hold"])
+    def test_non_approved_review_records_add_entity_decision(
+        self, disposition,
+    ):
+        """The run must actually REACH the first mutation cycle
+        (add_entity), materialize its candidate and operator decision
+        record carrying the injected disposition, and then stop — with
+        no request and no receipt — rather than terminating before the
+        cycle is even formed. Locating the disposition string anywhere
+        in the report is not sufficient; it must be the disposition of
+        the add_entity cycle's operator_decision_record."""
+        _skip_if_no_example()
+        patches = {"_explicit_review": _make_review_patch(disposition)}
+        _, report, calls, _ = _run_with_engine_spies(
+            _MUTATION_METHOD_NAMES, patches=patches,
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.fail(
+                f"disposition={disposition!r} raised: "
+                f"{report['__exception__']}"
+            )
+        for name in _MUTATION_METHOD_NAMES:
+            assert calls[name] == 0, (
+                f"disposition={disposition!r} must suppress Engine.{name}"
+            )
+        records = _find_cycle_records(report, "add_entity")
+        assert len(records) == 1, (
+            "exactly one add_entity cycle record must exist (the run "
+            "must reach the first cycle before the disposition blocks "
+            f"it); found {len(records)}"
+        )
+        rec = records[0]
+        assert rec.get("candidate"), (
+            "add_entity cycle must materialize a candidate before review"
+        )
+        odr = rec.get("operator_decision_record")
+        assert isinstance(odr, dict), (
+            "add_entity cycle must carry an operator_decision_record"
+        )
+        assert odr.get("disposition") == disposition, (
+            "add_entity operator_decision_record.disposition must equal "
+            f"the injected {disposition!r}; got: {odr.get('disposition')!r}"
+        )
+        assert not rec.get("reviewed_mutation_request"), (
+            f"disposition={disposition!r} must not materialize the "
+            "add_entity ReviewedMutationRequest"
+        )
+        assert not rec.get("call_receipt"), (
+            f"disposition={disposition!r} must not produce the "
+            "add_entity call_receipt"
+        )
 
 
 # ===========================================================================
@@ -2341,6 +2542,112 @@ class TestStage5_5SuppressionPerCycle:
                 f"offending entries: {dep_with_receipt}"
             )
 
+    # --- 271-corr2 G-REACH (preceding cycles succeeded) ---
+
+    @pytest.mark.parametrize(
+        "cycle_index,target_method,dependents",
+        _CYCLE_DEFINITIONS,
+        ids=[d[1] for d in _CYCLE_DEFINITIONS],
+    )
+    def test_stage_5_5_preceding_cycles_succeeded(
+        self, cycle_index, target_method, dependents,
+    ):
+        """The injected Stage 5.5 failure must land on cycle K only
+        AFTER every preceding cycle actually succeeded — each preceding
+        cycle must have exactly one record carrying a call_receipt
+        (proof its Engine method was invoked) and both revalidations
+        eligible. This rules out a run that terminates early at an
+        earlier cycle and never reaches the targeted one.
+
+        The proof reads the report's per-cycle records, NOT class-level
+        spy counts, because the negative probes invoke Engine.add_entity
+        on throwaway engines and would pollute a raw add_entity count."""
+        _skip_if_no_example()
+        patches = {
+            "_revalidate": _make_revalidate_patch(
+                "stage_5_5_materialization", cycle_index,
+            ),
+        }
+        _, report, _, _ = _run_with_engine_spies(
+            _MUTATION_METHOD_NAMES, patches=patches,
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.fail(
+                f"Stage 5.5 cycle {cycle_index} ({target_method}) "
+                f"raised: {report['__exception__']}"
+            )
+        for prev in _preceding_cycle_methods(target_method):
+            _assert_cycle_succeeded(report, prev, target_method)
+
+    # --- 271-corr2 G-REACH (target cycle artifact shape) ---
+
+    @pytest.mark.parametrize(
+        "cycle_index,target_method,dependents",
+        _CYCLE_DEFINITIONS,
+        ids=[d[1] for d in _CYCLE_DEFINITIONS],
+    )
+    def test_stage_5_5_target_cycle_artifacts(
+        self, cycle_index, target_method, dependents,
+    ):
+        """The targeted cycle record must show that the run formed the
+        candidate and an approved operator decision, then recorded the
+        Stage 5.5 not_eligible verdict and stopped — with no request,
+        no Stage 6 revalidation, and no receipt."""
+        _skip_if_no_example()
+        patches = {
+            "_revalidate": _make_revalidate_patch(
+                "stage_5_5_materialization", cycle_index,
+            ),
+        }
+        _, report, _, _ = _run_with_engine_spies(
+            _MUTATION_METHOD_NAMES, patches=patches,
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.fail(
+                f"Stage 5.5 cycle {cycle_index} ({target_method}) "
+                f"raised: {report['__exception__']}"
+            )
+        records = _find_cycle_records(report, target_method)
+        assert len(records) == 1, (
+            f"exactly one {target_method} cycle record must exist; "
+            f"found {len(records)}"
+        )
+        rec = records[0]
+        assert rec.get("candidate"), (
+            f"{target_method} cycle must form a candidate before review"
+        )
+        odr = rec.get("operator_decision_record")
+        assert isinstance(odr, dict), (
+            f"{target_method} cycle must carry an operator_decision_record"
+        )
+        assert odr.get("disposition") == "approved", (
+            f"{target_method} operator decision must be 'approved' "
+            "(the block is Stage 5.5, not the review step); got: "
+            f"{odr.get('disposition')!r}"
+        )
+        revs = rec.get("revalidations", {})
+        assert isinstance(revs, dict)
+        s55 = revs.get("stage_5_5_materialization")
+        assert isinstance(s55, dict), (
+            f"{target_method} cycle must record a "
+            "stage_5_5_materialization revalidation"
+        )
+        assert s55.get("verdict") == "not_eligible", (
+            f"{target_method} stage_5_5_materialization verdict must be "
+            f"preserved as 'not_eligible'; got: {s55.get('verdict')!r}"
+        )
+        assert not rec.get("reviewed_mutation_request"), (
+            f"{target_method} Stage 5.5 failure must omit the "
+            "ReviewedMutationRequest"
+        )
+        assert not revs.get("stage_6_invocation"), (
+            f"{target_method} Stage 5.5 failure must not reach the "
+            "stage_6_invocation revalidation"
+        )
+        assert not rec.get("call_receipt"), (
+            f"{target_method} Stage 5.5 failure must omit the call_receipt"
+        )
+
 
 # ===========================================================================
 # AC. Stage 6 (invocation) revalidation must gate Engine call
@@ -2432,6 +2739,120 @@ class TestStage6SuppressionPerCycle:
                 f"{target_method!r} must not produce a call_receipt; "
                 f"offending entries: {dep_with_receipt}"
             )
+
+    # --- 271-corr2 G-REACH (preceding cycles succeeded) ---
+
+    @pytest.mark.parametrize(
+        "cycle_index,target_method,dependents",
+        _CYCLE_DEFINITIONS,
+        ids=[d[1] for d in _CYCLE_DEFINITIONS],
+    )
+    def test_stage_6_preceding_cycles_succeeded(
+        self, cycle_index, target_method, dependents,
+    ):
+        """The injected Stage 6 failure must land on cycle K only after
+        every preceding cycle actually succeeded — each preceding cycle
+        must have exactly one record carrying a call_receipt and both
+        revalidations eligible (report-record based, not class-spy
+        counts, to avoid negative-probe add_entity pollution)."""
+        _skip_if_no_example()
+        patches = {
+            "_revalidate": _make_revalidate_patch(
+                "stage_6_invocation", cycle_index,
+            ),
+        }
+        _, report, _, _ = _run_with_engine_spies(
+            _MUTATION_METHOD_NAMES, patches=patches,
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.fail(
+                f"Stage 6 cycle {cycle_index} ({target_method}) raised: "
+                f"{report['__exception__']}"
+            )
+        for prev in _preceding_cycle_methods(target_method):
+            _assert_cycle_succeeded(report, prev, target_method)
+
+    # --- 271-corr2 G-STAGE6-ARTIFACT (full pre-invocation artifact) ---
+
+    @pytest.mark.parametrize(
+        "cycle_index,target_method,dependents",
+        _CYCLE_DEFINITIONS,
+        ids=[d[1] for d in _CYCLE_DEFINITIONS],
+    )
+    def test_stage_6_target_cycle_artifacts(
+        self, cycle_index, target_method, dependents,
+    ):
+        """A Stage 6 failure happens AFTER request materialization, so
+        the targeted cycle record must retain the full pre-invocation
+        artifact chain — candidate, approved operator decision, a
+        ReviewedMutationRequest whose approved_decision_record_id and
+        target_method match the cycle, a Stage 5.5 'eligible' verdict,
+        and a Stage 6 'not_eligible' verdict — while omitting only the
+        call receipt."""
+        _skip_if_no_example()
+        patches = {
+            "_revalidate": _make_revalidate_patch(
+                "stage_6_invocation", cycle_index,
+            ),
+        }
+        _, report, _, _ = _run_with_engine_spies(
+            _MUTATION_METHOD_NAMES, patches=patches,
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.fail(
+                f"Stage 6 cycle {cycle_index} ({target_method}) raised: "
+                f"{report['__exception__']}"
+            )
+        records = _find_cycle_records(report, target_method)
+        assert len(records) == 1, (
+            f"exactly one {target_method} cycle record must exist; "
+            f"found {len(records)}"
+        )
+        rec = records[0]
+        assert rec.get("candidate"), (
+            f"{target_method} cycle must form a candidate"
+        )
+        odr = rec.get("operator_decision_record")
+        assert isinstance(odr, dict), (
+            f"{target_method} cycle must carry an operator_decision_record"
+        )
+        assert odr.get("disposition") == "approved", (
+            f"{target_method} operator decision must be 'approved'; "
+            f"got: {odr.get('disposition')!r}"
+        )
+        rmr = rec.get("reviewed_mutation_request")
+        assert isinstance(rmr, dict), (
+            f"{target_method} Stage 6 failure must RETAIN the "
+            "ReviewedMutationRequest (it was materialized before "
+            "Stage 6 ran)"
+        )
+        assert rmr.get("approved_decision_record_id") == odr.get(
+            "decision_record_id",
+        ), (
+            f"{target_method} request.approved_decision_record_id must "
+            "match the operator decision's decision_record_id; got "
+            f"{rmr.get('approved_decision_record_id')!r} vs "
+            f"{odr.get('decision_record_id')!r}"
+        )
+        assert rmr.get("target_method") == target_method, (
+            f"{target_method} request.target_method must equal the "
+            f"cycle method; got {rmr.get('target_method')!r}"
+        )
+        revs = rec.get("revalidations", {})
+        assert isinstance(revs, dict)
+        s55 = revs.get("stage_5_5_materialization")
+        assert isinstance(s55, dict) and s55.get("verdict") == "eligible", (
+            f"{target_method} stage_5_5_materialization must be present "
+            f"and 'eligible'; got: {s55!r}"
+        )
+        s6 = revs.get("stage_6_invocation")
+        assert isinstance(s6, dict) and s6.get("verdict") == "not_eligible", (
+            f"{target_method} stage_6_invocation must be present and "
+            f"preserved as 'not_eligible'; got: {s6!r}"
+        )
+        assert not rec.get("call_receipt"), (
+            f"{target_method} Stage 6 failure must omit the call_receipt"
+        )
 
 
 # ===========================================================================
@@ -2799,6 +3220,66 @@ class TestFinalReadValueBinding:
         assert fs_gr == evidence_id, (
             f"the read value must equal the Lane C evidence_id "
             f"({evidence_id}); got {fs_gr!r}"
+        )
+
+    # --- 271-corr2 F-READ-BINDING (entity/claim/gap/evidence) ---
+
+    # (final_state field, Engine read method, lane key, produced-id key)
+    _READ_BINDINGS = (
+        ("entity", "get_entity", "external_ingress", "entity_id"),
+        ("claim", "get_claim", "external_ingress", "claim_id"),
+        ("gap", "get_gap", "external_ingress", "gap_id"),
+        ("evidence", "get_evidence", "downstream_reentry", "evidence_id"),
+    )
+
+    @pytest.mark.parametrize(
+        "field,method,lane_key,id_key",
+        _READ_BINDINGS,
+        ids=[b[0] for b in _READ_BINDINGS],
+    )
+    def test_final_field_bound_to_phase_isolated_read_return(
+        self, field, method, lane_key, id_key,
+    ):
+        """final_state[field] must equal a value actually returned by
+        the matching public Engine read, called FROM WITHIN
+        `_final_state` with the actual Lane A / Lane C produced ID.
+        This rules out `engine.get_entity(entity_id)` being called and
+        its result discarded while final_state[field] holds a hardcoded
+        summary, and rules out an incidental Lane B read substituting
+        for the final-phase read."""
+        _skip_if_no_example()
+        _, report, _, final_captured, final_returns = (
+            _run_with_final_phase_spies((method,))
+        )
+        if isinstance(report, dict) and "__exception__" in report:
+            pytest.fail(f"raised: {report['__exception__']}")
+        lane = report.get("lanes", {}).get(lane_key, {})
+        expected_id = lane.get("produced_ids", {}).get(id_key)
+        assert isinstance(expected_id, int), (
+            f"Lane {lane_key!r} must publish an int {id_key!r}; got: "
+            f"{expected_id!r}"
+        )
+        matching = _matching_returns_for_expected_id(
+            final_captured.get(method, []),
+            final_returns.get(method, []),
+            expected_id,
+        )
+        assert matching, (
+            f"`_final_state` must call Engine.{method}({id_key}="
+            f"{expected_id}); observed final-phase captured args: "
+            f"{final_captured.get(method)}"
+        )
+        final = report.get("final_state", {})
+        fs_value = final.get(field)
+        assert fs_value is not None and not isinstance(fs_value, bool), (
+            f"final_state[{field!r}] must hold the read return value, "
+            f"not a bool/None flag; got: {fs_value!r}"
+        )
+        assert any(fs_value == m for m in matching), (
+            f"final_state[{field!r}] ({fs_value!r}) must be value-equal "
+            f"to a value actually returned by Engine.{method}({id_key}="
+            f"{expected_id}) inside `_final_state`; observed matching "
+            f"returns: {matching!r}"
         )
 
 
