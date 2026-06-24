@@ -157,6 +157,115 @@ def _example_source() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Runtime invocation spies (266차 R-D)
+# ---------------------------------------------------------------------------
+
+
+_SPY_TARGETS_GLOBAL: tuple[str, ...] = (
+    "validate_role_assignment_boundaries",
+    "build_engine_context_packet",
+    "validate_consumer_packet_interpretation",
+    "validate_llm_proposal_shape",
+    "validate_proposal_safety",
+)
+
+
+def _install_spies(module):
+    """Wrap each reusable callable that the example imported into its
+    globals (matched by `value.__name__` per directive §2.3), and wrap
+    Engine.compute_effective_confidence_with_trace at the class level.
+
+    Returns:
+        (call_counts, captured_args, restore_fn)
+        call_counts:   dict[name -> int]
+        captured_args: dict[name -> list of (deepcopy(args), deepcopy(kwargs))]
+        restore_fn:    callable that restores both module globals and
+                       the Engine class attribute
+    """
+    spy_names = list(_SPY_TARGETS_GLOBAL) + [
+        "compute_effective_confidence_with_trace",
+    ]
+    call_counts: dict[str, int] = {n: 0 for n in spy_names}
+    captured: dict[str, list[Any]] = {n: [] for n in spy_names}
+
+    # 1) Patch validators in the example module's globals by walking
+    #    every attribute and matching value.__name__ against the
+    #    target set. Allows the example to alias the import.
+    module_patches: list[tuple[Any, str, Any]] = []
+    for attr_name, value in list(module.__dict__.items()):
+        if not callable(value):
+            continue
+        target = getattr(value, "__name__", None)
+        if target in _SPY_TARGETS_GLOBAL:
+            orig = value
+
+            def make_spy(orig=orig, target=target):
+                def spy(*args, **kwargs):
+                    call_counts[target] += 1
+                    try:
+                        captured[target].append(
+                            (copy.deepcopy(args), copy.deepcopy(kwargs)),
+                        )
+                    except Exception:
+                        captured[target].append(("<unpicklable>", {}))
+                    return orig(*args, **kwargs)
+                spy.__name__ = target
+                spy.__wrapped__ = orig
+                return spy
+
+            spy = make_spy()
+            module_patches.append((module, attr_name, orig))
+            setattr(module, attr_name, spy)
+
+    # 2) Patch Engine.compute_effective_confidence_with_trace at the
+    #    class level so engine.compute_effective_confidence_with_trace(
+    #    claim_id) goes through the spy.
+    orig_trace = Engine.compute_effective_confidence_with_trace
+
+    def trace_spy(self, claim_id):
+        call_counts["compute_effective_confidence_with_trace"] += 1
+        captured["compute_effective_confidence_with_trace"].append(claim_id)
+        return orig_trace(self, claim_id)
+
+    trace_spy.__name__ = "compute_effective_confidence_with_trace"
+    Engine.compute_effective_confidence_with_trace = trace_spy
+
+    def restore() -> None:
+        for mod, attr, orig in module_patches:
+            setattr(mod, attr, orig)
+        Engine.compute_effective_confidence_with_trace = orig_trace
+
+    return call_counts, captured, restore
+
+
+_SPY_RESULT_CACHE: tuple[dict[str, Any], dict[str, int], dict[str, list[Any]]] | None = None
+
+
+def _run_with_spies() -> tuple[
+    dict[str, Any], dict[str, int], dict[str, list[Any]],
+]:
+    """Run the operation once under runtime spies and cache the
+    result for the session. Returns (report, call_counts, captured)."""
+    global _SPY_RESULT_CACHE
+    _skip_if_no_example()
+    if _SPY_RESULT_CACHE is None:
+        module = _load_example_module()
+        if not hasattr(
+            module, "run_complete_domain_neutral_reference_operation",
+        ):
+            pytest.skip(
+                "266차 entry point not yet present (spy run)",
+            )
+        call_counts, captured, restore = _install_spies(module)
+        try:
+            report = module.run_complete_domain_neutral_reference_operation()
+        finally:
+            restore()
+        _SPY_RESULT_CACHE = (report, call_counts, captured)
+    return _SPY_RESULT_CACHE
+
+
+# ---------------------------------------------------------------------------
 # Forbidden domain-specific vocabulary (M08 §18 inventory)
 # ---------------------------------------------------------------------------
 
@@ -1205,3 +1314,329 @@ class TestStructuralInvariants:
         )
         pkt = mod.build_engine_context_packet(e, cid)
         assert len(pkt) == 7
+
+
+# ===========================================================================
+# W. Runtime invocation spies — R-D (266차)
+# ===========================================================================
+
+
+class TestRuntimeInvocationSpies:
+    """Replace the 265차 name-only / source-text checks with actual
+    runtime call_count spies. Each target must be CALLED, not merely
+    mentioned in source.
+
+    Static name-presence checks (TestExistingArtifactReuse) are kept
+    in addition to these runtime invocation checks per the directive:
+    "static scans only without a runtime spy are insufficient".
+    """
+
+    def _counts(self) -> dict[str, int]:
+        _, call_counts, _ = _run_with_spies()
+        return call_counts
+
+    def test_validate_role_assignment_boundaries_invoked(self):
+        assert self._counts()["validate_role_assignment_boundaries"] >= 1
+
+    def test_build_engine_context_packet_invoked(self):
+        assert self._counts()["build_engine_context_packet"] >= 1
+
+    def test_validate_consumer_packet_interpretation_invoked(self):
+        assert self._counts()["validate_consumer_packet_interpretation"] >= 1
+
+    def test_validate_llm_proposal_shape_invoked(self):
+        assert self._counts()["validate_llm_proposal_shape"] >= 1
+
+    def test_validate_proposal_safety_invoked(self):
+        assert self._counts()["validate_proposal_safety"] >= 1
+
+    def test_compute_effective_confidence_with_trace_invoked(self):
+        assert self._counts()["compute_effective_confidence_with_trace"] >= 1
+
+    def test_happy_path_invocation_counts_exact(self):
+        """All six reusable callables are invoked exactly once on the
+        happy path. If the example's implementation has a documented
+        reason to invoke a target more than once, this assertion can
+        be relaxed; until then we lock exact 1."""
+        counts = self._counts()
+        for target in (
+            "validate_role_assignment_boundaries",
+            "build_engine_context_packet",
+            "validate_consumer_packet_interpretation",
+            "validate_llm_proposal_shape",
+            "validate_proposal_safety",
+            "compute_effective_confidence_with_trace",
+        ):
+            assert counts[target] == 1, (
+                f"happy-path invocation count for {target!r} is "
+                f"{counts[target]}, expected exactly 1"
+            )
+
+    def test_both_proposal_validators_receive_same_exact_proposal(self):
+        """PR55 and PR56 must inspect the same exact proposal content.
+        The example must not fork the proposal into two different
+        mutable copies before validation."""
+        _, _, captured = _run_with_spies()
+        pr55 = captured["validate_llm_proposal_shape"]
+        pr56 = captured["validate_proposal_safety"]
+        assert pr55 and pr56
+        # signature: validate_*(proposal, source_packet) — proposal is
+        # the first positional argument.
+        pr55_proposal = pr55[0][0][0]
+        pr56_proposal = pr56[0][0][0]
+        assert pr55_proposal == pr56_proposal, (
+            "PR55 and PR56 must inspect the same proposal content"
+        )
+
+
+# ===========================================================================
+# X. Extended input immutability — R-U (266차)
+# ===========================================================================
+
+
+class TestExtendedInputImmutability:
+    """Extend U's PR64/PR61 immutability to:
+      - manual proposal fixture
+      - downstream result fixture
+      - candidate/request/receipt argument records (no-alias lock)
+    """
+
+    def test_pr64_adapter_trace_value_equality_with_freshly_loaded(self):
+        """The example must consume the actual on-disk PR64 trace,
+        not a hand-copied dict literal of equal shape. We verify by
+        loading the artifact fresh and comparing with what the
+        example's report records as having consumed."""
+        report, _, _ = _run_with_spies()
+        consumed = report["lanes"]["external_ingress"].get(
+            "consumed_adapter_trace",
+        )
+        assert consumed is not None, (
+            "external_ingress report must record "
+            "'consumed_adapter_trace' for PR64 value-equality lock"
+        )
+        adapter = _load_external_module(
+            _ADAPTER_PATH, "minimal_external_adapter_example_X1",
+        )
+        assert consumed == adapter.RESOLVED_TRANSLATION_TRACE
+
+    def test_pr61_role_example_value_equality_with_freshly_loaded(self):
+        report, _, _ = _run_with_spies()
+        consumed = report["lanes"]["external_ingress"].get(
+            "consumed_role_example",
+        )
+        assert consumed is not None, (
+            "external_ingress report must record "
+            "'consumed_role_example' for PR61 value-equality lock"
+        )
+        role = _load_external_module(
+            _ROLE_EXAMPLE_PATH, "minimal_consumer_example_X2",
+        )
+        assert consumed == role.RESOLVED_EXAMPLE
+
+    def test_proposal_fixture_unchanged_after_operation(self):
+        """The proposal object PR55 saw at call time must be value-
+        equal to the proposal object PR56 saw, and value-equal to
+        the report's record of the consumed proposal after the
+        operation completes."""
+        report, _, captured = _run_with_spies()
+        pr55 = captured["validate_llm_proposal_shape"]
+        pr56 = captured["validate_proposal_safety"]
+        assert pr55 and pr56
+        # Both validators got deepcopy snapshots at call time; both
+        # must match.
+        assert pr55[0][0][0] == pr56[0][0][0]
+        # The post-operation report's recorded proposal must also
+        # match the value the validators saw at call time.
+        recorded = report["lanes"]["engine_read_and_proposal"][
+            "proposal"
+        ].get("proposal_content_snapshot")
+        if recorded is not None:
+            assert recorded == pr55[0][0][0]
+
+    def test_downstream_source_fixture_unchanged_after_operation(self):
+        """The downstream-result source fixture must be value-equal to
+        a freshly-recorded snapshot after the operation completes.
+        The example must expose a 'downstream_source_fixture_before'
+        snapshot in the lane_c report so the test can compare it to
+        the 'downstream_source_fixture_after' snapshot."""
+        report, _, _ = _run_with_spies()
+        lane_c = report["lanes"]["downstream_reentry"]
+        before = lane_c.get("downstream_source_fixture_before")
+        after = lane_c.get("downstream_source_fixture_after")
+        assert before is not None
+        assert after is not None
+        assert before == after, (
+            "downstream source fixture must not be mutated by the "
+            "operation (no-alias / immutability lock)"
+        )
+
+    def test_result_trace_no_alias_with_downstream_fixture(self):
+        """Mutating the result_trace's `result_fragment` value must
+        not change the downstream source fixture (no shared mutable
+        alias)."""
+        report, _, _ = _run_with_spies()
+        lane_c = report["lanes"]["downstream_reentry"]
+        result_trace = lane_c["result_trace"]
+        source_before = copy.deepcopy(
+            lane_c.get("downstream_source_fixture_after"),
+        )
+        if isinstance(result_trace.get("result_fragment"), dict):
+            result_trace["result_fragment"]["__test_marker__"] = "X"
+        elif isinstance(result_trace.get("result_fragment"), list):
+            result_trace["result_fragment"].append("__test_marker__")
+        # downstream source must be unchanged
+        source_after = lane_c.get("downstream_source_fixture_after")
+        assert source_after == source_before, (
+            "result_trace.result_fragment shares a mutable alias "
+            "with the downstream source fixture"
+        )
+
+    def _walk(self, obj):
+        if isinstance(obj, dict):
+            yield obj
+            for v in obj.values():
+                yield from self._walk(v)
+        elif isinstance(obj, list):
+            for x in obj:
+                yield from self._walk(x)
+
+    def test_candidate_request_receipt_arguments_no_mutable_alias(self):
+        """For every invocation in every lane, the candidate's
+        arguments dict, the approved_candidate_snapshot's arguments
+        dict, the ReviewedMutationRequest's arguments dict, and the
+        invocation receipt's reviewed-arguments dict must:
+          - be value-equal (==)
+          - be distinct objects (is-not)
+        """
+        report, _, _ = _run_with_spies()
+        invocations = []
+        for lane in report["lanes"].values():
+            if isinstance(lane, dict):
+                seq = lane.get("explicit_invocation_sequence")
+                if seq:
+                    invocations.extend(seq)
+        assert invocations, "no explicit invocations found"
+        for inv in invocations:
+            candidate = inv.get("candidate")
+            request = inv.get("reviewed_mutation_request")
+            assert candidate is not None
+            assert request is not None
+            cand_args = candidate.get("arguments")
+            snap_args = request["approved_candidate_snapshot"].get(
+                "arguments",
+            )
+            req_args = request.get("arguments")
+            inv_args = inv.get("arguments")
+            assert cand_args is not None
+            assert snap_args is not None
+            assert req_args is not None
+            assert inv_args is not None
+            # value-equality across the four argument records
+            assert cand_args == snap_args == req_args == inv_args
+            # identity distinctness — no mutable alias
+            ids = {id(cand_args), id(snap_args), id(req_args), id(inv_args)}
+            assert len(ids) == 4, (
+                "candidate.arguments, approved_candidate_snapshot."
+                "arguments, request.arguments, and invocation.arguments "
+                "must be four distinct dict objects (no mutable alias)"
+            )
+
+    def test_mutating_candidate_args_does_not_change_request_args(self):
+        """Concrete no-alias verification: mutate one record's
+        arguments and confirm the others are unchanged."""
+        report, _, _ = _run_with_spies()
+        invocations = []
+        for lane in report["lanes"].values():
+            if isinstance(lane, dict):
+                seq = lane.get("explicit_invocation_sequence")
+                if seq:
+                    invocations.extend(seq)
+        assert invocations
+        inv = invocations[0]
+        candidate = inv["candidate"]
+        request = inv["reviewed_mutation_request"]
+        snap = request["approved_candidate_snapshot"]
+        req_before = copy.deepcopy(request["arguments"])
+        snap_before = copy.deepcopy(snap["arguments"])
+        candidate["arguments"]["__test_alias_marker__"] = "Y"
+        assert request["arguments"] == req_before, (
+            "mutating candidate.arguments leaked into request.arguments"
+        )
+        assert snap["arguments"] == snap_before, (
+            "mutating candidate.arguments leaked into "
+            "approved_candidate_snapshot.arguments"
+        )
+
+
+# ===========================================================================
+# Y. Trace identity precision — construction-time lock (266차)
+# ===========================================================================
+
+
+class TestTraceIdentityConstructionTimeLock:
+    """trace.source_state_identity must equal the Engine state
+    identity at trace construction, NOT against the final post-Lane-C
+    identity. The example records:
+      - identity_before_trace_equal_to_source: bool
+      - identity_after_trace_equal_to_source: bool
+      - identity_before_equals_identity_after: bool  (read-only proof)
+      - trace_identity_revision: int
+      - final_engine_identity_revision: int  (in final_state)
+    """
+
+    def _block(self):
+        report = _get_report()
+        return report["lanes"]["engine_read_and_proposal"][
+            "effective_confidence_trace"
+        ]
+
+    def test_trace_source_identity_equals_identity_before_trace(self):
+        b = self._block()
+        assert b.get("identity_before_trace_equal_to_source") is True
+
+    def test_trace_source_identity_equals_identity_after_trace(self):
+        b = self._block()
+        assert b.get("identity_after_trace_equal_to_source") is True
+
+    def test_identity_before_equals_identity_after_trace_call(self):
+        """state_identity() is read-only (M04 §1.2); a trace call does
+        not advance the revision."""
+        b = self._block()
+        assert b.get("identity_before_equals_identity_after") is True
+
+    def test_final_engine_identity_not_equal_to_trace_identity(self):
+        """The trace is captured during Lane B. Lane C performs
+        further state mutations (add_evidence /
+        resolve_gaps_for_evidence / confirm_claim_if_ready). The
+        final engine identity revision must therefore exceed the
+        trace identity revision; equality would be wrong (it would
+        either mean Lane C performed no mutation, or the example
+        compared against the wrong identity moment)."""
+        report = _get_report()
+        block = self._block()
+        trace_rev = block.get("trace_identity_revision")
+        final_rev = report["final_state"].get(
+            "final_engine_identity_revision",
+        )
+        assert isinstance(trace_rev, int)
+        assert isinstance(final_rev, int)
+        assert trace_rev < final_rev, (
+            f"final_engine_identity_revision ({final_rev}) must be "
+            f"greater than trace_identity_revision ({trace_rev}); "
+            "the trace identity must NOT be compared against the "
+            "final post-Lane-C engine identity"
+        )
+
+    def test_trace_block_does_not_claim_final_identity_match(self):
+        """The trace block must NOT carry a boolean asserting that
+        trace.source_state_identity equals the final engine identity.
+        Such a field would invert the contract."""
+        b = self._block()
+        for forbidden in (
+            "source_identity_equals_final_engine_identity",
+            "trace_identity_equals_final_engine_identity",
+        ):
+            assert forbidden not in b, (
+                f"trace block must not assert {forbidden!r}; the "
+                "trace identity is locked at construction time only"
+            )
