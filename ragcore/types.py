@@ -223,3 +223,61 @@ class EngineStateIdentity:
             raise ValueError(
                 f"revision must be non-negative, got {self.revision}"
             )
+
+
+@dataclass(frozen=True)
+class EffectiveConfidenceTrace:
+    """PR76-M07 — typed breakdown of an existing effective-confidence
+    calculation.
+
+    Returned by ``Engine.compute_effective_confidence_with_trace``.
+    Read-only value; not stored in Engine internal state and not
+    serialized in any snapshot field.
+
+    Field order (§4.1) is part of the contract:
+
+        claim_id
+        source_state_identity
+        calculation_policy_id
+        base_confidence
+        status_modifier
+        freshness_modifier
+        gap_modifier
+        count_modifier
+        rule_stats_modifier
+        evidence_type_modifier
+        effective_confidence
+
+    Invariants:
+
+        trace.effective_confidence
+            == Engine.compute_effective_confidence(claim_id)
+
+        trace.effective_confidence
+            == ScoreValue(
+                trace.base_confidence.value
+                * trace.status_modifier
+                * trace.freshness_modifier
+                * trace.gap_modifier
+                * trace.count_modifier
+                * trace.rule_stats_modifier
+                * trace.evidence_type_modifier
+            )
+
+    See ``docs/architecture/EFFECTIVE_CONFIDENCE_CALCULATION_TRACE_CONTRACT.md``
+    for the full contract. This value is NOT a probability, NOT a Claim
+    verdict, NOT a lifecycle recommendation, NOT a packet capture
+    identity claim, and NOT a freshness proof.
+    """
+
+    claim_id: int
+    source_state_identity: EngineStateIdentity
+    calculation_policy_id: str
+    base_confidence: ScoreValue
+    status_modifier: float
+    freshness_modifier: float
+    gap_modifier: float
+    count_modifier: float
+    rule_stats_modifier: float
+    evidence_type_modifier: float
+    effective_confidence: ScoreValue

@@ -1119,3 +1119,55 @@ four identity concepts (§4), the two-axis vocabulary (§7),
 the §8 CAPTURE_BOUND requirements, the §9 CURRENTLY_MATCHED
 requirements, the §10 STALE boundary, the §13 PR51 / PR53
 relationship, or the §14 snapshot boundary.
+
+---
+
+## §21 Post-M07 addendum (PR76-M07, 2026-06-19)
+
+PR76-M07 (`EFFECTIVE_CONFIDENCE_CALCULATION_TRACE_CONTRACT.md`)
+adds a read-only typed trace
+(`EffectiveConfidenceTrace`) and one read-only Engine method
+(`Engine.compute_effective_confidence_with_trace`) over the
+existing effective-confidence calculation. M07 does NOT
+change M03's reading of the PR51 packet.
+
+```
+- The trace's `source_state_identity` field carries an
+  EngineStateIdentity value observed at calculation time. It
+  is captured by a call to the read-only Engine.state_identity()
+  method (M04 §1.2; not in the M04 §2 advance-discipline
+  set) inside the trace construction.
+
+- `source_state_identity` is NOT a PR51 packet capture
+  identity. PR51 packets remain UNBOUND + UNKNOWN. The §7
+  forbidden two-axis combinations (UNBOUND + STALE,
+  UNBOUND + CURRENTLY_MATCHED) remain forbidden.
+
+- M07 does NOT introduce CAPTURE_BOUND packet binding (§8),
+  CURRENTLY_MATCHED helper (§9), or mechanical packet STALE
+  detector (§10). M07 introduces only a calculation-trace
+  surface; it does NOT alter §7 packet vocabulary.
+
+- A consumer that compares a trace's source_state_identity
+  with a later Engine.state_identity() is performing a
+  decision-state-style comparison (compatible with M05 §7
+  / §9). That comparison is NOT a packet capture-binding
+  claim, NOT atomic, NOT a transaction window, and NOT
+  freshness proof.
+
+- The trace is NOT serialized in any snapshot field
+  (snapshot schema_version stays at 2; the 18 top-level
+  keys are unchanged). M07 does NOT extend §14 snapshot
+  boundary.
+
+- The trace is NOT carried in the PR51 packet. M07 does
+  NOT extend §13 PR51 key set; the 7 keys remain (claim /
+  effective_confidence / supporting_evidence /
+  contradictions / active_contradictions /
+  unresolved_gaps / lifecycle_history).
+```
+
+M07 does not modify M03's §2 baseline, §4 identity concepts,
+§7 vocabulary, §8 / §9 / §10 boundaries, §13 PR51 / PR53
+relationship, §14 snapshot boundary, §19 post-M04 addendum,
+or §20 post-M05 addendum.

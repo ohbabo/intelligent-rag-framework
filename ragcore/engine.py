@@ -24,6 +24,7 @@ from ragcore.types import (
     KIND_RELATION,
     Claim,
     ClaimLifecycleEvent,
+    EffectiveConfidenceTrace,
     EngineStateIdentity,
     Entity,
     Evidence,
@@ -75,6 +76,12 @@ _STATUS_TO_MODIFIER: dict[int, float] = {
     CLAIM_STATUS_DISPUTED: _STATUS_MODIFIER_DISPUTED,
     CLAIM_STATUS_REFUTED: _STATUS_MODIFIER_REFUTED,
 }
+
+# ---- Effective-confidence calculation policy id (PR76-M07 §7) ----
+# Module-private — observable only via
+# EffectiveConfidenceTrace.calculation_policy_id. Not re-exported in
+# ragcore.__all__. Bump under §7.4 conditions only.
+_EFFECTIVE_CONFIDENCE_POLICY_ID = "ragcore.effective-confidence.v1"
 
 # ---- Claim status admission domain (PR65-P01 §51) ----
 # Engine 내부 private — public export 안 함.
@@ -1931,17 +1938,76 @@ class Engine:
         Raises:
             KeyError: unknown claim_id.
         """
+        # PR76-M07 §6 — delegate to the single private calculation core
+        # so the typed-trace API and the legacy API share one formula.
+        return self._compute_effective_confidence_core(claim_id).effective_confidence
+
+    def _compute_effective_confidence_core(
+        self, claim_id: int,
+    ) -> EffectiveConfidenceTrace:
+        """PR76-M07 §6 — single calculation core for both confidence APIs.
+
+        Computes each modifier once into a local variable, multiplies them
+        together to produce the effective confidence, and packages the
+        components into a frozen EffectiveConfidenceTrace value. Both
+        ``compute_effective_confidence`` and
+        ``compute_effective_confidence_with_trace`` delegate here so the
+        composition formula has exactly one site (§6).
+
+        Raises:
+            KeyError: unknown claim_id (same surface as the legacy API).
+        """
         self._assert_claim_exists(claim_id)
         claim = self._claims[claim_id]
-        return ScoreValue(
+        status_modifier = self._status_modifier_for_claim(claim_id)
+        freshness_modifier = self._freshness_modifier_for_claim(claim_id)
+        gap_modifier = self._gap_modifier_for_claim(claim_id)
+        count_modifier = self._count_modifier_for_claim(claim_id)
+        rule_stats_modifier = self._rule_stats_modifier_for_claim(claim_id)
+        evidence_type_modifier = self._evidence_type_modifier_for_claim(claim_id)
+        effective_confidence = ScoreValue(
             claim.base_confidence.value
-            * self._status_modifier_for_claim(claim_id)
-            * self._freshness_modifier_for_claim(claim_id)
-            * self._gap_modifier_for_claim(claim_id)
-            * self._count_modifier_for_claim(claim_id)
-            * self._rule_stats_modifier_for_claim(claim_id)
-            * self._evidence_type_modifier_for_claim(claim_id)
+            * status_modifier
+            * freshness_modifier
+            * gap_modifier
+            * count_modifier
+            * rule_stats_modifier
+            * evidence_type_modifier
         )
+        return EffectiveConfidenceTrace(
+            claim_id=claim_id,
+            source_state_identity=self.state_identity(),
+            calculation_policy_id=_EFFECTIVE_CONFIDENCE_POLICY_ID,
+            base_confidence=claim.base_confidence,
+            status_modifier=status_modifier,
+            freshness_modifier=freshness_modifier,
+            gap_modifier=gap_modifier,
+            count_modifier=count_modifier,
+            rule_stats_modifier=rule_stats_modifier,
+            evidence_type_modifier=evidence_type_modifier,
+            effective_confidence=effective_confidence,
+        )
+
+    def compute_effective_confidence_with_trace(
+        self, claim_id: int,
+    ) -> EffectiveConfidenceTrace:
+        """PR76-M07 §5 — return a typed breakdown of the same calculation.
+
+        Returns the EffectiveConfidenceTrace value produced by the single
+        private calculation core. By construction:
+
+            self.compute_effective_confidence_with_trace(claim_id)
+                .effective_confidence
+              == self.compute_effective_confidence(claim_id)
+
+        Read-only: does not advance the M04 revision (§5.1 / §11.1) and
+        does not mutate snapshot-visible state.
+
+        Raises:
+            KeyError: unknown claim_id (same surface as
+                ``compute_effective_confidence``).
+        """
+        return self._compute_effective_confidence_core(claim_id)
 
     def update_rule_stats(
         self,

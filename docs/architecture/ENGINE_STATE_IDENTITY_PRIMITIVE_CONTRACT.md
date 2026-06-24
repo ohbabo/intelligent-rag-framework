@@ -539,7 +539,10 @@ primitive.
 - M05 obtains the current identity by calling the read-only
   Engine.state_identity() method at the revalidation moment.
   This is a read-only call: it does NOT advance the revision
-  (§2.6) and does NOT mutate Engine state.
+  (§1.2 defines state_identity() as read-only; the §2 advance
+  discipline covers only the 20 state-mutating methods, of
+  which state_identity() is not one) and does NOT mutate
+  Engine state.
 
 - M05 records (engine_token, revision) as the decision-time
   identity, alongside its own decision-record content. The
@@ -590,3 +593,65 @@ The §8 / §15 future-mechanism boundary that M04 left open is
 not extend M04 into CAPTURE_BOUND packet binding,
 CURRENTLY_MATCHED helpers, or mechanical STALE detection
 (see M03 §20).
+
+---
+
+## §12 Post-M07 addendum (PR76-M07, 2026-06-19)
+
+PR76-M07 (`EFFECTIVE_CONFIDENCE_CALCULATION_TRACE_CONTRACT.md`)
+is a runtime consumer of the M04 `EngineStateIdentity`
+primitive. M07 introduces a new public read-only value type
+`EffectiveConfidenceTrace` whose `source_state_identity`
+field carries an `EngineStateIdentity` value observed at
+trace construction.
+
+```
+- The trace reuses the M04 EngineStateIdentity value type
+  shape (engine_token: str, revision: int) exactly. M07 does
+  NOT modify the §1 public contract, the §3 C5 admission
+  discipline, the §2 advance discipline across the 20
+  state-mutating methods, the §5 snapshot exclusion, the
+  §4.4 from_snapshot() fresh-lineage behavior, or any
+  other M04 property.
+
+- M07 captures source_state_identity by calling the
+  read-only Engine.state_identity() public method documented
+  at §1.2. state_identity() is not in the §2 advance-
+  discipline set (the 20 state-mutating methods), so the
+  call does NOT advance the revision. M07 adds:
+
+    Engine.compute_effective_confidence_with_trace(claim_id)
+
+  which is classified as a read-only public method (the 20th
+  read-only method after M07). It does NOT appear in the
+  20 state-mutating public method set.
+
+- The supported comparison is value equality of the
+  EngineStateIdentity pair (§1.1):
+
+    trace.source_state_identity == engine.state_identity()
+
+  M07 does NOT introduce any other comparison primitive,
+  cross-lineage revision ordering, token parsing, or
+  derived stable-identity scheme.
+
+- M07 does NOT add atomic capture, transaction semantics,
+  packet binding, freshness proof, cross-process continuity,
+  or cryptographic state proof. The §6 atomicity non-claim
+  and §7 concurrency non-claim apply unchanged.
+
+- A trace's source_state_identity is NOT persisted in any
+  snapshot field (§5 snapshot exclusion remains intact). It
+  exists only in the returned EffectiveConfidenceTrace
+  value.
+
+- Engine.from_snapshot(...) continues to allocate a fresh
+  lineage with revision = 0 (§4.4). A previously-issued
+  trace's source_state_identity therefore cannot be
+  value-equal to the restored Engine's state_identity().
+  This is intentional and matches the M05 §13 / M04 §11
+  process-restart and restore discipline.
+```
+
+M07 does not modify any M04 normative section. §1 ~ §10
+historical body and §11 post-M05 addendum remain unchanged.

@@ -618,13 +618,17 @@ class TestStructuralInvariantsUnchanged:
                             public += 1
         # PR73-M04 shift: 40 → 41 public (state_identity);
         # 18 → 19 private (_advance_state_revision).
-        assert public == 41
-        assert private == 19
+        # PR76-M07 shift: 41 → 42 public
+        # (compute_effective_confidence_with_trace);
+        # 19 → 20 private (_compute_effective_confidence_core).
+        assert public == 42
+        assert private == 20
 
     def test_ragcore_all_unchanged(self) -> None:
         import ragcore
         # PR73-M04 shift: 48 → 49 (added EngineStateIdentity).
-        assert len(ragcore.__all__) == 49
+        # PR76-M07 shift: 49 → 50 (added EffectiveConfidenceTrace).
+        assert len(ragcore.__all__) == 50
 
     def test_snapshot_schema_version_unchanged(self) -> None:
         assert Engine().to_snapshot()["schema_version"] == 2

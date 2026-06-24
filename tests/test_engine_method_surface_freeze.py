@@ -92,7 +92,9 @@ _LOCKED_PUBLIC_METHODS: frozenset[str] = frozenset({
     "from_snapshot",
     # PR73-M04 — engine state identity primitive (1)
     "state_identity",
-})  # = 41 methods (PR36-PKG 40 + PR73-M04 1)
+    # PR76-M07 — effective confidence calculation trace (1)
+    "compute_effective_confidence_with_trace",
+})  # = 42 methods (PR36-PKG 40 + PR73-M04 1 + PR76-M07 1)
 
 
 # ----------------------------------------------------------------------
@@ -140,11 +142,13 @@ class TestPublicNamespaceFreeze:
 
     def test_ragcore_all_has_exactly_48_symbols(self) -> None:
         # PR73-M04 shift: 48 → 49 (added EngineStateIdentity).
-        assert len(ragcore.__all__) == 49
+        # PR76-M07 shift: 49 → 50 (added EffectiveConfidenceTrace).
+        assert len(ragcore.__all__) == 50
 
     def test_ragcore_all_has_no_duplicates(self) -> None:
         # PR73-M04 shift: 48 → 49 (added EngineStateIdentity).
-        assert len(set(ragcore.__all__)) == 49
+        # PR76-M07 shift: 49 → 50 (added EffectiveConfidenceTrace).
+        assert len(set(ragcore.__all__)) == 50
 
     def test_engine_is_exposed_in_ragcore_all(self) -> None:
         assert "Engine" in ragcore.__all__
@@ -159,11 +163,13 @@ class TestEngineMethodNameFreeze:
 
     def test_engine_public_method_count_is_40(self) -> None:
         # PR73-M04 shift: 40 → 41 (added state_identity).
+        # PR76-M07 shift: 41 → 42 (added
+        #   compute_effective_confidence_with_trace).
         count = sum(
             1 for name, _ in inspect.getmembers(Engine, callable)
             if not name.startswith("_")
         )
-        assert count == 41
+        assert count == 42
 
     def test_engine_public_method_names_match_locked_set(self) -> None:
         actual = frozenset(

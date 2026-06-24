@@ -38,6 +38,7 @@ from ragcore.types import (
     RULE_MATURITY_STABLE,
     Claim,
     ClaimLifecycleEvent,
+    EffectiveConfidenceTrace,
     EngineStateIdentity,
     Entity,
     Evidence,
@@ -49,7 +50,7 @@ from ragcore.types import (
     ScoreValue,
 )
 
-# Public API surface — 49 symbols, grouped by purpose (§45.5 + PR73-M04).
+# Public API surface — 50 symbols, grouped by purpose (§45.5 + PR73-M04 + PR76-M07).
 # Order is documentation, not behavior: tests use frozenset equality.
 __all__ = [
     # Lifecycle status enum (4) — §18 / §42.2 / §43.3-5
@@ -73,10 +74,12 @@ __all__ = [
     "TRACE_REASON_MISMATCH",
     "TRACE_REASON_MISSING_FIELD",
     "TRACE_REASON_TYPE_MISMATCH",
-    # Core dataclasses (8) — §11~§16, §23 lifecycle event,
-    # PR73-M04 Engine state identity
+    # Core dataclasses (9) — §11~§16, §23 lifecycle event,
+    # PR73-M04 Engine state identity, PR76-M07 effective
+    # confidence calculation trace
     "Claim",
     "ClaimLifecycleEvent",
+    "EffectiveConfidenceTrace",
     "EngineStateIdentity",
     "Entity",
     "Evidence",

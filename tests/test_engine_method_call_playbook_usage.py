@@ -298,17 +298,20 @@ class TestPlaybookGuards:
 
     def test_engine_public_method_surface_is_40(self) -> None:
         # PR73-M04 shift: 40 → 41 (added state_identity).
+        # PR76-M07 shift: 41 → 42 (added
+        #   compute_effective_confidence_with_trace).
         public_methods = [
             name
             for name in dir(Engine)
             if not name.startswith("_") and callable(getattr(Engine, name))
         ]
-        assert len(public_methods) == 41
+        assert len(public_methods) == 42
 
     def test_ragcore_all_remains_48_symbols(self) -> None:
         # PR73-M04 shift: 48 → 49 (added EngineStateIdentity).
-        assert len(ragcore.__all__) == 49
-        assert len(set(ragcore.__all__)) == 49
+        # PR76-M07 shift: 49 → 50 (added EffectiveConfidenceTrace).
+        assert len(ragcore.__all__) == 50
+        assert len(set(ragcore.__all__)) == 50
 
     def test_translation_function_is_not_identity(self) -> None:
         # Mirrors PR41 §50.9 / §50.10 invariant in the playbook context.
