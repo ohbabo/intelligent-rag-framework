@@ -1733,11 +1733,17 @@ _CYCLE_DEFINITIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
 
 def _install_engine_method_spies(
     method_names: tuple[str, ...],
+    gate: typing.Callable[[], bool] | None = None,
 ) -> tuple[dict[str, int], dict[str, list[Any]], typing.Callable[[], None]]:
     """Install runtime call-count + argument-capture spies on the named
     Engine methods at the class level. Returns
     (call_counts, captured, restore_fn). restore_fn MUST be called in a
-    finally block to undo the class-level patching."""
+    finally block to undo the class-level patching.
+
+    If `gate` is provided, a call is counted / captured only when
+    `gate()` returns True. This lets a caller exclude calls made during
+    a specific phase (e.g. the negative probes' throwaway Engine.add_
+    entity calls) from the main-operation counts."""
     call_counts: dict[str, int] = {n: 0 for n in method_names}
     captured: dict[str, list[Any]] = {n: [] for n in method_names}
     originals: dict[str, Any] = {}
@@ -1748,13 +1754,14 @@ def _install_engine_method_spies(
 
         def make_spy(orig=orig, name=name):
             def spy(self, *args, **kwargs):
-                call_counts[name] += 1
-                try:
-                    captured[name].append(
-                        (copy.deepcopy(args), copy.deepcopy(kwargs)),
-                    )
-                except Exception:
-                    captured[name].append(("<unpicklable>", {}))
+                if gate is None or gate():
+                    call_counts[name] += 1
+                    try:
+                        captured[name].append(
+                            (copy.deepcopy(args), copy.deepcopy(kwargs)),
+                        )
+                    except Exception:
+                        captured[name].append(("<unpicklable>", {}))
                 return orig(self, *args, **kwargs)
             spy.__name__ = name
             spy.__wrapped__ = orig
@@ -1772,6 +1779,7 @@ def _install_engine_method_spies(
 def _run_with_engine_spies(
     method_names: tuple[str, ...],
     patches: dict[str, Any] | None = None,
+    exclude_negative_probes: bool = False,
 ) -> tuple[Any, Any, dict[str, int], dict[str, list[Any]]]:
     """Load a fresh example module, apply requested module-level
     monkeypatches, install Engine class spies on the requested method
@@ -1782,6 +1790,12 @@ def _run_with_engine_spies(
     On exception, the second element is a sentinel dict
     {'__exception__': '<repr>'} so the caller can distinguish from a
     normal empty report.
+
+    When `exclude_negative_probes` is True, `_negative_probes` is wrapped
+    so that any Engine call made WHILE it runs is not counted. This
+    isolates the main-operation (Lane A / Lane B / Lane C) mutation
+    counts from the probes' throwaway-engine Engine.add_entity calls,
+    which would otherwise inflate the add_entity count.
     """
     module = _load_example_module()
     patch_records: list[tuple[Any, str, Any]] = []
@@ -1794,8 +1808,27 @@ def _run_with_engine_spies(
                 )
             patch_records.append((module, name, getattr(module, name)))
             setattr(module, name, new_value)
+
+    probe_state = {"in_probes": False}
+    gate = None
+    if exclude_negative_probes:
+        gate = lambda: not probe_state["in_probes"]  # noqa: E731
+        if hasattr(module, "_negative_probes"):
+            orig_probes = module._negative_probes
+
+            def wrapped_probes(*a, **k):
+                probe_state["in_probes"] = True
+                try:
+                    return orig_probes(*a, **k)
+                finally:
+                    probe_state["in_probes"] = False
+
+            wrapped_probes.__name__ = "_negative_probes"
+            patch_records.append((module, "_negative_probes", orig_probes))
+            setattr(module, "_negative_probes", wrapped_probes)
+
     call_counts, captured, restore_engine = _install_engine_method_spies(
-        method_names,
+        method_names, gate=gate,
     )
     try:
         try:
@@ -2553,23 +2586,32 @@ class TestStage5_5SuppressionPerCycle:
         self, cycle_index, target_method, dependents,
     ):
         """The injected Stage 5.5 failure must land on cycle K only
-        AFTER every preceding cycle actually succeeded — each preceding
-        cycle must have exactly one record carrying a call_receipt
-        (proof its Engine method was invoked) and both revalidations
-        eligible. This rules out a run that terminates early at an
-        earlier cycle and never reaches the targeted one.
+        AFTER every preceding cycle actually succeeded. Two independent
+        proofs, BOTH required:
 
-        The proof reads the report's per-cycle records, NOT class-level
-        spy counts, because the negative probes invoke Engine.add_entity
-        on throwaway engines and would pollute a raw add_entity count."""
+          runtime evidence  — the preceding cycle's Engine mutation
+                              was actually invoked exactly once
+                              (call_count == 1, with the negative
+                              probes' throwaway add_entity calls
+                              excluded);
+          report evidence   — the preceding cycle has exactly one
+                              record carrying a call_receipt and both
+                              revalidations 'eligible'.
+
+        Neither substitutes for the other: the runtime count rules out
+        a report that fabricates receipt / eligible records without
+        calling the Engine; the report evidence rules out a call with
+        no recorded artifact. add_entity (cycle 1) has no preceding
+        cycle, so its loop is empty."""
         _skip_if_no_example()
         patches = {
             "_revalidate": _make_revalidate_patch(
                 "stage_5_5_materialization", cycle_index,
             ),
         }
-        _, report, _, _ = _run_with_engine_spies(
+        _, report, calls, _ = _run_with_engine_spies(
             _MUTATION_METHOD_NAMES, patches=patches,
+            exclude_negative_probes=True,
         )
         if isinstance(report, dict) and "__exception__" in report:
             pytest.fail(
@@ -2577,6 +2619,11 @@ class TestStage5_5SuppressionPerCycle:
                 f"raised: {report['__exception__']}"
             )
         for prev in _preceding_cycle_methods(target_method):
+            assert calls[prev] == 1, (
+                f"target {target_method!r} must be reached only after "
+                f"Engine.{prev} succeeds exactly once; observed "
+                f"main-operation call_count={calls[prev]}"
+            )
             _assert_cycle_succeeded(report, prev, target_method)
 
     # --- 271-corr2 G-REACH (target cycle artifact shape) ---
@@ -2751,18 +2798,22 @@ class TestStage6SuppressionPerCycle:
         self, cycle_index, target_method, dependents,
     ):
         """The injected Stage 6 failure must land on cycle K only after
-        every preceding cycle actually succeeded — each preceding cycle
-        must have exactly one record carrying a call_receipt and both
-        revalidations eligible (report-record based, not class-spy
-        counts, to avoid negative-probe add_entity pollution)."""
+        every preceding cycle actually succeeded. Both proofs required:
+
+          runtime evidence  — preceding Engine mutation invoked
+                              exactly once (negative-probe add_entity
+                              calls excluded);
+          report evidence   — preceding cycle record with call_receipt
+                              and both revalidations 'eligible'."""
         _skip_if_no_example()
         patches = {
             "_revalidate": _make_revalidate_patch(
                 "stage_6_invocation", cycle_index,
             ),
         }
-        _, report, _, _ = _run_with_engine_spies(
+        _, report, calls, _ = _run_with_engine_spies(
             _MUTATION_METHOD_NAMES, patches=patches,
+            exclude_negative_probes=True,
         )
         if isinstance(report, dict) and "__exception__" in report:
             pytest.fail(
@@ -2770,6 +2821,11 @@ class TestStage6SuppressionPerCycle:
                 f"{report['__exception__']}"
             )
         for prev in _preceding_cycle_methods(target_method):
+            assert calls[prev] == 1, (
+                f"target {target_method!r} must be reached only after "
+                f"Engine.{prev} succeeds exactly once; observed "
+                f"main-operation call_count={calls[prev]}"
+            )
             _assert_cycle_succeeded(report, prev, target_method)
 
     # --- 271-corr2 G-STAGE6-ARTIFACT (full pre-invocation artifact) ---
