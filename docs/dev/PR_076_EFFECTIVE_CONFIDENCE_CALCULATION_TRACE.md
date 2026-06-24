@@ -1149,7 +1149,7 @@ PR78-M09   NOT STARTED
 ```
 
 No automatic next PR. PR remains Draft. Framework waits for
-directive.
+directive. [§20 historical closing — see §21 / §22 below.]
 
 ---
 
@@ -1415,4 +1415,221 @@ PR78-M09   NOT STARTED
 ```
 
 No automatic next PR. PR remains Draft. Framework waits for
-directive.
+directive. [§21 historical closing — see §22 below for the
+current-record summary.]
+
+---
+
+## §22 Exact composition AST lock — 261차
+
+PR76-M07 is held in Draft for one final audit-finalization
+correction. The 261차 commit `test(review): lock exact M07
+composition expression` resolves one residual defect
+(Defect A) raised during 260차 review:
+
+```
+260차 §21.4 added 4 ast.Mult counting tests:
+  - private core body must have >= 6 Mult ops
+  - legacy public body must have 0 Mult ops
+  - trace public body must have 0 Mult ops
+  - other Engine methods (excluding 6 helpers + core) < 6
+
+Those tests caught formula truncation and duplicate-site
+risk but did NOT lock the exact contract §6 expression.
+A core body with 6 unrelated multiplications, or with a
+duplicate formula totaling 12 Mult ops, would still pass.
+```
+
+261차 appends one new test class
+`TestExactCompositionExpression` (3 tests) that walks the
+AST of the `ScoreValue(...)` argument inside
+`_compute_effective_confidence_core`, flattens the
+left-associative `Mult` chain, and asserts exactly:
+
+```
+1. exactly one ScoreValue(...) call appears in the core body
+   (test_core_contains_exactly_one_score_value_call)
+
+2. the call's first positional argument flattens to:
+     - exactly 6 ast.Mult ops
+     - exactly 7 leaf operands
+   (test_composition_chain_leaves_and_mult_count_exact)
+
+3. the 7 leaves appear in the exact contract order:
+     claim.base_confidence.value
+     status_modifier
+     freshness_modifier
+     gap_modifier
+     count_modifier
+     rule_stats_modifier
+     evidence_type_modifier
+   (test_composition_leaf_sequence_exact_order)
+```
+
+The leaf-flattening helper `_flatten_mult_chain` walks
+left-associative `ast.BinOp(op=ast.Mult)` recursively, so a
+core that accidentally duplicated the formula (12 Mult ops,
+14 leaves) would fail the count assertion. `_leaf_label`
+renders the two expected leaf shapes (`ast.Name` for the
+six modifier locals; `ast.Attribute` chain for
+`claim.base_confidence.value`) and labels any other leaf
+shape as unexpected, so swapping in a runtime helper call
+would also fail.
+
+After 261차, contract §6 is mechanically locked at the
+exact-expression level.
+
+### §22.1 Seven-commit history
+
+```
+255차  058756e   docs(contract)
+256차  ffa4345   test(core) — 61 test methods
+257차  c29a6c8   feat(engine)
+258차  ffd4685   docs(dev) — initial pre-review checkpoint
+259차  31ad2a3   test(review) — C1 ~ C3 audit closure
+                  (+22 tests across 8 classes)
+260차  549eab4   docs(review) — R1 ~ R5 audit-lock
+                  finalization (+4 multiplication-site AST
+                   tests; signature lock extended in place)
+261차  (this)    test(review) — Defect A exact composition
+                  AST lock (+3 tests) + PR body Defect B
+                  correction (M04 §1~§11 historical body
+                  unchanged → §11 carries a 260차 citation
+                  correction + §12 was added by this PR)
+```
+
+### §22.2 Defect A — exact composition AST lock
+
+Appended class `TestExactCompositionExpression` with three
+test methods:
+
+```
+test_core_contains_exactly_one_score_value_call
+  Walk _compute_effective_confidence_core; assert exactly
+  one ast.Call where the called name is "ScoreValue".
+
+test_composition_chain_leaves_and_mult_count_exact
+  Flatten the ScoreValue(...) first-positional-arg Mult
+  chain. Assert mult_count == 6 and len(leaves) == 7.
+
+test_composition_leaf_sequence_exact_order
+  Render each leaf via _leaf_label:
+    - ast.Name      -> "name"
+    - ast.Attribute -> dotted chain (e.g.,
+                        "claim.base_confidence.value")
+    - anything else -> "<unexpected leaf ...>" so the
+                        assertion fails on an unrecognized
+                        shape.
+  Assert the rendered tuple matches the contract order:
+    ("claim.base_confidence.value", "status_modifier",
+     "freshness_modifier", "gap_modifier",
+     "count_modifier", "rule_stats_modifier",
+     "evidence_type_modifier")
+```
+
+### §22.3 Defect B — PR body alignment
+
+The PR body's Test plan retained the pre-260차 check
+`M04 §1~§11 historical body unchanged; only §21 / §12
+addenda appended`. This is no longer true: 260차 R1
+modified the M04 §11 Post-M05 addendum (a citation-only
+fix — §2.6 → §1.2 with §2 advance-discipline
+clarification — that does not change M05's contract
+semantics, but does count as a §11 modification).
+
+261차 corrects the PR body to:
+
+```
+- [x] M03 §1 ~ §20 historical body unchanged; the §21
+       Post-M07 addendum is the only M03 modification.
+- [x] M04 historical body unchanged except: the §11
+       Post-M05 addendum carries a 260차 citation
+       correction (§2.6 → §1.2 with §2 advance-discipline
+       clarification) and the §12 Post-M07 addendum was
+       added by this PR.
+```
+
+### §22.4 261차 file footprint (tests + dev record only)
+
+```
+tests/test_effective_confidence_trace.py
+  + TestExactCompositionExpression class:
+    - 3 test methods
+    - 3 instance helpers (_core_node, _score_value_calls,
+      _flatten_mult_chain) + 1 staticmethod _leaf_label
+
+docs/dev/PR_076_EFFECTIVE_CONFIDENCE_CALCULATION_TRACE.md
+  + §22 (this section)
+  + §20 / §21 closing lines tagged as historical (each line
+    appended with "[§20 historical closing — see §21 / §22
+    below.]" / "[§21 historical closing — see §22 below.]")
+
+PR body
+  Defect B check rewritten (uploaded out-of-tree; not part
+  of the commit).
+```
+
+No `ragcore/*` runtime change. No `examples/*` change. No
+docs/architecture/ change. No other dev-record /
+docs-architecture change beyond this §22 + the §20 / §21
+historical-tagging edits.
+
+### §22.5 261차 invariants
+
+```
+tests                          1517 + 90 = 1607
+                                (was 1604 at 260차;
+                                 + 3 from 261차 exact-
+                                   composition AST tests
+                                 = 22 audit-closure +
+                                   4 mult-site AST +
+                                   3 exact-composition AST +
+                                  61 initial)
+runtime delta from 260차        0
+examples/* delta               0
+pyproject.toml delta           0
+judgment semantics delta       0
+formula delta                  0
+modifier value delta           0
+modifier helper body delta     0
+PR51 packet shape delta        0
+snapshot schema delta          0
+dependency delta               0
+automatic execution delta      0
+```
+
+### §22.6 261차 regression result
+
+```
+$ python -m pytest -q
+[...]
+1607 passed
+$ git diff --check
+(clean)
+```
+
+(Local elapsed-time values from individual pytest runs
+during 261차 are not retained verbatim here. Two runs
+during 260차 / 261차 review were 1.31s and 1.27s; both
+are within ordinary local variance for a 1600+-test
+suite without CI. GitHub CI is not configured for this
+repository, so no independent remote elapsed time is
+available.)
+
+### §22.7 Final M-series state
+
+```
+P-series   CLOSED
+PR70-M01   CLOSED
+PR71-M02   CLOSED
+PR72-M03   CLOSED
+PR73-M04   CLOSED
+PR74-M05   CLOSED
+PR75-M06   CLOSED
+PR76-M07   OPEN — DRAFT, NOT MERGED (this PR)
+PR77-M08   NOT STARTED
+PR78-M09   NOT STARTED
+```
+
+No automatic next PR. PR remains Draft. Framework waits
+for directive.

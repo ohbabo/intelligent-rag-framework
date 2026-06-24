@@ -1001,6 +1001,148 @@ class TestSingleMultiplicationSite:
         )
 
 
+class TestExactCompositionExpression:
+    """261차 audit closure — contract §6 requires the private core
+    to contain exactly one ordered base × six-modifier composition.
+    The earlier `>= 6 Mult ops` test detected formula truncation but
+    did not lock the exact expression. This class walks the AST of
+    the ScoreValue(...) argument inside
+    _compute_effective_confidence_core, flattens the left-associative
+    Mult chain, and asserts:
+
+      1. exactly one ScoreValue(...) call appears inside the core body
+      2. the call's first positional argument is a Mult chain
+      3. flattening that chain yields exactly 7 leaf operands
+      4. flattening contains exactly 6 ast.Mult nodes
+      5. the 7 leaves are, in order:
+           claim.base_confidence.value
+           status_modifier
+           freshness_modifier
+           gap_modifier
+           count_modifier
+           rule_stats_modifier
+           evidence_type_modifier
+    """
+
+    _EXPECTED_LEAVES = (
+        "claim.base_confidence.value",
+        "status_modifier",
+        "freshness_modifier",
+        "gap_modifier",
+        "count_modifier",
+        "rule_stats_modifier",
+        "evidence_type_modifier",
+    )
+
+    def _core_node(self):
+        src = open("ragcore/engine.py").read()
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "Engine":
+                for item in node.body:
+                    if (isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                            and item.name == "_compute_effective_confidence_core"):
+                        return item
+        raise AssertionError(
+            "_compute_effective_confidence_core not found in Engine class"
+        )
+
+    def _score_value_calls(self, core_node):
+        """Return ast.Call nodes that look like ScoreValue(...) inside
+        the core body."""
+        calls = []
+        for inner in ast.walk(core_node):
+            if isinstance(inner, ast.Call):
+                func = inner.func
+                if isinstance(func, ast.Name) and func.id == "ScoreValue":
+                    calls.append(inner)
+        return calls
+
+    def _flatten_mult_chain(self, expr):
+        """Flatten a left-associative Mult chain into an ordered list
+        of leaf expressions. Returns (leaves, mult_count).
+
+        Example: `(a * b) * c` -> ([a, b, c], 2 Mult ops).
+        A non-Mult expression is a single-leaf chain with 0 Mult ops.
+        """
+        leaves = []
+        mult_count = 0
+        def visit(node):
+            nonlocal mult_count
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+                mult_count += 1
+                visit(node.left)
+                visit(node.right)
+            else:
+                leaves.append(node)
+        visit(expr)
+        return leaves, mult_count
+
+    @staticmethod
+    def _leaf_label(node):
+        """Render the few AST leaf shapes we expect for this contract.
+
+        Expected leaves are either:
+          - Attribute chain `claim.base_confidence.value`
+          - Name `<modifier_name>`
+        Anything else is flagged so the test fails on unexpected
+        operand shapes."""
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            parts = []
+            cur = node
+            while isinstance(cur, ast.Attribute):
+                parts.append(cur.attr)
+                cur = cur.value
+            if isinstance(cur, ast.Name):
+                parts.append(cur.id)
+                return ".".join(reversed(parts))
+        return f"<unexpected leaf {type(node).__name__}: {ast.dump(node)}>"
+
+    def test_core_contains_exactly_one_score_value_call(self):
+        core = self._core_node()
+        calls = self._score_value_calls(core)
+        assert len(calls) == 1, (
+            f"_compute_effective_confidence_core must contain exactly "
+            f"one ScoreValue(...) call (the effective_confidence "
+            f"construction); found {len(calls)}."
+        )
+
+    def test_composition_chain_leaves_and_mult_count_exact(self):
+        """The ScoreValue(...) first arg must flatten to exactly 7
+        leaves and 6 Mult ops."""
+        core = self._core_node()
+        calls = self._score_value_calls(core)
+        assert calls, "ScoreValue(...) call not found"
+        sv_call = calls[0]
+        assert sv_call.args, "ScoreValue() called without positional argument"
+        leaves, mult_count = self._flatten_mult_chain(sv_call.args[0])
+        assert mult_count == 6, (
+            f"Expected exactly 6 ast.Mult ops in the composition "
+            f"expression; found {mult_count}. Contract §6 requires "
+            f"one base × six-modifier chain."
+        )
+        assert len(leaves) == 7, (
+            f"Expected exactly 7 leaf operands; found {len(leaves)}. "
+            f"Leaves: {[self._leaf_label(l) for l in leaves]}"
+        )
+
+    def test_composition_leaf_sequence_exact_order(self):
+        """The 7 flattened leaves must appear in the exact contract
+        order: base × status × freshness × gap × count × rule_stats
+        × evidence_type."""
+        core = self._core_node()
+        sv_call = self._score_value_calls(core)[0]
+        leaves, _ = self._flatten_mult_chain(sv_call.args[0])
+        actual = tuple(self._leaf_label(l) for l in leaves)
+        assert actual == self._EXPECTED_LEAVES, (
+            "Composition leaf order does NOT match contract §4 / §6:\n"
+            f"  expected: {self._EXPECTED_LEAVES}\n"
+            f"  actual:   {actual}"
+        )
+
+
 class TestFreshnessMultiActiveMostRecent:
     """Contract §9.2 — when multiple active contradictions
     exist, only the MOST RECENT (highest evidence_id) one
