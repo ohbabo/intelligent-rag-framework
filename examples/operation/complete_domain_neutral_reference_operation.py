@@ -1,0 +1,1024 @@
+"""Complete Domain-Neutral Reference Operation — PR77-M08.
+
+Domain-neutral executable example that exercises every connected
+handoff between PR59 / PR60 / PR61 / PR63 / PR51 / PR53 / PR55 /
+PR56 / M02 / M03 / M04 / M05 / M06 / M07 in a single local
+happy-path run.
+
+This file is an example. It is not a framework type, not a
+dispatcher, not an executor, not a workflow engine, and not a
+canonical record schema. The local plain-dict records it produces
+(candidate, operator decision, reviewed mutation request, call
+receipt) are example-local illustrative records (M08 §4).
+
+See:
+  docs/architecture/
+    COMPLETE_DOMAIN_NEUTRAL_REFERENCE_OPERATION_CONTRACT.md
+
+Entry point:
+
+    run_complete_domain_neutral_reference_operation()
+      -> dict[str, Any]
+"""
+
+from __future__ import annotations
+
+import copy
+import importlib.util
+from pathlib import Path
+from typing import Any
+
+from ragcore import CLAIM_STATUS_CONFIRMED, Engine
+
+
+# ----------------------------------------------------------------------
+# Module-level loading of reusable callables and constants.
+#
+# Each callable is bound to a module global so a runtime spy may
+# replace it via `setattr(this_module, attr, spy)`. Local copies or
+# closures that would hide the binding from a spy are forbidden by
+# M08 §3.
+# ----------------------------------------------------------------------
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _load(rel_path: str, module_name: str) -> Any:
+    spec = importlib.util.spec_from_file_location(
+        module_name, _REPO_ROOT / rel_path,
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_ADAPTER_MODULE = _load(
+    "examples/adapter/minimal_external_adapter_example.py",
+    "_m08_adapter_module",
+)
+_ROLE_EXAMPLE_MODULE = _load(
+    "examples/role_assignment/minimal_consumer_example.py",
+    "_m08_role_example_module",
+)
+_ROLE_VALIDATOR_MODULE = _load(
+    "examples/role_assignment/role_assignment_validator.py",
+    "_m08_role_validator_module",
+)
+_INSPECTOR_MODULE = _load(
+    "examples/inspector/engine_inspector.py",
+    "_m08_inspector_module",
+)
+_PACKET_VALIDATOR_MODULE = _load(
+    "examples/inspector/packet_validator.py",
+    "_m08_packet_validator_module",
+)
+_PROPOSAL_SCHEMA_MODULE = _load(
+    "examples/proposal/proposal_schema.py",
+    "_m08_proposal_schema_module",
+)
+_PROPOSAL_VALIDATOR_MODULE = _load(
+    "examples/proposal/proposal_validator.py",
+    "_m08_proposal_validator_module",
+)
+
+
+# Reusable callables — bound at module level so runtime spies can
+# wrap them (M08 §3 / 266차 §R-D).
+validate_role_assignment_boundaries = (
+    _ROLE_VALIDATOR_MODULE.validate_role_assignment_boundaries
+)
+build_engine_context_packet = (
+    _INSPECTOR_MODULE.build_engine_context_packet
+)
+validate_consumer_packet_interpretation = (
+    _PACKET_VALIDATOR_MODULE.validate_consumer_packet_interpretation
+)
+validate_llm_proposal_shape = (
+    _PROPOSAL_SCHEMA_MODULE.validate_llm_proposal_shape
+)
+validate_proposal_safety = (
+    _PROPOSAL_VALIDATOR_MODULE.validate_proposal_safety
+)
+
+
+# Reusable constants — loaded once at module import and immutably
+# referenced from the operation (always deepcopied before any local
+# use).
+RESOLVED_TRANSLATION_TRACE = _ADAPTER_MODULE.RESOLVED_TRANSLATION_TRACE
+RESOLVED_EXAMPLE = _ROLE_EXAMPLE_MODULE.RESOLVED_EXAMPLE
+
+
+# ----------------------------------------------------------------------
+# Local record builders (plain dict only; M08 §4 / §5).
+# ----------------------------------------------------------------------
+
+
+def _next_id_factory():
+    """Per-operation id generator. A fresh generator is used per call
+    of run_complete_domain_neutral_reference_operation() so no
+    module-level state leaks across runs."""
+    state = {"n": 0}
+    def next_id(prefix: str) -> str:
+        state["n"] += 1
+        return f"{prefix}-{state['n']}"
+    return next_id
+
+
+def _build_candidate(
+    next_id,
+    target_method: str,
+    arguments: dict,
+    source_basis: dict,
+    expected_effect: str,
+    policy_assumptions: list[str],
+    materialized_at_revision: int,
+) -> dict:
+    return {
+        "record_kind": "engine_input_candidate",
+        "candidate_id": next_id("cand"),
+        "target_method": target_method,
+        "arguments": copy.deepcopy(arguments),
+        "source_basis": copy.deepcopy(source_basis),
+        "expected_effect": expected_effect,
+        "policy_assumptions": list(policy_assumptions),
+        "materialized_at_revision": materialized_at_revision,
+    }
+
+
+def _build_decision(
+    next_id,
+    decision_family: str,
+    subject_snapshot: dict,
+    disposition: str,
+    decision_state_identity: dict,
+    supersedes: str | None,
+    note: str,
+) -> dict:
+    return {
+        "record_kind": "operator_decision_record",
+        "status": "OPERATOR_REVIEW",
+        "decision_record_id": next_id("dec"),
+        "decision_family": decision_family,
+        "subject_snapshot": copy.deepcopy(subject_snapshot),
+        "disposition": disposition,
+        "decision_state_identity": copy.deepcopy(decision_state_identity),
+        "supersedes": supersedes,
+        "note": note,
+    }
+
+
+def _build_request(
+    next_id,
+    candidate: dict,
+    decision_record_id: str,
+    decision_state_identity: dict,
+) -> dict:
+    """The approved_candidate_snapshot is a separate deepcopy of the
+    candidate. The request's `arguments` is yet another separate
+    deepcopy. This guarantees four distinct dict objects
+    (candidate.arguments, snapshot.arguments, request.arguments,
+    receipt.reviewed_arguments) per M08 §6 / 266차 §R-U."""
+    return {
+        "record_kind": "reviewed_mutation_request",
+        "request_id": next_id("req"),
+        "approved_candidate_snapshot": copy.deepcopy(candidate),
+        "approved_decision_record_id": decision_record_id,
+        "target_method": candidate["target_method"],
+        "arguments": copy.deepcopy(candidate["arguments"]),
+        "decision_state_identity": copy.deepcopy(decision_state_identity),
+    }
+
+
+def _build_receipt(
+    next_id,
+    request: dict,
+    identity_before: dict,
+    identity_after: dict,
+    result: Any,
+) -> dict:
+    return {
+        "record_kind": "call_receipt",
+        "receipt_id": next_id("rcpt"),
+        "request_id": request["request_id"],
+        "target_method": request["target_method"],
+        "reviewed_arguments": copy.deepcopy(request["arguments"]),
+        "identity_before": copy.deepcopy(identity_before),
+        "identity_after": copy.deepcopy(identity_after),
+        "result": copy.deepcopy(result) if isinstance(
+            result, (dict, list, tuple),
+        ) else result,
+    }
+
+
+def _identity_dict(identity) -> dict:
+    """Plain-dict projection of EngineStateIdentity (the value type
+    is recorded in the example report only as a plain dict)."""
+    return {
+        "engine_token": identity.engine_token,
+        "revision": identity.revision,
+    }
+
+
+def _revalidate(
+    decision_identity: dict, current_identity: dict, moment: str,
+) -> dict:
+    eligible = (
+        decision_identity == current_identity
+    )
+    return {
+        "moment": moment,
+        "status": "STATE_REVALIDATED",
+        "decision_state_identity": copy.deepcopy(decision_identity),
+        "current_state_identity": copy.deepcopy(current_identity),
+        "verdict": "eligible" if eligible else "not_eligible",
+    }
+
+
+def _explicit_review(approved: bool, note: str) -> str:
+    """Returns one of the M02 §9 dispositions. The happy path uses only
+    the 'approved' branch; helper accepts the other two for
+    completeness. A runtime spy may replace this module global to force
+    a rejected / hold disposition for the operator-review gate tests."""
+    if approved:
+        return "approved"
+    return note
+
+
+# ----------------------------------------------------------------------
+# Local termination report + single gated mutation cycle (M08 §4 / §6).
+# ----------------------------------------------------------------------
+
+
+def _termination(stage: str, reason: Any) -> dict:
+    """Example-local termination descriptor (plain dict; not a
+    framework type). Recorded both on the partial lane and surfaced at
+    the top level of the run report when an authority gate rejects a
+    cycle."""
+    return {
+        "termination_stage": stage,
+        "termination_reason": copy.deepcopy(reason),
+    }
+
+
+def _run_cycle(
+    engine: Engine,
+    next_id,
+    target_method: str,
+    arguments: dict,
+    source_basis: dict,
+    expected_effect: str,
+    policy_assumptions: list[str],
+    invoke,
+    result_fields,
+    extra_record_fields: dict | None = None,
+) -> tuple[dict, tuple[str, Any]]:
+    """Run one fully authority-gated mutation cycle (M08 §6).
+
+    Procedure, in order: build candidate -> operator review -> decision
+    record -> start invocation record -> review-disposition gate ->
+    Stage 5.5 revalidation -> Stage 5.5 gate -> request materialization
+    -> Stage 6 revalidation -> Stage 6 gate -> directly-written Engine
+    call -> receipt.
+
+    Returns (record, outcome). The record is always returned so the
+    caller can append it to its lane's invocation sequence even when a
+    gate stops the cycle; it carries exactly the artifacts that were
+    materialized before the stop. outcome is:
+        ("ok", engine_result)              — the Engine method ran
+        ("terminated", termination_dict)   — a gate rejected the cycle
+
+    `invoke` is a caller-supplied closure whose body is a direct,
+    source-written Engine call (e.g. lambda a: engine.add_entity(**a));
+    no dispatch table, getattr, or callable-bearing request field is
+    used. `result_fields(record, result)` records the cycle-specific
+    returned_* field(s). `extra_record_fields` is merged into the record
+    at creation (e.g. the add_evidence source_basis)."""
+    candidate = _build_candidate(
+        next_id,
+        target_method=target_method,
+        arguments=arguments,
+        source_basis=source_basis,
+        expected_effect=expected_effect,
+        policy_assumptions=policy_assumptions,
+        materialized_at_revision=engine.state_identity().revision,
+    )
+    decision_identity = _identity_dict(engine.state_identity())
+    disposition = _explicit_review(True, "")
+    decision = _build_decision(
+        next_id,
+        decision_family="mutation_review",
+        subject_snapshot=candidate,
+        disposition=disposition,
+        decision_state_identity=decision_identity,
+        supersedes=None,
+        note="approved on local consumer review",
+    )
+    record = {
+        "status": "EXPLICIT_INVOCATION",
+        "target_method": candidate["target_method"],
+        "arguments": copy.deepcopy(candidate["arguments"]),
+        "candidate": candidate,
+        "operator_decision_record": decision,
+        "reviewed_mutation_request": None,
+        "revalidations": {},
+        "call_receipt": None,
+    }
+    if extra_record_fields:
+        record.update(copy.deepcopy(extra_record_fields))
+
+    # Review-disposition gate (M08 §7).
+    if decision["disposition"] != "approved":
+        return record, (
+            "terminated",
+            _termination(
+                f"{target_method}.operator_review",
+                {"disposition": decision["disposition"]},
+            ),
+        )
+
+    # Stage 5.5 — materialization revalidation (M08 §8).
+    reval_5_5 = _revalidate(
+        decision_identity,
+        _identity_dict(engine.state_identity()),
+        "stage_5_5_materialization",
+    )
+    record["revalidations"]["stage_5_5_materialization"] = reval_5_5
+    if reval_5_5["verdict"] != "eligible":
+        return record, (
+            "terminated",
+            _termination(
+                f"{target_method}.stage_5_5_materialization",
+                reval_5_5,
+            ),
+        )
+
+    # Request materialization (only after approved + Stage 5.5 eligible).
+    request = _build_request(
+        next_id, candidate,
+        decision_record_id=decision["decision_record_id"],
+        decision_state_identity=decision_identity,
+    )
+    record["reviewed_mutation_request"] = request
+
+    # Stage 6 — invocation revalidation (M08 §10).
+    reval_6 = _revalidate(
+        decision_identity,
+        _identity_dict(engine.state_identity()),
+        "stage_6_invocation",
+    )
+    record["revalidations"]["stage_6_invocation"] = reval_6
+    if reval_6["verdict"] != "eligible":
+        return record, (
+            "terminated",
+            _termination(
+                f"{target_method}.stage_6_invocation",
+                reval_6,
+            ),
+        )
+
+    # Directly-written Engine invocation + receipt (M08 §11).
+    id_before = _identity_dict(engine.state_identity())
+    result = invoke(request["arguments"])
+    id_after = _identity_dict(engine.state_identity())
+    record["call_receipt"] = _build_receipt(
+        next_id, request, id_before, id_after, result,
+    )
+    result_fields(record, result)
+    return record, ("ok", result)
+
+
+# ----------------------------------------------------------------------
+# Lane A — explicit external ingress and Engine materialization.
+# ----------------------------------------------------------------------
+
+
+def _lane_a(engine: Engine, next_id) -> dict:
+    """Builds a fresh Engine state by sequentially performing
+    add_entity -> add_claim -> add_gap. Each call goes through the full
+    authority-gated per-cycle procedure (M08 §6); a role-validation
+    failure or any cycle gate stops Lane A early and returns a partial
+    lane carrying a `termination` descriptor."""
+
+    # 7.1 Adapter trace + role example — consumer-owned bridge.
+    adapter_trace_local = copy.deepcopy(RESOLVED_TRANSLATION_TRACE)
+    role_example_local = copy.deepcopy(RESOLVED_EXAMPLE)
+    bridge_decision = {
+        "status": "CONSUMER_DECISION",
+        "consumer_decision": (
+            "consumer chose to combine the adapter trace and the "
+            "role example for this run; no automatic bridge"
+        ),
+        "automatic_adapter_to_role_conversion": False,
+    }
+
+    # 7.3 RoleAssignment validation — actual call into PR60.
+    role_violations = validate_role_assignment_boundaries(
+        role_example_local,
+    )
+
+    invocations: list[dict] = []
+    produced_ids: dict = {}
+    gap_required_evidence_type = 7
+    lane: dict = {
+        "fixture_origin_for_engine": "PRODUCED_BY_LANE_A",
+        "consumed_adapter_trace": copy.deepcopy(adapter_trace_local),
+        "consumed_role_example": copy.deepcopy(role_example_local),
+        "bridge_decision": bridge_decision,
+        "role_validation_violations": list(role_violations),
+        "explicit_invocation_sequence": invocations,
+        "produced_ids": produced_ids,
+        "gap_required_evidence_type": gap_required_evidence_type,
+        "stage_status": "CONNECTED",
+    }
+
+    # Role-validation gate (M08 §5). A non-empty violation list stops
+    # Lane A before any candidate / Engine mutation.
+    if role_violations:
+        lane["termination"] = _termination(
+            "lane_a.role_validation",
+            {"role_validation_violations": list(role_violations)},
+        )
+        return lane
+
+    # Cycle 1 — add_entity.
+    record, outcome = _run_cycle(
+        engine, next_id, "add_entity",
+        arguments={"entity_type": 1, "flags": 0},
+        source_basis={
+            "originating_trace": copy.deepcopy(adapter_trace_local),
+            "originating_role_example": copy.deepcopy(role_example_local),
+            "role_validation_outcome": list(role_violations),
+        },
+        expected_effect="register a new Entity in this fresh Engine",
+        policy_assumptions=["local example policy; consumer-owned"],
+        invoke=lambda a: engine.add_entity(**a),
+        result_fields=lambda rec, res: rec.__setitem__("returned_id", res),
+    )
+    invocations.append(record)
+    if outcome[0] == "terminated":
+        lane["termination"] = outcome[1]
+        return lane
+    entity_id = outcome[1]
+    produced_ids["entity_id"] = entity_id
+
+    # Cycle 2 — add_claim, using the returned entity_id.
+    record, outcome = _run_cycle(
+        engine, next_id, "add_claim",
+        arguments={
+            "subject_id": entity_id,
+            "claim_type": 1,
+            "rule_id": 0,
+            "rule_version": 0,
+            "reason_code": 0,
+            "base_confidence": 0.8,
+        },
+        source_basis={
+            "previous_returned_entity_id": entity_id,
+            "originating_role_example": copy.deepcopy(role_example_local),
+        },
+        expected_effect="register a new Claim about the new Entity",
+        policy_assumptions=["local example policy"],
+        invoke=lambda a: engine.add_claim(**a),
+        result_fields=lambda rec, res: rec.__setitem__("returned_id", res),
+    )
+    invocations.append(record)
+    if outcome[0] == "terminated":
+        lane["termination"] = outcome[1]
+        return lane
+    claim_id = outcome[1]
+    produced_ids["claim_id"] = claim_id
+
+    # Cycle 3 — add_gap, using the returned claim_id.
+    record, outcome = _run_cycle(
+        engine, next_id, "add_gap",
+        arguments={
+            "claim_id": claim_id,
+            "gap_type": 1,
+            "required_evidence_type": gap_required_evidence_type,
+            "severity": 0.5,
+            "rule_id": 0,
+        },
+        source_basis={"previous_returned_claim_id": claim_id},
+        expected_effect="register a new Gap referencing the Claim",
+        policy_assumptions=["local example policy"],
+        invoke=lambda a: engine.add_gap(**a),
+        result_fields=lambda rec, res: rec.__setitem__("returned_id", res),
+    )
+    invocations.append(record)
+    if outcome[0] == "terminated":
+        lane["termination"] = outcome[1]
+        return lane
+    gap_id = outcome[1]
+    produced_ids["gap_id"] = gap_id
+
+    lane["stage_status"] = "COMPLETED"
+    return lane
+
+
+# ----------------------------------------------------------------------
+# Lane B — Engine read, confidence trace, proposal review.
+# ----------------------------------------------------------------------
+
+
+def _lane_b(engine: Engine, claim_id: int) -> dict:
+    # 10.1 PR51 packet (via the module-level global, so spies catch it).
+    packet = build_engine_context_packet(engine, claim_id)
+
+    # 10.2 M07 trace — capture identity before / after the call.
+    identity_before_trace = engine.state_identity()
+    trace = engine.compute_effective_confidence_with_trace(claim_id)
+    identity_after_trace = engine.state_identity()
+    legacy_effective = engine.compute_effective_confidence(claim_id)
+
+    trace_block = {
+        "effective_confidence": trace.effective_confidence.value,
+        "legacy_effective_confidence": legacy_effective.value,
+        "calculation_policy_id": trace.calculation_policy_id,
+        "source_state_identity": _identity_dict(trace.source_state_identity),
+        "identity_before_trace": _identity_dict(identity_before_trace),
+        "identity_after_trace": _identity_dict(identity_after_trace),
+        "trace_effective_equals_legacy": (
+            trace.effective_confidence == legacy_effective
+        ),
+        "source_identity_equals_engine_state": (
+            trace.source_state_identity == identity_before_trace
+        ),
+        "identity_before_trace_equal_to_source": (
+            trace.source_state_identity == identity_before_trace
+        ),
+        "identity_after_trace_equal_to_source": (
+            trace.source_state_identity == identity_after_trace
+        ),
+        "identity_before_equals_identity_after": (
+            identity_before_trace == identity_after_trace
+        ),
+        "trace_identity_revision": trace.source_state_identity.revision,
+    }
+
+    # 10.3 PR53 consumer-output validation — pass the packet through
+    # an empty consumer interpretation to keep violations = [].
+    consumer_output = {
+        "consumer_interpretation_kind": "neutral_summary",
+    }
+    packet_violations = validate_consumer_packet_interpretation(
+        consumer_output, packet,
+    )
+
+    # 10.4 Local manual proposal — same exact content into PR55 and
+    # PR56 via separate deepcopies (so neither validator can mutate
+    # the other's input).
+    proposal = {
+        "category": "evidence_gap_question",
+        "target_claim_id": claim_id,
+        "note": (
+            "consumer-side observation about the unresolved Gap"
+        ),
+    }
+    pr55_violations = validate_llm_proposal_shape(
+        copy.deepcopy(proposal), copy.deepcopy(packet),
+    )
+    pr56_violations = validate_proposal_safety(
+        copy.deepcopy(proposal), copy.deepcopy(packet),
+    )
+
+    # 11.3 Operator disposition — schedule-manual-inspection as
+    # sibling of the other six M05 §4.1 dispositions.
+    proposal_block = {
+        "proposal_content_snapshot": copy.deepcopy(proposal),
+        "pr55_shape_violations": list(pr55_violations),
+        "pr56_safety_violations": list(pr56_violations),
+        "network_invocation": False,
+        "llm_invocation": False,
+        "operator_disposition": "schedule-manual-inspection",
+        "disposition_relation": "sibling_of_accept",
+        "disposition_is_sibling_of_accept": True,
+        "proposal_family_dispositions": (
+            "accept / reject / rewrite / request-evidence / "
+            "schedule-manual-inspection / archive / cite "
+            "(seven sibling outcomes per M05 §4.1)"
+        ),
+    }
+
+    return {
+        "pr51_packet": packet,
+        "packet_binding_status": "UNBOUND",
+        "packet_comparison_status": "UNKNOWN",
+        "pr53_packet_validator_violations": list(packet_violations),
+        "consumer_output": consumer_output,
+        "effective_confidence_trace": trace_block,
+        "proposal": proposal_block,
+        "stage_status": "COMPLETED",
+    }
+
+
+# ----------------------------------------------------------------------
+# Lane C — downstream investigation result re-entry.
+# ----------------------------------------------------------------------
+
+
+def _lane_c(
+    engine: Engine,
+    claim_id: int,
+    gap_required_evidence_type: int,
+    next_id,
+) -> dict:
+    # 11.1 Local downstream source fixture (no external execution).
+    downstream_source_fixture = {
+        "source_artifact_kind": "local_consumer_inspection_record",
+        "source_artifact_reference": "local-inspection-001",
+        "raw_observations": [
+            {
+                "observation_kind": "neutral",
+                "observation_index": 1,
+                "observation_value": "consumer-recorded fact",
+            },
+        ],
+        "consumer_recorded_severity_label": "moderate",
+        "consumer_recorded_confidence_label": "medium",
+    }
+    fixture_before_snapshot = copy.deepcopy(downstream_source_fixture)
+
+    # 11.2 Result trace — separate deepcopy; no mutable alias with
+    # the source fixture.
+    result_fragment = copy.deepcopy(
+        downstream_source_fixture["raw_observations"][0],
+    )
+    result_trace = {
+        "record_kind": "downstream_result_trace",
+        "source_artifact_reference": (
+            downstream_source_fixture["source_artifact_reference"]
+        ),
+        "result_fragment": result_fragment,
+        "translation_basis": {
+            "consumer_translation_kind": (
+                "neutral mapping under local example policy"
+            ),
+            "notes": "no automatic adapter to role conversion",
+        },
+        "integrity_note": (
+            "operational failure and semantic ambiguity are recorded "
+            "as distinct conditions (M06 §7); this fixture is fully "
+            "resolved"
+        ),
+        "interpretation_status": "RESOLVED",
+        "is_ragcore_evidence": False,
+    }
+
+    # 11.3 Explicit role decision for the result fragment.
+    consumer_role_decision = {
+        "consumer_decision": (
+            "consumer assigned a local supporting role to the fragment"
+        ),
+        "automatic_key_match_used": False,
+    }
+
+    invocations: list[dict] = []
+    produced_ids: dict = {}
+    lane: dict = {
+        "network_invocation": False,
+        "tool_invocation": False,
+        "subprocess_invocation": False,
+        "downstream_source_fixture_before": fixture_before_snapshot,
+        "downstream_source_fixture_after": copy.deepcopy(
+            downstream_source_fixture,
+        ),
+        "result_trace": result_trace,
+        "consumer_role_decision": copy.deepcopy(consumer_role_decision),
+        "explicit_invocation_sequence": invocations,
+        "produced_ids": produced_ids,
+        "stage_status": "CONNECTED",
+    }
+
+    # Cycle 4 — add_evidence.
+    ev_args = {
+        "claim_id": claim_id,
+        "raw_ref_id": 1,
+        "evidence_type": gap_required_evidence_type,
+        "strength": 0.6,
+    }
+    ev_source_basis = {
+        "result_trace_reference": result_trace["source_artifact_reference"],
+        "result_fragment_snapshot": copy.deepcopy(result_fragment),
+        "strength_translation": {
+            "input": downstream_source_fixture[
+                "consumer_recorded_confidence_label"
+            ],
+            "consumer_translation_rule": (
+                "consumer-selected strength under local example policy "
+                "(strength is NOT a direct copy of any external numeric "
+                "score)"
+            ),
+            "selected_strength_value": ev_args["strength"],
+        },
+        "consumer_role_decision": copy.deepcopy(consumer_role_decision),
+    }
+    record, outcome = _run_cycle(
+        engine, next_id, "add_evidence",
+        arguments=ev_args,
+        source_basis=ev_source_basis,
+        expected_effect=(
+            "register a new Evidence supporting the existing Claim"
+        ),
+        policy_assumptions=["local example policy"],
+        invoke=lambda a: engine.add_evidence(**a),
+        result_fields=lambda rec, res: rec.__setitem__("returned_id", res),
+        extra_record_fields={"source_basis": copy.deepcopy(ev_source_basis)},
+    )
+    invocations.append(record)
+    if outcome[0] == "terminated":
+        lane["termination"] = outcome[1]
+        return lane
+    evidence_id = outcome[1]
+    produced_ids["evidence_id"] = evidence_id
+
+    # Cycle 5 — resolve_gaps_for_evidence (separate review cycle).
+    record, outcome = _run_cycle(
+        engine, next_id, "resolve_gaps_for_evidence",
+        arguments={"evidence_id": evidence_id},
+        source_basis={"evidence_id_from_previous_cycle": evidence_id},
+        expected_effect=(
+            "explicitly resolve any matching Gap for this Evidence"
+        ),
+        policy_assumptions=["separate review cycle per M08 §14"],
+        invoke=lambda a: engine.resolve_gaps_for_evidence(**a),
+        result_fields=lambda rec, res: rec.__setitem__(
+            "returned_resolved_gap_ids", list(res),
+        ),
+    )
+    invocations.append(record)
+    if outcome[0] == "terminated":
+        lane["termination"] = outcome[1]
+        return lane
+    resolved_gap_ids = outcome[1]
+    produced_ids["resolved_gap_ids"] = list(resolved_gap_ids)
+
+    # Cycle 6 — confirm_claim_if_ready (separate review cycle).
+    record, outcome = _run_cycle(
+        engine, next_id, "confirm_claim_if_ready",
+        arguments={"claim_id": claim_id},
+        source_basis={"claim_id_from_lane_a": claim_id},
+        expected_effect=(
+            "explicitly transition the Claim to CONFIRMED if eligible"
+        ),
+        policy_assumptions=["separate review cycle per M08 §14"],
+        invoke=lambda a: engine.confirm_claim_if_ready(**a),
+        result_fields=lambda rec, res: rec.__setitem__(
+            "returned_lifecycle_flag", res,
+        ),
+    )
+    invocations.append(record)
+    if outcome[0] == "terminated":
+        lane["termination"] = outcome[1]
+        return lane
+    confirmed = outcome[1]
+
+    lane["lifecycle_confirmed_flag"] = confirmed
+    lane["stage_status"] = "COMPLETED"
+    return lane
+
+
+# ----------------------------------------------------------------------
+# Negative stale-decision probes (M05 §7.3 B / C / D).
+# These probes never call any reusable validator / packet builder /
+# trace method; they only construct EngineStateIdentity values and
+# compare them by value equality.
+# ----------------------------------------------------------------------
+
+
+_NOT_ELIGIBLE_NOTE = "not eligible for decision reuse under M05"
+
+
+def _negative_probes() -> dict:
+    # Case B — same engine_token, different revision.
+    engine_b = Engine()
+    engine_b.add_entity(entity_type=1)
+    captured_b = _identity_dict(engine_b.state_identity())
+    engine_b.add_entity(entity_type=2)
+    current_b = _identity_dict(engine_b.state_identity())
+    case_b_eligible = (captured_b == current_b)
+    case_b = {
+        "captured_decision_identity": captured_b,
+        "current_identity": current_b,
+        "verdict": "eligible" if case_b_eligible else "not_eligible",
+        "invocation_suppressed": not case_b_eligible,
+        "note": _NOT_ELIGIBLE_NOTE,
+    }
+
+    # Case C — different engine_token.
+    engine_c1 = Engine()
+    engine_c1.add_entity(entity_type=1)
+    captured_c = _identity_dict(engine_c1.state_identity())
+    engine_c2 = Engine()
+    engine_c2.add_entity(entity_type=1)
+    current_c = _identity_dict(engine_c2.state_identity())
+    case_c_eligible = (captured_c == current_c)
+    case_c = {
+        "captured_decision_identity": captured_c,
+        "current_identity": current_c,
+        "verdict": "eligible" if case_c_eligible else "not_eligible",
+        "invocation_suppressed": not case_c_eligible,
+        "note": _NOT_ELIGIBLE_NOTE,
+    }
+
+    # Case D — missing or malformed identity.
+    engine_d = Engine()
+    engine_d.add_entity(entity_type=1)
+    current_d = _identity_dict(engine_d.state_identity())
+    missing_identity = None
+    case_d_missing_eligible = (missing_identity == current_d)
+    malformed_identity = {
+        "engine_token": "",
+        "revision": -1,
+    }
+    case_d_malformed_eligible = (malformed_identity == current_d)
+    case_d_eligible = (
+        case_d_missing_eligible or case_d_malformed_eligible
+    )
+    case_d = {
+        "missing_identity_record": {
+            "captured_decision_identity": None,
+            "current_identity": current_d,
+            "verdict": (
+                "eligible" if case_d_missing_eligible else "not_eligible"
+            ),
+            "invocation_suppressed": not case_d_missing_eligible,
+            "note": _NOT_ELIGIBLE_NOTE,
+        },
+        "malformed_identity_record": {
+            "captured_decision_identity": malformed_identity,
+            "current_identity": current_d,
+            "verdict": (
+                "eligible" if case_d_malformed_eligible else "not_eligible"
+            ),
+            "invocation_suppressed": not case_d_malformed_eligible,
+            "note": _NOT_ELIGIBLE_NOTE,
+        },
+        "verdict": "eligible" if case_d_eligible else "not_eligible",
+        "invocation_suppressed": not case_d_eligible,
+        "note": _NOT_ELIGIBLE_NOTE,
+    }
+
+    return {
+        "case_B_same_token_diff_revision": case_b,
+        "case_C_different_token": case_c,
+        "case_D_missing_or_malformed_identity": case_d,
+        "overall_note": _NOT_ELIGIBLE_NOTE,
+    }
+
+
+# ----------------------------------------------------------------------
+# Final state + non-authority locks.
+# ----------------------------------------------------------------------
+
+
+_NON_AUTHORITY_LOCKS = (
+    "Adapter output != RoleAssignment",
+    "RoleAssignment validator pass != operator acceptance",
+    "EngineInputCandidate != accepted mutation",
+    "ReviewedMutationRequest != automatic execution",
+    "Packet validator pass != claim judgment",
+    "Proposal validator pass != proposal acceptance",
+    "Operator acceptance != Engine truth",
+    "External result != ragcore.Evidence",
+    "Evidence registration != automatic Gap resolution",
+    "Evidence registration != automatic lifecycle transition",
+    "effective_confidence != probability",
+)
+
+
+def _final_state(engine: Engine, lane_a: dict, lane_b: dict,
+                 lane_c: dict) -> dict:
+    """Happy-path final verification (M08 §14). Reads the actual Engine
+    state through public query methods using the IDs returned by Lane A
+    and Lane C, and derives every reported value from those reads — no
+    hardcoded success flags, no trust in the confirm_claim_if_ready
+    return value alone."""
+    entity_id = lane_a["produced_ids"]["entity_id"]
+    claim_id = lane_a["produced_ids"]["claim_id"]
+    gap_id = lane_a["produced_ids"]["gap_id"]
+    evidence_id = lane_c["produced_ids"]["evidence_id"]
+
+    # Actual public reads — these call sites live directly in this
+    # function body (M08 §14 / 271차 R-FINAL).
+    entity = engine.get_entity(entity_id)
+    claim = engine.get_claim(claim_id)
+    gap = engine.get_gap(gap_id)
+    evidence = engine.get_evidence(evidence_id)
+    gap_resolution = engine.gap_resolution(gap_id)
+    final_identity = _identity_dict(engine.state_identity())
+
+    return {
+        "status": "BOUNDARY_PRESERVED",
+        # Actual read projections (R-FINAL value binding).
+        "entity": entity,
+        "claim": claim,
+        "gap": gap,
+        "evidence": evidence,
+        "gap_resolution": gap_resolution,
+        "claim_status": claim.status,
+        # Packet classification — identical to Lane B (M03 §10).
+        "packet_binding_status": lane_b["packet_binding_status"],
+        "packet_comparison_status": lane_b["packet_comparison_status"],
+        # Existing boolean summary — now derived from the reads above.
+        "lane_a_engine_produced": True,
+        "entity_created": entity.id == entity_id,
+        "claim_created": claim.id == claim_id,
+        "gap_created": gap.id == gap_id,
+        "evidence_registered": evidence.id == evidence_id,
+        "packet_built_seven_keys": (
+            len(lane_b["pr51_packet"]) == 7
+        ),
+        "confidence_trace_available": True,
+        "proposal_operator_decision_recorded": True,
+        "downstream_result_trace_recorded": True,
+        "gap_explicitly_resolved": gap_resolution == evidence_id,
+        "lifecycle_explicitly_invoked": True,
+        "claim_final_status": (
+            "CONFIRMED" if claim.status == CLAIM_STATUS_CONFIRMED
+            else "NOT_CONFIRMED"
+        ),
+        "final_engine_identity": final_identity,
+        "final_engine_identity_revision": final_identity["revision"],
+        "automatic_execution_used": False,
+    }
+
+
+def _terminated_report(lanes: dict, termination: dict) -> dict:
+    """Assemble a local termination report (M08 §4). Preserves the
+    completed and partial lanes; runs neither _negative_probes() nor
+    _final_state(); never declares COMPLETE_REFERENCE_OPERATION."""
+    return {
+        "overall_status": "TERMINATED_AT_AUTHORITY_GATE",
+        "termination_stage": termination["termination_stage"],
+        "termination_reason": copy.deepcopy(termination["termination_reason"]),
+        "fixture_origin_for_engine": "PRODUCED_BY_LANE_A",
+        "lanes": lanes,
+        "non_authority_locks": list(_NON_AUTHORITY_LOCKS),
+        "rule_stats_provenance_status": "NOT_ENTERED_M09",
+    }
+
+
+# ----------------------------------------------------------------------
+# Entry point.
+# ----------------------------------------------------------------------
+
+
+def run_complete_domain_neutral_reference_operation() -> dict[str, Any]:
+    """Run one full domain-neutral reference operation and return its
+    local illustrative report. Each call constructs a fresh Engine
+    and fresh records; no state persists between calls."""
+    engine = Engine()
+    next_id = _next_id_factory()
+
+    # Lane A — external ingress. A role / cycle gate stops here.
+    lane_a = _lane_a(engine, next_id)
+    if "termination" in lane_a:
+        return _terminated_report(
+            {"external_ingress": lane_a}, lane_a["termination"],
+        )
+
+    claim_id = lane_a["produced_ids"]["claim_id"]
+    gap_required_evidence_type = lane_a["gap_required_evidence_type"]
+
+    # Lane B — Engine read + proposal review (no mutation gate).
+    lane_b = _lane_b(engine, claim_id)
+
+    # Lane C — downstream re-entry. A cycle gate stops here, preserving
+    # the completed Lane A and Lane B.
+    lane_c = _lane_c(
+        engine, claim_id, gap_required_evidence_type, next_id,
+    )
+    if "termination" in lane_c:
+        return _terminated_report(
+            {
+                "external_ingress": lane_a,
+                "engine_read_and_proposal": lane_b,
+                "downstream_reentry": lane_c,
+            },
+            lane_c["termination"],
+        )
+
+    # All lanes completed — only now run the negative probes and the
+    # final verification block (M08 §4 / §17).
+    negative_probe = _negative_probes()
+    final_state = _final_state(engine, lane_a, lane_b, lane_c)
+
+    return {
+        "overall_status": "COMPLETE_REFERENCE_OPERATION",
+        "fixture_origin_for_engine": "PRODUCED_BY_LANE_A",
+        "lanes": {
+            "external_ingress": lane_a,
+            "engine_read_and_proposal": lane_b,
+            "downstream_reentry": lane_c,
+        },
+        "negative_stale_decision_probe": negative_probe,
+        "final_state": final_state,
+        "non_authority_locks": list(_NON_AUTHORITY_LOCKS),
+        "rule_stats_provenance_status": "NOT_ENTERED_M09",
+    }
+
+
+if __name__ == "__main__":
+    import json
+    report = run_complete_domain_neutral_reference_operation()
+    print(json.dumps(report, default=str, indent=2))
