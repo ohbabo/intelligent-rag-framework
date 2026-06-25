@@ -544,11 +544,20 @@ The target name on a candidate or request is inspection metadata only.
 
 ## §16 Before / after reads and receipt
 
-A provenance record must be bound to at least these actual public
-reads:
+The before/after read requirement below applies to a **successful
+invocation receipt** — a receipt for a direct `update_rule_stats`
+call performed against a known `(rule_id, rule_version)` pair, where
+the pre-call read succeeds, the call completes, and the post-call read
+succeeds. A rejected / failed-attempt receipt is governed separately
+by §17 and is **not** required to carry a RuleStats before/after.
+
+### §16.1 Successful invocation receipt
+
+A successful-invocation provenance record must be bound to at least
+these actual public reads:
 
 ```
-pre-update:
+pre-call:
   engine.state_identity()
   engine.get_rule_stats(rule_id, rule_version)
 
@@ -557,7 +566,7 @@ post-call:
   engine.get_rule_stats(rule_id, rule_version)
 ```
 
-Minimum receipt meaning:
+Minimum successful-receipt meaning:
 
 ```
 the reviewed exact arguments
@@ -566,10 +575,29 @@ the identity before the call
 the identity after the call
 the RuleStats before
 the RuleStats after
-the actual effect classification
+the actual effect classification (VALUE_CHANGED or NO_VALUE_CHANGE)
 ```
 
-Provenance must not be constructed by reading private Engine state.
+### §16.2 Rejected / failed-attempt receipt
+
+A rejected / failed-attempt receipt records only the facts that are
+actually available. For an unknown `(rule_id, rule_version)` pair the
+pre-call `engine.get_rule_stats(rule_id, rule_version)` itself raises
+(it asserts the pair exists, per §2), so there is no RuleStats before
+to read. Such a receipt therefore:
+
+```
+- does NOT require a RuleStats before or a RuleStats after
+- does NOT fabricate a RuleStats before/after for an absent pair
+- records the rejection / failure cause
+- may record a pre-attempt state_identity() if one was read before
+  the attempt
+- is NOT a successful update provenance (see §17 REJECTED)
+- is NOT equated with NO_VALUE_CHANGE
+```
+
+Provenance — successful or failed-attempt — must not be constructed by
+reading private Engine state.
 
 ---
 
@@ -689,3 +717,20 @@ or connect update_rule_stats to an automatic operational flow.
 The provenance record type, an Engine-owned store, snapshot
 persistence, and any API are out of scope until this contract is
 approved and a later step is separately directed.
+
+### §22.1 M09 overall status
+
+Closing OC-G at the conceptual contract layer is not the same as
+closing M09. As of this contract, M09 as a whole remains STARTED /
+OPEN. 276차 is the contract-only step; the following are NOT yet
+created or implemented:
+
+```
+runtime provenance implementation
+tests
+dev record
+```
+
+Consequently this document does NOT claim that the Engine records
+provenance, does NOT claim OC-G operational completion, does NOT
+claim M09 CLOSED, and does NOT claim M-series completion.
