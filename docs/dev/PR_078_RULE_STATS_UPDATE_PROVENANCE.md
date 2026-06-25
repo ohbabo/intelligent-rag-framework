@@ -212,7 +212,7 @@ rejected / failed-attempt receipt (§16.2):
 ```
 
 It also added §22.1 stating that closing OC-G at the conceptual layer
-is not the same as closing M09 (the overall PR remains STARTED / OPEN;
+is not the same as closing M09 (M09 as a whole remains STARTED / OPEN;
 runtime, tests, and the dev record are not yet implemented).
 
 The 279차 re-review on the corrected contract: BLOCKER 0 / MAJOR 0 /
