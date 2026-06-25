@@ -43,7 +43,7 @@ PR67-P03 closes that gap. After this PR:
   collection-structure lookup surfaces covered by this PR's
   original tests**. (The independent audit later found that missing
   *nested* payload fields still surfaced raw `KeyError`; those are
-  closed by the 2026-06-26 post-audit correction — see §16.)
+  closed by the 2026-06-25 post-audit correction — see §16.)
 - The four intentional semantic preservations from §52 (cross-
   claim contradiction freedom; gap dedup component back-
   validation deliberately omitted; advisory unregistered
@@ -531,7 +531,7 @@ final commit:
 [x] raw KeyError does not surface for the top-level-key / non-dict /
     non-list cases; TestNoRawKeyError... covers 16 of them. (Nested
     payload-field misses were not covered here; they are closed by the
-    2026-06-26 post-audit correction — see §16.)
+    2026-06-25 post-audit correction — see §16.)
 [x] no automatic repair anywhere in the validator.
 [x] input snapshot immutability asserted on every rejection path.
 [x] no new Engine method (public or private).
@@ -681,7 +681,7 @@ PR67-P03  Snapshot Restore Integrity Enforcement        ready
 
 ---
 
-## §16 Post-Audit Correction (independent audit, 2026-06-26)
+## §16 Post-Audit Correction (independent audit, 2026-06-25)
 
 PR67-P03 received an independent post-merge audit on the current
 `main` baseline. The §52 restore code path was verified byte-identical
