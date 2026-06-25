@@ -28,7 +28,7 @@ import importlib.util
 from pathlib import Path
 from typing import Any
 
-from ragcore import Engine
+from ragcore import CLAIM_STATUS_CONFIRMED, Engine
 
 
 # ----------------------------------------------------------------------
@@ -156,6 +156,7 @@ def _build_decision(
 ) -> dict:
     return {
         "record_kind": "operator_decision_record",
+        "status": "OPERATOR_REVIEW",
         "decision_record_id": next_id("dec"),
         "decision_family": decision_family,
         "subject_snapshot": copy.deepcopy(subject_snapshot),
@@ -226,6 +227,7 @@ def _revalidate(
     )
     return {
         "moment": moment,
+        "status": "STATE_REVALIDATED",
         "decision_state_identity": copy.deepcopy(decision_identity),
         "current_state_identity": copy.deepcopy(current_identity),
         "verdict": "eligible" if eligible else "not_eligible",
@@ -233,12 +235,156 @@ def _revalidate(
 
 
 def _explicit_review(approved: bool, note: str) -> str:
-    """Returns one of the M02 §9 dispositions. The 267차 example uses
-    only the 'approved' branch on the happy path; helper accepts the
-    other two for completeness."""
+    """Returns one of the M02 §9 dispositions. The happy path uses only
+    the 'approved' branch; helper accepts the other two for
+    completeness. A runtime spy may replace this module global to force
+    a rejected / hold disposition for the operator-review gate tests."""
     if approved:
         return "approved"
     return note
+
+
+# ----------------------------------------------------------------------
+# Local termination report + single gated mutation cycle (M08 §4 / §6).
+# ----------------------------------------------------------------------
+
+
+def _termination(stage: str, reason: Any) -> dict:
+    """Example-local termination descriptor (plain dict; not a
+    framework type). Recorded both on the partial lane and surfaced at
+    the top level of the run report when an authority gate rejects a
+    cycle."""
+    return {
+        "termination_stage": stage,
+        "termination_reason": copy.deepcopy(reason),
+    }
+
+
+def _run_cycle(
+    engine: Engine,
+    next_id,
+    target_method: str,
+    arguments: dict,
+    source_basis: dict,
+    expected_effect: str,
+    policy_assumptions: list[str],
+    invoke,
+    result_fields,
+    extra_record_fields: dict | None = None,
+) -> tuple[dict, tuple[str, Any]]:
+    """Run one fully authority-gated mutation cycle (M08 §6).
+
+    Procedure, in order: build candidate -> operator review -> decision
+    record -> start invocation record -> review-disposition gate ->
+    Stage 5.5 revalidation -> Stage 5.5 gate -> request materialization
+    -> Stage 6 revalidation -> Stage 6 gate -> directly-written Engine
+    call -> receipt.
+
+    Returns (record, outcome). The record is always returned so the
+    caller can append it to its lane's invocation sequence even when a
+    gate stops the cycle; it carries exactly the artifacts that were
+    materialized before the stop. outcome is:
+        ("ok", engine_result)              — the Engine method ran
+        ("terminated", termination_dict)   — a gate rejected the cycle
+
+    `invoke` is a caller-supplied closure whose body is a direct,
+    source-written Engine call (e.g. lambda a: engine.add_entity(**a));
+    no dispatch table, getattr, or callable-bearing request field is
+    used. `result_fields(record, result)` records the cycle-specific
+    returned_* field(s). `extra_record_fields` is merged into the record
+    at creation (e.g. the add_evidence source_basis)."""
+    candidate = _build_candidate(
+        next_id,
+        target_method=target_method,
+        arguments=arguments,
+        source_basis=source_basis,
+        expected_effect=expected_effect,
+        policy_assumptions=policy_assumptions,
+        materialized_at_revision=engine.state_identity().revision,
+    )
+    decision_identity = _identity_dict(engine.state_identity())
+    disposition = _explicit_review(True, "")
+    decision = _build_decision(
+        next_id,
+        decision_family="mutation_review",
+        subject_snapshot=candidate,
+        disposition=disposition,
+        decision_state_identity=decision_identity,
+        supersedes=None,
+        note="approved on local consumer review",
+    )
+    record = {
+        "status": "EXPLICIT_INVOCATION",
+        "target_method": candidate["target_method"],
+        "arguments": copy.deepcopy(candidate["arguments"]),
+        "candidate": candidate,
+        "operator_decision_record": decision,
+        "reviewed_mutation_request": None,
+        "revalidations": {},
+        "call_receipt": None,
+    }
+    if extra_record_fields:
+        record.update(copy.deepcopy(extra_record_fields))
+
+    # Review-disposition gate (M08 §7).
+    if decision["disposition"] != "approved":
+        return record, (
+            "terminated",
+            _termination(
+                f"{target_method}.operator_review",
+                {"disposition": decision["disposition"]},
+            ),
+        )
+
+    # Stage 5.5 — materialization revalidation (M08 §8).
+    reval_5_5 = _revalidate(
+        decision_identity,
+        _identity_dict(engine.state_identity()),
+        "stage_5_5_materialization",
+    )
+    record["revalidations"]["stage_5_5_materialization"] = reval_5_5
+    if reval_5_5["verdict"] != "eligible":
+        return record, (
+            "terminated",
+            _termination(
+                f"{target_method}.stage_5_5_materialization",
+                reval_5_5,
+            ),
+        )
+
+    # Request materialization (only after approved + Stage 5.5 eligible).
+    request = _build_request(
+        next_id, candidate,
+        decision_record_id=decision["decision_record_id"],
+        decision_state_identity=decision_identity,
+    )
+    record["reviewed_mutation_request"] = request
+
+    # Stage 6 — invocation revalidation (M08 §10).
+    reval_6 = _revalidate(
+        decision_identity,
+        _identity_dict(engine.state_identity()),
+        "stage_6_invocation",
+    )
+    record["revalidations"]["stage_6_invocation"] = reval_6
+    if reval_6["verdict"] != "eligible":
+        return record, (
+            "terminated",
+            _termination(
+                f"{target_method}.stage_6_invocation",
+                reval_6,
+            ),
+        )
+
+    # Directly-written Engine invocation + receipt (M08 §11).
+    id_before = _identity_dict(engine.state_identity())
+    result = invoke(request["arguments"])
+    id_after = _identity_dict(engine.state_identity())
+    record["call_receipt"] = _build_receipt(
+        next_id, request, id_before, id_after, result,
+    )
+    result_fields(record, result)
+    return record, ("ok", result)
 
 
 # ----------------------------------------------------------------------
@@ -248,13 +394,16 @@ def _explicit_review(approved: bool, note: str) -> str:
 
 def _lane_a(engine: Engine, next_id) -> dict:
     """Builds a fresh Engine state by sequentially performing
-    add_entity -> add_claim -> add_gap. Each call is preceded by the
-    full 9-step per-call procedure (M08 §7)."""
+    add_entity -> add_claim -> add_gap. Each call goes through the full
+    authority-gated per-cycle procedure (M08 §6); a role-validation
+    failure or any cycle gate stops Lane A early and returns a partial
+    lane carrying a `termination` descriptor."""
 
     # 7.1 Adapter trace + role example — consumer-owned bridge.
     adapter_trace_local = copy.deepcopy(RESOLVED_TRANSLATION_TRACE)
     role_example_local = copy.deepcopy(RESOLVED_EXAMPLE)
     bridge_decision = {
+        "status": "CONSUMER_DECISION",
         "consumer_decision": (
             "consumer chose to combine the adapter trace and the "
             "role example for this run; no automatic bridge"
@@ -268,203 +417,102 @@ def _lane_a(engine: Engine, next_id) -> dict:
     )
 
     invocations: list[dict] = []
-
-    # Cycle 1 — add_entity.
-    e_args = {"entity_type": 1, "flags": 0}
-    e_cand = _build_candidate(
-        next_id,
-        target_method="add_entity",
-        arguments=e_args,
-        source_basis={
-            "originating_trace": copy.deepcopy(adapter_trace_local),
-            "originating_role_example": copy.deepcopy(role_example_local),
-            "role_validation_outcome": list(role_violations),
-        },
-        expected_effect="register a new Entity in this fresh Engine",
-        policy_assumptions=[
-            "local example policy; consumer-owned",
-        ],
-        materialized_at_revision=engine.state_identity().revision,
-    )
-    e_decision_identity = _identity_dict(engine.state_identity())
-    e_decision = _build_decision(
-        next_id,
-        decision_family="mutation_review",
-        subject_snapshot=e_cand,
-        disposition=_explicit_review(True, ""),
-        decision_state_identity=e_decision_identity,
-        supersedes=None,
-        note="approved on local consumer review",
-    )
-    reval_5_5 = _revalidate(
-        e_decision_identity,
-        _identity_dict(engine.state_identity()),
-        "stage_5_5_materialization",
-    )
-    e_request = _build_request(
-        next_id, e_cand,
-        decision_record_id=e_decision["decision_record_id"],
-        decision_state_identity=e_decision_identity,
-    )
-    reval_6 = _revalidate(
-        e_decision_identity,
-        _identity_dict(engine.state_identity()),
-        "stage_6_invocation",
-    )
-    id_before = _identity_dict(engine.state_identity())
-    entity_id = engine.add_entity(**e_request["arguments"])
-    id_after = _identity_dict(engine.state_identity())
-    e_receipt = _build_receipt(
-        next_id, e_request, id_before, id_after, entity_id,
-    )
-    invocations.append({
-        "target_method": "add_entity",
-        "arguments": copy.deepcopy(e_request["arguments"]),
-        "candidate": e_cand,
-        "operator_decision_record": e_decision,
-        "reviewed_mutation_request": e_request,
-        "revalidations": {
-            "stage_5_5_materialization": reval_5_5,
-            "stage_6_invocation": reval_6,
-        },
-        "call_receipt": e_receipt,
-        "returned_id": entity_id,
-    })
-
-    # Cycle 2 — add_claim, using the returned entity_id.
-    c_args = {
-        "subject_id": entity_id,
-        "claim_type": 1,
-        "rule_id": 0,
-        "rule_version": 0,
-        "reason_code": 0,
-        "base_confidence": 0.8,
-    }
-    c_cand = _build_candidate(
-        next_id, target_method="add_claim", arguments=c_args,
-        source_basis={
-            "previous_returned_entity_id": entity_id,
-            "originating_role_example": copy.deepcopy(role_example_local),
-        },
-        expected_effect="register a new Claim about the new Entity",
-        policy_assumptions=["local example policy"],
-        materialized_at_revision=engine.state_identity().revision,
-    )
-    c_decision_identity = _identity_dict(engine.state_identity())
-    c_decision = _build_decision(
-        next_id, decision_family="mutation_review",
-        subject_snapshot=c_cand,
-        disposition=_explicit_review(True, ""),
-        decision_state_identity=c_decision_identity,
-        supersedes=None, note="approved",
-    )
-    c_reval_5_5 = _revalidate(
-        c_decision_identity, _identity_dict(engine.state_identity()),
-        "stage_5_5_materialization",
-    )
-    c_request = _build_request(
-        next_id, c_cand,
-        decision_record_id=c_decision["decision_record_id"],
-        decision_state_identity=c_decision_identity,
-    )
-    c_reval_6 = _revalidate(
-        c_decision_identity, _identity_dict(engine.state_identity()),
-        "stage_6_invocation",
-    )
-    c_id_before = _identity_dict(engine.state_identity())
-    claim_id = engine.add_claim(**c_request["arguments"])
-    c_id_after = _identity_dict(engine.state_identity())
-    c_receipt = _build_receipt(
-        next_id, c_request, c_id_before, c_id_after, claim_id,
-    )
-    invocations.append({
-        "target_method": "add_claim",
-        "arguments": copy.deepcopy(c_request["arguments"]),
-        "candidate": c_cand,
-        "operator_decision_record": c_decision,
-        "reviewed_mutation_request": c_request,
-        "revalidations": {
-            "stage_5_5_materialization": c_reval_5_5,
-            "stage_6_invocation": c_reval_6,
-        },
-        "call_receipt": c_receipt,
-        "returned_id": claim_id,
-    })
-
-    # Cycle 3 — add_gap, using the returned claim_id.
+    produced_ids: dict = {}
     gap_required_evidence_type = 7
-    g_args = {
-        "claim_id": claim_id,
-        "gap_type": 1,
-        "required_evidence_type": gap_required_evidence_type,
-        "severity": 0.5,
-        "rule_id": 0,
-    }
-    g_cand = _build_candidate(
-        next_id, target_method="add_gap", arguments=g_args,
-        source_basis={
-            "previous_returned_claim_id": claim_id,
-        },
-        expected_effect="register a new Gap referencing the Claim",
-        policy_assumptions=["local example policy"],
-        materialized_at_revision=engine.state_identity().revision,
-    )
-    g_decision_identity = _identity_dict(engine.state_identity())
-    g_decision = _build_decision(
-        next_id, decision_family="mutation_review",
-        subject_snapshot=g_cand,
-        disposition=_explicit_review(True, ""),
-        decision_state_identity=g_decision_identity,
-        supersedes=None, note="approved",
-    )
-    g_reval_5_5 = _revalidate(
-        g_decision_identity, _identity_dict(engine.state_identity()),
-        "stage_5_5_materialization",
-    )
-    g_request = _build_request(
-        next_id, g_cand,
-        decision_record_id=g_decision["decision_record_id"],
-        decision_state_identity=g_decision_identity,
-    )
-    g_reval_6 = _revalidate(
-        g_decision_identity, _identity_dict(engine.state_identity()),
-        "stage_6_invocation",
-    )
-    g_id_before = _identity_dict(engine.state_identity())
-    gap_id = engine.add_gap(**g_request["arguments"])
-    g_id_after = _identity_dict(engine.state_identity())
-    g_receipt = _build_receipt(
-        next_id, g_request, g_id_before, g_id_after, gap_id,
-    )
-    invocations.append({
-        "target_method": "add_gap",
-        "arguments": copy.deepcopy(g_request["arguments"]),
-        "candidate": g_cand,
-        "operator_decision_record": g_decision,
-        "reviewed_mutation_request": g_request,
-        "revalidations": {
-            "stage_5_5_materialization": g_reval_5_5,
-            "stage_6_invocation": g_reval_6,
-        },
-        "call_receipt": g_receipt,
-        "returned_id": gap_id,
-    })
-
-    return {
+    lane: dict = {
         "fixture_origin_for_engine": "PRODUCED_BY_LANE_A",
         "consumed_adapter_trace": copy.deepcopy(adapter_trace_local),
         "consumed_role_example": copy.deepcopy(role_example_local),
         "bridge_decision": bridge_decision,
         "role_validation_violations": list(role_violations),
         "explicit_invocation_sequence": invocations,
-        "produced_ids": {
-            "entity_id": entity_id,
-            "claim_id": claim_id,
-            "gap_id": gap_id,
-        },
+        "produced_ids": produced_ids,
         "gap_required_evidence_type": gap_required_evidence_type,
-        "stage_status": "COMPLETED",
+        "stage_status": "CONNECTED",
     }
+
+    # Role-validation gate (M08 §5). A non-empty violation list stops
+    # Lane A before any candidate / Engine mutation.
+    if role_violations:
+        lane["termination"] = _termination(
+            "lane_a.role_validation",
+            {"role_validation_violations": list(role_violations)},
+        )
+        return lane
+
+    # Cycle 1 — add_entity.
+    record, outcome = _run_cycle(
+        engine, next_id, "add_entity",
+        arguments={"entity_type": 1, "flags": 0},
+        source_basis={
+            "originating_trace": copy.deepcopy(adapter_trace_local),
+            "originating_role_example": copy.deepcopy(role_example_local),
+            "role_validation_outcome": list(role_violations),
+        },
+        expected_effect="register a new Entity in this fresh Engine",
+        policy_assumptions=["local example policy; consumer-owned"],
+        invoke=lambda a: engine.add_entity(**a),
+        result_fields=lambda rec, res: rec.__setitem__("returned_id", res),
+    )
+    invocations.append(record)
+    if outcome[0] == "terminated":
+        lane["termination"] = outcome[1]
+        return lane
+    entity_id = outcome[1]
+    produced_ids["entity_id"] = entity_id
+
+    # Cycle 2 — add_claim, using the returned entity_id.
+    record, outcome = _run_cycle(
+        engine, next_id, "add_claim",
+        arguments={
+            "subject_id": entity_id,
+            "claim_type": 1,
+            "rule_id": 0,
+            "rule_version": 0,
+            "reason_code": 0,
+            "base_confidence": 0.8,
+        },
+        source_basis={
+            "previous_returned_entity_id": entity_id,
+            "originating_role_example": copy.deepcopy(role_example_local),
+        },
+        expected_effect="register a new Claim about the new Entity",
+        policy_assumptions=["local example policy"],
+        invoke=lambda a: engine.add_claim(**a),
+        result_fields=lambda rec, res: rec.__setitem__("returned_id", res),
+    )
+    invocations.append(record)
+    if outcome[0] == "terminated":
+        lane["termination"] = outcome[1]
+        return lane
+    claim_id = outcome[1]
+    produced_ids["claim_id"] = claim_id
+
+    # Cycle 3 — add_gap, using the returned claim_id.
+    record, outcome = _run_cycle(
+        engine, next_id, "add_gap",
+        arguments={
+            "claim_id": claim_id,
+            "gap_type": 1,
+            "required_evidence_type": gap_required_evidence_type,
+            "severity": 0.5,
+            "rule_id": 0,
+        },
+        source_basis={"previous_returned_claim_id": claim_id},
+        expected_effect="register a new Gap referencing the Claim",
+        policy_assumptions=["local example policy"],
+        invoke=lambda a: engine.add_gap(**a),
+        result_fields=lambda rec, res: rec.__setitem__("returned_id", res),
+    )
+    invocations.append(record)
+    if outcome[0] == "terminated":
+        lane["termination"] = outcome[1]
+        return lane
+    gap_id = outcome[1]
+    produced_ids["gap_id"] = gap_id
+
+    lane["stage_status"] = "COMPLETED"
+    return lane
 
 
 # ----------------------------------------------------------------------
@@ -625,6 +673,21 @@ def _lane_c(
     }
 
     invocations: list[dict] = []
+    produced_ids: dict = {}
+    lane: dict = {
+        "network_invocation": False,
+        "tool_invocation": False,
+        "subprocess_invocation": False,
+        "downstream_source_fixture_before": fixture_before_snapshot,
+        "downstream_source_fixture_after": copy.deepcopy(
+            downstream_source_fixture,
+        ),
+        "result_trace": result_trace,
+        "consumer_role_decision": copy.deepcopy(consumer_role_decision),
+        "explicit_invocation_sequence": invocations,
+        "produced_ids": produced_ids,
+        "stage_status": "CONNECTED",
+    }
 
     # Cycle 4 — add_evidence.
     ev_args = {
@@ -649,184 +712,69 @@ def _lane_c(
         },
         "consumer_role_decision": copy.deepcopy(consumer_role_decision),
     }
-    ev_cand = _build_candidate(
-        next_id, target_method="add_evidence", arguments=ev_args,
+    record, outcome = _run_cycle(
+        engine, next_id, "add_evidence",
+        arguments=ev_args,
         source_basis=ev_source_basis,
         expected_effect=(
             "register a new Evidence supporting the existing Claim"
         ),
         policy_assumptions=["local example policy"],
-        materialized_at_revision=engine.state_identity().revision,
+        invoke=lambda a: engine.add_evidence(**a),
+        result_fields=lambda rec, res: rec.__setitem__("returned_id", res),
+        extra_record_fields={"source_basis": copy.deepcopy(ev_source_basis)},
     )
-    ev_decision_identity = _identity_dict(engine.state_identity())
-    ev_decision = _build_decision(
-        next_id, decision_family="mutation_review",
-        subject_snapshot=ev_cand,
-        disposition=_explicit_review(True, ""),
-        decision_state_identity=ev_decision_identity,
-        supersedes=None, note="approved",
-    )
-    ev_reval_5_5 = _revalidate(
-        ev_decision_identity, _identity_dict(engine.state_identity()),
-        "stage_5_5_materialization",
-    )
-    ev_request = _build_request(
-        next_id, ev_cand,
-        decision_record_id=ev_decision["decision_record_id"],
-        decision_state_identity=ev_decision_identity,
-    )
-    ev_reval_6 = _revalidate(
-        ev_decision_identity, _identity_dict(engine.state_identity()),
-        "stage_6_invocation",
-    )
-    ev_id_before = _identity_dict(engine.state_identity())
-    evidence_id = engine.add_evidence(**ev_request["arguments"])
-    ev_id_after = _identity_dict(engine.state_identity())
-    ev_receipt = _build_receipt(
-        next_id, ev_request, ev_id_before, ev_id_after, evidence_id,
-    )
-    invocations.append({
-        "target_method": "add_evidence",
-        "arguments": copy.deepcopy(ev_request["arguments"]),
-        "candidate": ev_cand,
-        "operator_decision_record": ev_decision,
-        "reviewed_mutation_request": ev_request,
-        "revalidations": {
-            "stage_5_5_materialization": ev_reval_5_5,
-            "stage_6_invocation": ev_reval_6,
-        },
-        "call_receipt": ev_receipt,
-        "returned_id": evidence_id,
-        "source_basis": copy.deepcopy(ev_source_basis),
-    })
+    invocations.append(record)
+    if outcome[0] == "terminated":
+        lane["termination"] = outcome[1]
+        return lane
+    evidence_id = outcome[1]
+    produced_ids["evidence_id"] = evidence_id
 
     # Cycle 5 — resolve_gaps_for_evidence (separate review cycle).
-    rg_args = {"evidence_id": evidence_id}
-    rg_cand = _build_candidate(
-        next_id, target_method="resolve_gaps_for_evidence",
-        arguments=rg_args,
+    record, outcome = _run_cycle(
+        engine, next_id, "resolve_gaps_for_evidence",
+        arguments={"evidence_id": evidence_id},
         source_basis={"evidence_id_from_previous_cycle": evidence_id},
         expected_effect=(
             "explicitly resolve any matching Gap for this Evidence"
         ),
         policy_assumptions=["separate review cycle per M08 §14"],
-        materialized_at_revision=engine.state_identity().revision,
+        invoke=lambda a: engine.resolve_gaps_for_evidence(**a),
+        result_fields=lambda rec, res: rec.__setitem__(
+            "returned_resolved_gap_ids", list(res),
+        ),
     )
-    rg_decision_identity = _identity_dict(engine.state_identity())
-    rg_decision = _build_decision(
-        next_id, decision_family="mutation_review",
-        subject_snapshot=rg_cand,
-        disposition=_explicit_review(True, ""),
-        decision_state_identity=rg_decision_identity,
-        supersedes=None, note="approved",
-    )
-    rg_reval_5_5 = _revalidate(
-        rg_decision_identity, _identity_dict(engine.state_identity()),
-        "stage_5_5_materialization",
-    )
-    rg_request = _build_request(
-        next_id, rg_cand,
-        decision_record_id=rg_decision["decision_record_id"],
-        decision_state_identity=rg_decision_identity,
-    )
-    rg_reval_6 = _revalidate(
-        rg_decision_identity, _identity_dict(engine.state_identity()),
-        "stage_6_invocation",
-    )
-    rg_id_before = _identity_dict(engine.state_identity())
-    resolved_gap_ids = engine.resolve_gaps_for_evidence(
-        **rg_request["arguments"],
-    )
-    rg_id_after = _identity_dict(engine.state_identity())
-    rg_receipt = _build_receipt(
-        next_id, rg_request, rg_id_before, rg_id_after,
-        list(resolved_gap_ids),
-    )
-    invocations.append({
-        "target_method": "resolve_gaps_for_evidence",
-        "arguments": copy.deepcopy(rg_request["arguments"]),
-        "candidate": rg_cand,
-        "operator_decision_record": rg_decision,
-        "reviewed_mutation_request": rg_request,
-        "revalidations": {
-            "stage_5_5_materialization": rg_reval_5_5,
-            "stage_6_invocation": rg_reval_6,
-        },
-        "call_receipt": rg_receipt,
-        "returned_resolved_gap_ids": list(resolved_gap_ids),
-    })
+    invocations.append(record)
+    if outcome[0] == "terminated":
+        lane["termination"] = outcome[1]
+        return lane
+    resolved_gap_ids = outcome[1]
+    produced_ids["resolved_gap_ids"] = list(resolved_gap_ids)
 
     # Cycle 6 — confirm_claim_if_ready (separate review cycle).
-    cl_args = {"claim_id": claim_id}
-    cl_cand = _build_candidate(
-        next_id, target_method="confirm_claim_if_ready",
-        arguments=cl_args,
+    record, outcome = _run_cycle(
+        engine, next_id, "confirm_claim_if_ready",
+        arguments={"claim_id": claim_id},
         source_basis={"claim_id_from_lane_a": claim_id},
         expected_effect=(
             "explicitly transition the Claim to CONFIRMED if eligible"
         ),
         policy_assumptions=["separate review cycle per M08 §14"],
-        materialized_at_revision=engine.state_identity().revision,
-    )
-    cl_decision_identity = _identity_dict(engine.state_identity())
-    cl_decision = _build_decision(
-        next_id, decision_family="mutation_review",
-        subject_snapshot=cl_cand,
-        disposition=_explicit_review(True, ""),
-        decision_state_identity=cl_decision_identity,
-        supersedes=None, note="approved",
-    )
-    cl_reval_5_5 = _revalidate(
-        cl_decision_identity, _identity_dict(engine.state_identity()),
-        "stage_5_5_materialization",
-    )
-    cl_request = _build_request(
-        next_id, cl_cand,
-        decision_record_id=cl_decision["decision_record_id"],
-        decision_state_identity=cl_decision_identity,
-    )
-    cl_reval_6 = _revalidate(
-        cl_decision_identity, _identity_dict(engine.state_identity()),
-        "stage_6_invocation",
-    )
-    cl_id_before = _identity_dict(engine.state_identity())
-    confirmed = engine.confirm_claim_if_ready(**cl_request["arguments"])
-    cl_id_after = _identity_dict(engine.state_identity())
-    cl_receipt = _build_receipt(
-        next_id, cl_request, cl_id_before, cl_id_after, confirmed,
-    )
-    invocations.append({
-        "target_method": "confirm_claim_if_ready",
-        "arguments": copy.deepcopy(cl_request["arguments"]),
-        "candidate": cl_cand,
-        "operator_decision_record": cl_decision,
-        "reviewed_mutation_request": cl_request,
-        "revalidations": {
-            "stage_5_5_materialization": cl_reval_5_5,
-            "stage_6_invocation": cl_reval_6,
-        },
-        "call_receipt": cl_receipt,
-        "returned_lifecycle_flag": confirmed,
-    })
-
-    return {
-        "network_invocation": False,
-        "tool_invocation": False,
-        "subprocess_invocation": False,
-        "downstream_source_fixture_before": fixture_before_snapshot,
-        "downstream_source_fixture_after": copy.deepcopy(
-            downstream_source_fixture,
+        invoke=lambda a: engine.confirm_claim_if_ready(**a),
+        result_fields=lambda rec, res: rec.__setitem__(
+            "returned_lifecycle_flag", res,
         ),
-        "result_trace": result_trace,
-        "consumer_role_decision": copy.deepcopy(consumer_role_decision),
-        "explicit_invocation_sequence": invocations,
-        "produced_ids": {
-            "evidence_id": evidence_id,
-            "resolved_gap_ids": list(resolved_gap_ids),
-        },
-        "lifecycle_confirmed_flag": confirmed,
-        "stage_status": "COMPLETED",
-    }
+    )
+    invocations.append(record)
+    if outcome[0] == "terminated":
+        lane["termination"] = outcome[1]
+        return lane
+    confirmed = outcome[1]
+
+    lane["lifecycle_confirmed_flag"] = confirmed
+    lane["stage_status"] = "COMPLETED"
+    return lane
 
 
 # ----------------------------------------------------------------------
@@ -940,29 +888,73 @@ _NON_AUTHORITY_LOCKS = (
 
 def _final_state(engine: Engine, lane_a: dict, lane_b: dict,
                  lane_c: dict) -> dict:
+    """Happy-path final verification (M08 §14). Reads the actual Engine
+    state through public query methods using the IDs returned by Lane A
+    and Lane C, and derives every reported value from those reads — no
+    hardcoded success flags, no trust in the confirm_claim_if_ready
+    return value alone."""
+    entity_id = lane_a["produced_ids"]["entity_id"]
+    claim_id = lane_a["produced_ids"]["claim_id"]
+    gap_id = lane_a["produced_ids"]["gap_id"]
+    evidence_id = lane_c["produced_ids"]["evidence_id"]
+
+    # Actual public reads — these call sites live directly in this
+    # function body (M08 §14 / 271차 R-FINAL).
+    entity = engine.get_entity(entity_id)
+    claim = engine.get_claim(claim_id)
+    gap = engine.get_gap(gap_id)
+    evidence = engine.get_evidence(evidence_id)
+    gap_resolution = engine.gap_resolution(gap_id)
     final_identity = _identity_dict(engine.state_identity())
+
     return {
+        "status": "BOUNDARY_PRESERVED",
+        # Actual read projections (R-FINAL value binding).
+        "entity": entity,
+        "claim": claim,
+        "gap": gap,
+        "evidence": evidence,
+        "gap_resolution": gap_resolution,
+        "claim_status": claim.status,
+        # Packet classification — identical to Lane B (M03 §10).
+        "packet_binding_status": lane_b["packet_binding_status"],
+        "packet_comparison_status": lane_b["packet_comparison_status"],
+        # Existing boolean summary — now derived from the reads above.
         "lane_a_engine_produced": True,
-        "entity_created": True,
-        "claim_created": True,
-        "gap_created": True,
-        "evidence_registered": True,
+        "entity_created": entity.id == entity_id,
+        "claim_created": claim.id == claim_id,
+        "gap_created": gap.id == gap_id,
+        "evidence_registered": evidence.id == evidence_id,
         "packet_built_seven_keys": (
             len(lane_b["pr51_packet"]) == 7
         ),
         "confidence_trace_available": True,
         "proposal_operator_decision_recorded": True,
         "downstream_result_trace_recorded": True,
-        "gap_explicitly_resolved": bool(
-            lane_c["produced_ids"]["resolved_gap_ids"]
-        ),
+        "gap_explicitly_resolved": gap_resolution == evidence_id,
         "lifecycle_explicitly_invoked": True,
-        "claim_final_status": "CONFIRMED" if (
-            lane_c["lifecycle_confirmed_flag"]
-        ) else "NOT_CONFIRMED",
+        "claim_final_status": (
+            "CONFIRMED" if claim.status == CLAIM_STATUS_CONFIRMED
+            else "NOT_CONFIRMED"
+        ),
         "final_engine_identity": final_identity,
         "final_engine_identity_revision": final_identity["revision"],
         "automatic_execution_used": False,
+    }
+
+
+def _terminated_report(lanes: dict, termination: dict) -> dict:
+    """Assemble a local termination report (M08 §4). Preserves the
+    completed and partial lanes; runs neither _negative_probes() nor
+    _final_state(); never declares COMPLETE_REFERENCE_OPERATION."""
+    return {
+        "overall_status": "TERMINATED_AT_AUTHORITY_GATE",
+        "termination_stage": termination["termination_stage"],
+        "termination_reason": copy.deepcopy(termination["termination_reason"]),
+        "fixture_origin_for_engine": "PRODUCED_BY_LANE_A",
+        "lanes": lanes,
+        "non_authority_locks": list(_NON_AUTHORITY_LOCKS),
+        "rule_stats_provenance_status": "NOT_ENTERED_M09",
     }
 
 
@@ -978,14 +970,36 @@ def run_complete_domain_neutral_reference_operation() -> dict[str, Any]:
     engine = Engine()
     next_id = _next_id_factory()
 
+    # Lane A — external ingress. A role / cycle gate stops here.
     lane_a = _lane_a(engine, next_id)
+    if "termination" in lane_a:
+        return _terminated_report(
+            {"external_ingress": lane_a}, lane_a["termination"],
+        )
+
     claim_id = lane_a["produced_ids"]["claim_id"]
     gap_required_evidence_type = lane_a["gap_required_evidence_type"]
+
+    # Lane B — Engine read + proposal review (no mutation gate).
     lane_b = _lane_b(engine, claim_id)
+
+    # Lane C — downstream re-entry. A cycle gate stops here, preserving
+    # the completed Lane A and Lane B.
     lane_c = _lane_c(
         engine, claim_id, gap_required_evidence_type, next_id,
     )
+    if "termination" in lane_c:
+        return _terminated_report(
+            {
+                "external_ingress": lane_a,
+                "engine_read_and_proposal": lane_b,
+                "downstream_reentry": lane_c,
+            },
+            lane_c["termination"],
+        )
 
+    # All lanes completed — only now run the negative probes and the
+    # final verification block (M08 §4 / §17).
     negative_probe = _negative_probes()
     final_state = _final_state(engine, lane_a, lane_b, lane_c)
 
