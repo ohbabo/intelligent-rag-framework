@@ -13735,7 +13735,11 @@ claim_lifecycle_events
 hint_evidence_types
 ```
 
-The 18 keys above are the complete top-level set at schema_version 2. §52 does not introduce or remove a key.
+The 18 framework-defined keys above are required at schema_version 2, and
+they are the complete *canonical output* set that `Engine.to_snapshot()`
+produces. The required-key check at restore is **presence** of these 18
+keys, not exact-set equality of the input (see §52.1.2 for additional
+top-level keys). §52 does not introduce or remove a framework key.
 
 For the rest of §52:
 
@@ -13745,14 +13749,88 @@ restored Claim       — a Claim materialized from snapshot["claims"][*].value
                        whose id matches the surrounding ``key`` field.
 restored Evidence    — same pattern over snapshot["evidences"].
 restored Gap         — same pattern over snapshot["gaps"].
-restored ID set      — the set of ``key`` integers in a given top-level
-                       collection.
-identity tuple       — (rule_id, rule_version), the dict key shape for
-                       ``rule_definitions`` and ``rule_stats``.
+restored ID set      — the set of entry ``key`` values in a given top-level
+                       collection (each key admitted per §52.1.3).
+identity tuple       — (rule_id, rule_version), the logical in-memory dict
+                       key shape for ``rule_definitions`` and ``rule_stats``;
+                       its serialized form is a list (see §52.1.1).
 allocator kind       — one of ``"entity"`` / ``"observation"`` / ``"claim"``
                        / ``"evidence"`` / ``"relation"`` / ``"gap"`` as used
                        by Engine._allocate_id.
 ```
+
+#### §52.1.1 Identity representation layer
+
+Tuple-keyed identities cross a representation boundary between the
+serialized snapshot and the restored Engine. The contract fixes the layer
+for each step (no Python `tuple` is a valid *serialized* snapshot value):
+
+```text
+logical / in-memory identity   tuple
+serialized snapshot identity   JSON-compatible list
+validator input                list
+restored Engine identity       tuple
+
+step relationship:
+  tuple -> serialized list -> validated list -> restored tuple
+```
+
+This applies to the keys of:
+
+```text
+rule_definitions
+rule_stats
+gap_dedup_index
+```
+
+A `tuple` appearing as a serialized snapshot key is therefore the wrong
+serialized type (§52.7 TypeError), even though the restored in-memory key
+is a tuple. This representation layer is normative here and does not depend
+on any later development record.
+
+#### §52.1.2 Additional top-level keys
+
+The 18 framework keys are required. The presence check is **not** exact-set
+equality:
+
+```text
+- additional top-level keys are admitted as caller-adjacent metadata;
+- Engine.from_snapshot() does not interpret, preserve, or propagate any
+  additional top-level key into Engine state;
+- a subsequent Engine.to_snapshot() contains only the canonical 18
+  framework keys (schema_version stays 2; no new framework snapshot key).
+```
+
+This clause concerns additional **top-level** keys only. It does not permit
+additional keys nested inside framework-owned values.
+
+#### §52.1.3 Serialized collection entry key type
+
+For every top-level collection that represents an in-memory `dict[int, ...]`
+— namely:
+
+```text
+entities / observations / claims / evidences / relations / gaps /
+claim_gap_refs / gap_resolutions / contradictions /
+resolved_contradictions / claim_lifecycle_events
+```
+
+each entry's serialized `"key"` field is admitted only when:
+
+```text
+type(key) is int
+bool rejected
+float rejected
+str rejected
+None rejected
+int subclasses and IntEnum rejected
+no coercion ("1" -> 1, 1.0 -> 1, True -> 1 all forbidden)
+```
+
+Conceptual violation label: **COLLECTION_ENTRY_KEY_INVALID** (a documentary
+label only — not a Python class, not an enum, not a ragcore export, not an
+Engine API value). This clause concerns serialized **mapping entry keys**;
+it does not re-audit every reference *value* type.
 
 The internal representation of each storage attribute is recorded so the contract uses real shapes:
 
@@ -13844,7 +13922,26 @@ For every `(key_tuple, gap_id)` in `gap_dedup_index`:
 gap_id ∈ restored ID set of snapshot["gaps"]
 ```
 
-The key tuple shape is `(subject_id, rule_id, gap_type, required_evidence_type)`. §52 requires the **target** of each entry to be a restored Gap (label **GAP_DEDUP_TARGET_ORPHAN**). §52 does not require the key tuple components to match any other collection — `subject_id` and `rule_id` are caller-domain integers and the runtime does not back-validate them when forming the index.
+The logical key components are `(subject_id, rule_id, gap_type,
+required_evidence_type)`. §52 requires the **target** of each entry to be a
+restored Gap (label **GAP_DEDUP_TARGET_ORPHAN**).
+
+The serialized key has a fixed structural shape (per §52.1.1 the serialized
+form is a list):
+
+```text
+- a list
+- exactly four elements long
+- every element a built-in int
+- bool rejected
+- int subclasses rejected (exact-int rule, §51.2)
+```
+
+This is **structural validation only**. The four components are not required
+to match an Entity, RuleDefinition, Claim, or any other Engine collection —
+`subject_id` and `rule_id` are caller-domain integers and the runtime does
+not back-validate them when forming the index. Structural shape validation
+must not be read as semantic component back-validation.
 
 #### §52.3.2 Resolved contradictions ⊆ contradictions
 
@@ -13910,7 +14007,24 @@ True -> 1     forbidden
 None -> 0     forbidden
 ```
 
-A `kind` that does not appear in `snapshot["next_id"]` is treated by the runtime as zero (allocator default). §52 does not require an explicit entry for every kind, only that present entries satisfy the conditions above.
+A `kind` that does not appear in `snapshot["next_id"]` is interpreted as a
+**virtual counter value 0** (the allocator default). The virtual zero is
+subject to the same maximum-bound relation as an explicitly stored counter:
+
+```text
+virtual_or_present_counter >= max(restored ID set for that kind, default 0)
+
+missing kind + empty restored ID set
+    -> admissible (0 >= 0)
+
+missing kind + non-empty restored ID set
+    -> COUNTER_COLLISION_RISK
+    -> ValueError (0 < max restored ID)
+```
+
+§52 does not require every allocator kind to be physically present in
+`next_id`; it requires that each kind — whether stored or virtually zero —
+satisfy the maximum-bound condition. Sparse IDs remain permitted.
 
 ---
 
@@ -13945,7 +14059,7 @@ wrong Python type for a structural slot
   -> TypeError
 
 valid type but broken reference, broken subset, broken index
-  target, broken identity-tuple shape, broken counter relation
+  target, broken identity-tuple LENGTH, broken counter relation
   -> ValueError
 
 unsupported / missing schema_version                    -> ValueError
@@ -13953,9 +14067,63 @@ unsupported / missing schema_version                    -> ValueError
                                                              by `_migrate_snapshot_to_current`)
 ```
 
+#### §52.7.1 Serialized identity-key exception taxonomy
+
+For the serialized identity keys of `rule_stats`, `rule_definitions`
+(where applicable), and `gap_dedup_index`, the exception class is fixed
+precisely as:
+
+```text
+wrong container Python type
+  (tuple / str / dict / None instead of list)
+  -> TypeError
+
+correct list container but wrong length
+  (e.g. a 1- or 3-element rule_stats key; a 3- or 5-element
+   gap_dedup_index key)
+  -> ValueError
+
+correct list length but a component has the wrong Python type
+  (bool / float / str / None / int subclass)
+  -> TypeError
+```
+
+The conceptual labels **RULE_STATS_IDENTITY_INVALID** and
+**GAP_DEDUP_KEY_INVALID** therefore span both TypeError (container or
+component type) and ValueError (wrong length); the catalogue must not be
+read as mandating a single exception class for all three cases. Existing
+PR67-P03 runtime behavior is independently audited against this clarified
+taxonomy (the wrong-length case is a deferred P03 enforcement item).
+
 Raw `KeyError` from `dict[...]` lookups inside private restore helpers is **not** part of the §52 contract surface. PR67-P03 must convert lookup misses into the violation classes above before exiting the restore boundary; surfacing a bare `KeyError` to the caller would imply that the snapshot still had a chance of completing, which contradicts §52.7 fail-fast.
 
 §52 does not introduce a new exception class.
+
+#### §52.7.2 Duplicate serialized mapping keys
+
+Within one serialized top-level collection, no two entries may carry equal
+logical keys:
+
+```text
+- identical duplicate values are invalid;
+- conflicting duplicate values are invalid;
+- restore must NOT silently apply first-wins or last-wins;
+- restore must NOT discard one entry as an automatic repair (§52.10);
+- duplicate keys raise ValueError.
+```
+
+This applies to every list-encoded serialized mapping:
+
+```text
+int-keyed collections (entities / observations / claims / evidences /
+  relations / gaps / claim_gap_refs / gap_resolutions / contradictions /
+  resolved_contradictions / claim_lifecycle_events)
+rule_definitions / rule_stats / gap_dedup_index
+```
+
+Conceptual violation label: **DUPLICATE_SERIALIZED_KEY** (private,
+documentary only). Detection is not implemented under PR66-P02; the
+enforcement is a deferred PR67-P03 item.
 
 ---
 
