@@ -41,6 +41,17 @@ merged. The post-push state ("OPEN — DRAFT, NOT MERGED") and
 the post-merge state ("CLOSED") apply only after the
 corresponding directives are issued.
 
+> **§1–§26 are a historical snapshot written at 270차.** Every
+> statement in them — `this commit = 270`, the 267차
+> stop-event, the "PR not opened" lifecycle, the 25-class /
+> 103-method test surface, the 1710 full-suite count, the
+> 1010-line example — was true at 270차 and is deliberately
+> left unchanged so the 270차 record is not retro-fitted with
+> facts it could not have known. The post-draft review chain
+> (271-series), the authority-gated implementation (272차),
+> the updated verification numbers, and the current OPEN —
+> DRAFT lifecycle are recorded in the **§27+ addendum** below.
+
 ---
 
 ## §1 Purpose and scope
@@ -1107,6 +1118,244 @@ PR78-M09 (RuleStats Update Provenance) is NOT STARTED.
 The branch is local-only; this dev record commit (270차) is
 the final commit in the planned M08 implementation sequence
 before the separately directed push and Draft PR creation.
+```
+
+No automatic next PR. Framework waits for directive.
+
+---
+
+# Post-draft addendum (273차)
+
+The sections above (§1–§26) are frozen at 270차. The sections
+below record what happened after the 270차 record was written:
+the branch was pushed, a Draft PR was opened, the test surface
+was independently reviewed and strengthened across four commits
+(271-series), the example was reimplemented to enforce its
+authority gates (272차), and the verification numbers changed
+accordingly. This addendum is a documentation update; it
+changes no code, test, or contract.
+
+## §27 271-series independent review chronology
+
+After the 270차 dev record, the branch was pushed and Draft PR
+#78 was opened (head 3d15918 at that point). The Draft PR then
+served as the remote review workspace. Four review commits
+followed, each a single-file change to
+`tests/test_complete_domain_neutral_reference_operation.py`,
+none modifying the example, docs, ragcore, or pyproject:
+
+```
+271       9627ddd  test(review): lock M08 authority gates and
+                     final verification
+                   First post-draft review. Added 9 test classes
+                   (Z TestRoleValidationGate ... AH
+                   TestPositiveStatusVocabulary) locking three
+                   defects observed in the 269차 ungated example:
+                     R-GATE   role / review / Stage 5.5 / Stage 6
+                              verdicts must control execution flow
+                     R-FINAL  final_state must come from real
+                              Engine public reads
+                     R-STATUS positive status vocabulary must
+                              appear at the documented positions
+
+271-corr  ca61b4e  test(review): tighten M08 R-FINAL phase
+                     isolation and read derivation
+                   The first cut wrapped the get_* spies around
+                   the whole operation, so two incidental reads
+                   (compute_effective_confidence's internal
+                   get_claim; Engine internals' gap_resolution)
+                   satisfied "called at least once". Re-scoped the
+                   spies to the `_final_state` lifetime only and
+                   added _AttrAccessTracker-based derivation locks
+                   proving claim_status comes from get_claim(...)
+                   .status and gap_resolution from the actual read.
+
+271-corr2 2e99298  test(review): complete M08 gate-path evidence
+                     locks
+                   Closed four remaining bypasses: role-failure
+                   termination_stage / termination_reason
+                   position; rejected/hold add_entity decision
+                   record; Stage 5.5 / Stage 6 target-cycle
+                   artifact shape; final entity/claim/gap/evidence
+                   value binding to phase-isolated read returns.
+
+271-corr3 7533799  test(review): add runtime call-count proof to
+                     gate reachability
+                   The preceding-cycle reachability proofs were
+                   report-record only; added a runtime call-count
+                   proof (each preceding Engine mutation invoked
+                   exactly once) alongside the report evidence.
+                   Required excluding the negative probes' throw-
+                   away Engine.add_entity calls (raw count 6) from
+                   the main-operation count (1), via an
+                   exclude_negative_probes gate on the spy runner.
+```
+
+The test design was declared CLOSED after 271-corr3. No corr4
+was created. The frozen test surface that the 272차
+implementation had to satisfy:
+
+```
+test classes:                34
+test functions (def test_):  148
+collected / parametrized:    199
+```
+
+## §28 272차 authority-gated implementation
+
+```
+272       be9940e  fix(example): enforce M08 authority gates and
+                     final reads
+                   Single-file change to
+                   examples/operation/
+                     complete_domain_neutral_reference_operation.py
+                   (+357 / -343). Turned all 199 frozen tests
+                   green without touching tests, docs, ragcore,
+                   or pyproject.
+```
+
+What changed in the example:
+
+```
+R-GATE
+  - new _run_cycle() runs the full M08 §6 per-cycle procedure
+    with three gates (review disposition / Stage 5.5 / Stage 6).
+    On any rejection it returns the partially-materialized record
+    plus a ("terminated", ...) outcome and does no further work.
+  - Lane A gained a role-validation gate
+    ("lane_a.role_validation") that stops before any candidate
+    or Engine mutation when the validator returns violations.
+  - Lane A and Lane C call _run_cycle for their three cycles each
+    and propagate termination upward; produced_ids are built only
+    from actual returned IDs (no placeholder / sentinel IDs).
+  - run() returns a local _terminated_report
+    (overall_status "TERMINATED_AT_AUTHORITY_GATE", never
+    COMPLETE_REFERENCE_OPERATION) on any lane termination, and
+    runs neither _negative_probes() nor _final_state() on that
+    path — so the probes' throwaway-engine calls cannot enter a
+    gate-failure run.
+
+R-FINAL
+  - _final_state() now calls engine.get_entity / get_claim /
+    get_gap / get_evidence / gap_resolution directly in its body,
+    using the actual Lane A / Lane C produced IDs, and stores the
+    returned objects (entity / claim / gap / evidence /
+    gap_resolution). claim_status is derived from
+    get_claim(claim_id).status; gap_resolution is the actual read
+    (not a copy of the Lane C evidence_id); the boolean summary
+    fields are computed from the reads.
+  - final packet classification mirrors Lane B (UNBOUND /
+    UNKNOWN); no CAPTURE_BOUND / CURRENTLY_MATCHED / STALE.
+
+R-STATUS
+  - bridge_decision "CONSUMER_DECISION"; _build_decision
+    "OPERATOR_REVIEW"; _revalidate "STATE_REVALIDATED"; each
+    invocation record "EXPLICIT_INVOCATION"; final_state
+    "BOUNDARY_PRESERVED". Completed lanes keep stage_status
+    "COMPLETED"; a partial lane reports "CONNECTED".
+    BLOCKED / UNDEFINED / TODO are not used.
+```
+
+`_run_cycle` is a common authority-gate procedure helper, NOT a
+dispatcher or executor (confirmed in the 272차 remote diff
+review):
+
+```
+- target_method is metadata only (stored on the candidate and
+  in records); it never selects the call target
+- no getattr / eval / exec, and no method-name dispatch
+- request records carry no callable field
+- the six call sites each contain a direct Engine API lambda:
+    engine.add_entity(**a)        engine.add_evidence(**a)
+    engine.add_claim(**a)         engine.resolve_gaps_for_evidence(**a)
+    engine.add_gap(**a)           engine.confirm_claim_if_ready(**a)
+- _run_cycle only centralizes the gate procedure and calls the
+  caller-supplied closure: result = invoke(request["arguments"])
+```
+
+## §29 Final verification snapshot
+
+Observed on the 272차 head (be9940e), unchanged before and after
+the commit:
+
+```
+M08 tests:                     199 passed / 0 failed / 0 errors
+full suite:                    1806 passed
+                               (1607 outside-M08 baseline + 199 M08)
+direct execution:              exit 0
+                                 overall_status =
+                                   COMPLETE_REFERENCE_OPERATION
+                                 fixture_origin_for_engine =
+                                   PRODUCED_BY_LANE_A
+                                 rule_stats_provenance_status =
+                                   NOT_ENTERED_M09
+                                 final_state.status =
+                                   BOUNDARY_PRESERVED
+                                 final_state.packet_binding_status =
+                                   UNBOUND
+                                 final_state.packet_comparison_status =
+                                   UNKNOWN
+git diff --check:              clean
+py_compile:                    ok
+
+example line count:            1024  (was 1010 at 270차)
+test file line count:          3570  (was 1650 at 270차)
+contract line count:           1037  (unchanged)
+
+structural invariants (unchanged):
+  Engine public / private:     42 / 20
+  ragcore.__all__:             50
+  snapshot schema_version:      2
+  snapshot top-level keys:     18
+  PR51 packet keys:             7
+
+domain-neutral raw scan:       0 forbidden tokens in the example
+                               source and in the serialized report
+```
+
+## §30 Current Draft PR lifecycle
+
+```
+GitHub PR:                     #78
+state:                         OPEN — DRAFT, NOT MERGED
+base:                          main f57cd5d (no base drift)
+272차 head:                    be9940e
+
+remote review chain (all pushed to PR #78 over time):
+  270차 push                   head 3d15918  (Draft PR opened)
+  271 + 271-corr push          head ca61b4e
+  271-corr2 + 271-corr3 push   head 7533799
+  272 push                     head be9940e  (current)
+
+verdicts received:
+  271-corr3                    APPROVED (push)
+  272 remote diff review       APPROVED — executor boundary PASS,
+                               R-GATE / R-FINAL / R-STATUS PASS,
+                               scope discipline PASS, 272-corr
+                               not required
+```
+
+## §31 Remaining boundary
+
+```
+Git commits through 272:       12
+  263 8b8b20d   264 02dbc94   265 9734de3   266 9114a66
+  268 3b15199   269 c77990c   270 3d15918   271 9627ddd
+  271-corr ca61b4e   271-corr2 2e99298   271-corr3 7533799
+  272 be9940e
+  (267차 is a stop-event, not a commit)
+
+this documentation update (273차):
+  - changes exactly one file (this dev record); no code, test,
+    or contract change
+  - its own commit SHA is intentionally omitted here (it is not
+    known until commit time); it is the next chronological step
+    after be9940e and brings the branch to 13 Git commits
+
+still locked:
+  Ready:                       NOT performed
+  merge:                       NOT performed
+  PR78-M09:                    NOT STARTED
 ```
 
 No automatic next PR. Framework waits for directive.
