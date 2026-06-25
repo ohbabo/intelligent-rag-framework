@@ -218,12 +218,20 @@ Source method:
   engine.evidences_for_claim(claim_id)
 
 What it represents:
-  tuple of Evidence dataclass instances supporting the claim.
+  tuple of Evidence records linked to the claim by claim_id, in
+  insertion order. This is a polarity-neutral projection
+  (DATA_CONTRACT §53.3): a linked Evidence is NOT automatically
+  supporting, refuting, confirming, or contradicting. The field
+  name `supporting_evidence` is a compatibility-locked label and
+  does not grant the value support/refute polarity.
   each Evidence has id, claim_id, raw_ref_id, type
   (consumer-domain integer), strength (ScoreValue in [0.0, 1.0]).
 
 Consumer-side allowed reading:
-  - list evidence ids and types as supporting facts
+  - list evidence ids and types as linked evidence records
+    (NOT automatically as "supporting facts"; contradiction
+    participation is read from the separate contradiction relation
+    via active_contradictions_for_claim — DATA_CONTRACT §53.3)
   - present strength as adapter-translated evidence weight
   - resolve raw_ref_id back to consumer-side raw content
     (the consumer owns the raw store; ragcore only stores the int)

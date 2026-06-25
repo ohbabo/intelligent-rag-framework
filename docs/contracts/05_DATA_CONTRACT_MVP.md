@@ -14399,7 +14399,8 @@ collapsed into a single thing.
 
 ```text
 - the dataclass declared in ragcore.types and stored in
-  Engine._evidences after add_evidence()
+  Engine._evidences (created by add_evidence(); also restored,
+  already as Layer 3, by from_snapshot())
 - carries (id, claim_id, raw_ref_id, type, strength)
 - has no polarity field
 - being registered does NOT mean the surrounding Claim is
@@ -14425,8 +14426,15 @@ Operator acceptance is not ragcore.Evidence registration.
 
 A Layer 1 or Layer 2 object becomes a Layer 3 ragcore.Evidence
 only when a caller explicitly invokes the existing Engine API
-(`add_evidence`). §53 does not introduce any other promotion
-path.
+(`add_evidence`). `add_evidence` is the live **promotion** path
+that registers a NEW Layer-3 Evidence from consumer-side input;
+it is **not** the only way an Evidence object can be present in
+`Engine._evidences`. `Engine.from_snapshot()` is a separate
+**restoration** path: it reconstructs already-serialized Layer-3
+Evidence state and does NOT promote any Layer-1 or Layer-2
+object. §53 introduces no new promotion path or serialized object
+type. (A snapshot payload remains restore-contract input subject
+to §52, not a trusted external Evidence candidate.)
 
 §53 introduces no new conceptual type (no `ExternalRawItem`,
 `InterpretedEvidence`, or `EngineEvidenceCandidate` dataclass
@@ -14490,19 +14498,42 @@ contradiction relation  is a separately-registered relation,
 - no change to insertion-order return semantics
 ```
 
-#### Historical phrasing
+#### Active-wording ledger
 
-The runtime docstring on `Engine.evidences_for_claim`
-(`ragcore/engine.py`) currently uses the word "supporting" in
-its summary line. The docstring is a historical artifact and is
-NOT changed by §53 (§12 of the PR68-P04 directive forbids
-edits to `ragcore/`). The authoritative reading is §53.3 above;
-when a consumer reads the docstring, "supporting" must be
-interpreted in the polarity-neutral sense defined here.
+Two **active** runtime docstrings in `ragcore/engine.py` still use
+the polarity-laden word "supporting":
 
-A separate later PR may align the runtime docstring with §53.3
-if and when the runtime-edit ban is lifted; §53 explicitly does
-not schedule that work.
+```text
+Engine.add_evidence         "Add an Evidence supporting ``claim_id``"
+Engine.evidences_for_claim  "Return all Evidences supporting ``claim_id``"
+```
+
+These are not merely historical text — they are live documentation
+surfaces (visible via `help()` / IDEs). They are **retained as
+active legacy wording under the P04 runtime-edit boundary** (§12
+of the PR68-P04 directive forbids edits to `ragcore/`) and are an
+explicitly **deferred** documentation-alignment item, not a
+resolved one. §53.3 is the authoritative reading; "supporting" in
+either docstring must be read in the polarity-neutral sense above.
+A later PR may align both docstrings if and when the runtime-edit
+ban is lifted; §53 does not schedule a specific PR.
+
+Terminology-alignment ledger (consumer-facing / architecture docs):
+
+```text
+corrected (P04 + post-audit correction):
+  ENGINE_READ_SURFACE_AUDIT.md
+  ENGINE_READ_SURFACE_THAW_POLICY.md
+  LLM_CONTEXT_PACKET_SPEC.md §4.3 (value description)
+
+compatibility-locked label retained (name kept; value defined
+polarity-neutral, NOT renamed):
+  LLM_CONTEXT_PACKET_SPEC.md packet key "supporting_evidence"
+
+deferred — active runtime docstrings (runtime-edit boundary):
+  Engine.add_evidence
+  Engine.evidences_for_claim
+```
 
 ---
 
@@ -14608,11 +14639,18 @@ any bridging map between them.
 
 ```text
 - field on the Observation dataclass
-- declared as `source_type: int = 0`
-- caller-supplied integer; ragcore does not enumerate values
+- declared as `source_type: int = 0` — a Python type annotation
+  and default. The annotation communicates the intended
+  caller-side shape; it is NOT a runtime gate.
+- ragcore does not enumerate or standardize values
 - written via add_observation(...) source_type=...
 - persisted in the snapshot under "observations"
-- ragcore does not validate the value beyond it being an int
+- current ragcore performs **no runtime type validation** of
+  source_type: neither `add_observation` nor `from_snapshot`
+  checks it, and the supplied/serialized value is retained as
+  provided. §53 adds no validator and establishes no exact-int
+  rule. (A non-int value is neither recommended nor standardized;
+  this records only the actual absence of a runtime gate.)
 ```
 
 #### PR59 `SourceType`
@@ -14687,12 +14725,22 @@ wall-clock 안 봄 (PR10-A / PR10-B 정신 일관). engine-local 의미만
 clarification.
 
 ```text
-freshness                          evidence ingestion order,
-                                    measured as the integer
-                                    evidence_id allocated by
-                                    Engine._allocate_id("evidence").
-                                    Larger value = registered
-                                    later in this Engine.
+freshness                          the integer Evidence.id, read
+                                    as an ingestion-order proxy.
+                                    For LIVE evidence the id is
+                                    allocated monotonically by
+                                    Engine._allocate_id("evidence"),
+                                    so a larger id = registered
+                                    later in this Engine's history.
+                                    For RESTORED evidence, freshness
+                                    is the serialized/restored id
+                                    (preserved verbatim); it does
+                                    not independently prove the
+                                    original registration order or
+                                    wall-clock time of an arbitrary
+                                    contract-admissible snapshot
+                                    (sparse IDs remain admissible,
+                                    §52.5).
 
 freshness                          is NOT:
                                     - a wall-clock timestamp
@@ -14757,19 +14805,26 @@ freshness                           is not a clock.
 - add a new exception class
 - rename evidences_for_claim, compute_effective_confidence,
   evidence_freshness, source_type, or any other public symbol
-- modify ragcore/ source files (the runtime docstring on
-  evidences_for_claim is intentionally preserved as a
-  historical artifact; §53.3 is the authoritative reading)
+- modify ragcore/ source files (the active runtime docstrings on
+  add_evidence and evidences_for_claim are retained as active
+  legacy wording under the runtime-edit boundary and explicitly
+  deferred — see the §53.3 active-wording ledger; §53.3 is the
+  authoritative reading)
 - modify tests
 - modify examples Python source
 - introduce a new dataclass or enum
 - merge concerns from PR69-P05 (rule reference / shared gap)
 ```
 
-§53 is closed when consumer code and integration documentation
-describe Evidence, evidences_for_claim, effective_confidence,
+§53's terminology alignment is complete for consumer code,
+contracts, and architecture documentation when they describe
+Evidence, evidences_for_claim, effective_confidence,
 Observation.source_type, and freshness in the precise sense
-locked above.
+locked above. The two active runtime docstrings named in the
+§53.3 active-wording ledger (`Engine.add_evidence`,
+`Engine.evidences_for_claim`) remain a **known, explicitly
+deferred** alignment item under the runtime-edit boundary; §53
+does not claim repository-wide docstring closure while they stand.
 
 ---
 
