@@ -545,3 +545,90 @@ This PR is opened as draft; merge is part of the standard
 closing sequence (review → ready → squash merge → main re-measure
 → branch cleanup). PR67-P03 enforcement is **not** auto-scheduled
 by this PR and requires a separate directive entry.
+
+---
+
+## §15 Post-Audit Correction (independent audit, 2026-06-25)
+
+PR66-P02 received an independent post-merge audit on the current main
+baseline. P02 is documentation-only:
+
+```text
+independent audit date:   2026-06-25
+P02 runtime files changed: 0
+P02 test files changed:    0
+historical P02 accounting: preserved unchanged
+  (Engine 40 / 18, ragcore.__all__ 48, snapshot v2, 18 keys, +464
+   contract lines were the facts at P02-time and are NOT rewritten,
+   even though current main is Engine 42 / 20 / __all__ 50 after the
+   M-series.)
+```
+
+Normative §52 contract corrections applied (contract file only):
+
+- **G-P02-01** — §52.5 missing-counter semantics. A missing allocator
+  kind is now an explicit *virtual counter 0* subject to the same
+  `>= max(restored ID set)` bound; missing kind + non-empty restored
+  set is COUNTER_COLLISION_RISK → ValueError. The misleading "only
+  present entries satisfy" wording was removed.
+- **G-P02-02** — §52.3.1 gap_dedup serialized key shape is now stated
+  explicitly (list / length 4 / built-in int components / bool +
+  int-subclass rejected), as structural validation only (no semantic
+  component back-validation).
+- **G-P02-03** — new §52.1.1 fixes the representation layer
+  (in-memory tuple / serialized list / validated list / restored
+  tuple) for rule_definitions, rule_stats, gap_dedup_index, so the
+  normative contract no longer depends on a later dev record. A
+  serialized `tuple` key is the wrong serialized type.
+- **G-P02-04** — new §52.1.2: the 18 framework keys are required by
+  presence (not exact-set equality); additional top-level keys are
+  admitted as caller-adjacent metadata, not interpreted/preserved/
+  propagated, and canonical output remains 18 keys.
+- **G-P02-05** — new §52.1.3: every serialized int-keyed collection
+  entry key must be a built-in int (bool / float / str / None / int
+  subclass / IntEnum rejected, no coercion). Conceptual label
+  **COLLECTION_ENTRY_KEY_INVALID**. Contract decision only; the
+  runtime enforcement is deferred to PR67-P03.
+- **G-P02-07** — new §52.7.1 fixes the serialized identity-key
+  exception taxonomy (wrong container type → TypeError; wrong list
+  length → ValueError; wrong component type → TypeError) and notes
+  the catalogue labels span both classes.
+- **G-P02-10** — new §52.7.2: duplicate serialized mapping keys are
+  invalid (no silent first/last-wins, no automatic-repair discard) →
+  ValueError, conceptual label **DUPLICATE_SERIALIZED_KEY**. Contract
+  decision only; detection is deferred to PR67-P03.
+
+Not a defect (no change):
+
+- **G-P02-09** — input leniency for list/set/tuple buckets
+  (contradictions / claim_gap_refs / resolved_contradictions) was
+  reviewed and is NOT a P02 contract defect. Canonical
+  `to_snapshot()` output remains JSON-compatible lists; this is not a
+  new serialization guarantee.
+
+Deferred to the PR67-P03 enforcement audit (NOT fixed here, runtime
+untouched):
+
+```text
+G-P02-05 (enforcement) collection entry-key exact-int enforcement
+G-P02-06              serialized key vs value.id enforcement — §52
+                      already defines restored Claim/Evidence/Gap
+                      identities as matching their surrounding
+                      serialized keys; observed enforcement of that
+                      requirement is deferred to PR67-P03
+G-P02-07 (enforcement) wrong-length identity key currently raises
+                      TypeError; §52.7.1 fixes ValueError — alignment
+                      is a PR67-P03 runtime item
+G-P02-08              raw KeyError leaks from missing nested restore
+                      fields (claims.status / base_confidence /
+                      evidences.strength / gaps.severity) violate
+                      §52.7; conversion is a PR67-P03 runtime item
+G-P01-06B             §52 validator ordering comment/docstring vs code
+                      order — reserved for the PR67-P03 documentation
+                      audit
+```
+
+This P02 correction changes the **normative contract and this
+development explanation only**. It does **not** claim that current
+PR67-P03 runtime already satisfies every newly clarified clause; the
+deferred items above are explicitly unresolved.
