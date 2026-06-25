@@ -39,7 +39,11 @@ PR67-P03 closes that gap. After this PR:
 - The input snapshot is never mutated; the caller never sees a
   partial Engine.
 - A bare `KeyError` from a private restore helper is no longer
-  part of the contract surface (§52.7).
+  part of the contract surface (§52.7) **for the top-level-key and
+  collection-structure lookup surfaces covered by this PR's
+  original tests**. (The independent audit later found that missing
+  *nested* payload fields still surfaced raw `KeyError`; those are
+  closed by the 2026-06-26 post-audit correction — see §16.)
 - The four intentional semantic preservations from §52 (cross-
   claim contradiction freedom; gap dedup component back-
   validation deliberately omitted; advisory unregistered
@@ -68,7 +72,7 @@ snapshot top-level keys:    18
 ```
 
 222차 added `tests/test_snapshot_restore_integrity.py` (`+630`
-lines, 94 test methods). 223차 added the minimal pre-validator
+lines, 42 test methods producing 94 collected test cases). 223차 added the minimal pre-validator
 in `ragcore/engine.py` (`+343` lines, 0 removed). 224차 adds
 this record.
 
@@ -163,8 +167,17 @@ already passing                  37
 unexpected failures               0
 raw KeyError surfacing           16 (matches §52.7 gap exactly)
 wrong-exception failures          0
-silent-acceptance failures        0
+silent-acceptance / DID NOT RAISE failures   41
 ```
+
+The 57 expected failures decompose as 41 silent-acceptance
+("DID NOT RAISE") + 16 raw-KeyError surfacing (41 + 16 = 57);
+wrong-exception failures = 0. The 41 cases were invalid snapshots
+that the engine accepted because the §52 enforcement had not yet
+landed (orphan references, counter collisions, malformed identity
+keys, etc.). The original record's "silent-acceptance failures 0"
+was an accounting error corrected by the 2026-06-25 independent
+audit (which re-ran `f9a9810` and observed 41 DID NOT RAISE).
 
 Existing 1270 tests remained green throughout the test-only
 commit.
@@ -515,8 +528,10 @@ final commit:
       restored ID set empty  -> missing counter admitted.
       restored ID set > 0    -> missing counter raises ValueError.
 [x] bool not accepted as counter int.
-[x] raw KeyError never surfaces; TestNoRawKeyError... covers 16
-    missing-key + non-dict + non-list cases.
+[x] raw KeyError does not surface for the top-level-key / non-dict /
+    non-list cases; TestNoRawKeyError... covers 16 of them. (Nested
+    payload-field misses were not covered here; they are closed by the
+    2026-06-26 post-audit correction — see §16.)
 [x] no automatic repair anywhere in the validator.
 [x] input snapshot immutability asserted on every rejection path.
 [x] no new Engine method (public or private).
@@ -647,7 +662,7 @@ inventing a new ID format contract.
 
 PR67-P03 is closed when:
 
-- 222차 `test(core)` adds the 94 invariant tests.
+- 222차 `test(core)` adds the 94 collected invariant test cases.
 - 223차 `fix(engine)` adds the minimal pre-validator.
 - 224차 `docs(dev)` records this development record.
 
@@ -662,4 +677,91 @@ After merge, the P-series stack closes:
 PR65-P01  Claim Status Admission Fail-Fast              CLOSED
 PR66-P02  Snapshot Restore Integrity Contract           CLOSED
 PR67-P03  Snapshot Restore Integrity Enforcement        ready
+```
+
+---
+
+## §16 Post-Audit Correction (independent audit, 2026-06-26)
+
+PR67-P03 received an independent post-merge audit on the current
+`main` baseline. The §52 restore code path was verified byte-identical
+between the historical P03 squash (`db5a405`) and current `main`, so
+every finding below was present at the original merge and at audit
+time. This correction lands on a fresh branch as three commits
+(tests → runtime → docs); it does not amend the historical merge.
+
+Corrected runtime / test defects:
+
+- **G-P02-05** — `_collect_id_set` now rejects a non-exact-int entry
+  key (bool/float/str/None/int-subclass/IntEnum) with TypeError and
+  a duplicate key with ValueError, before any `max()`/membership, for
+  all 11 scalar int-keyed collections.
+- **G-P02-06** — claims/evidences/gaps surrounding key must equal
+  `value['id']` (mismatch → ValueError; non-dict value → TypeError).
+  Not extended to other collections.
+- **G-P02-07** — new `_validate_identity_collection` enforces the
+  §52.7.1 taxonomy for rule_stats / gap_dedup_index / rule_definitions:
+  wrong container/component type → TypeError, wrong length → ValueError,
+  duplicate logical key → ValueError. (The original tests asserted a
+  single TypeError for wrong-length; they now assert ValueError.)
+- **G-P02-08** — `from_snapshot()` converts a missing nested payload
+  field (claim status/base_confidence(.value), evidence strength(.value),
+  gap severity(.value), rule_definition prior_confidence(.value),
+  rule_stats observed_precision/false_positive_rate .value) into the
+  §52.7 ValueError surface via a narrow `except KeyError … from exc`
+  boundary, never a raw KeyError.
+- **G-P03-DUP** — duplicate logical keys are rejected in every
+  list-encoded mapping (next_id excluded — already a materialized dict).
+- **G-P03-RESOLVED-EMPTY** — the contradictions-key requirement applies
+  to every `resolved_contradictions` entry, including an empty bucket.
+- **G-P01-06B** — the §52 validator comment and docstring no longer
+  claim §52 runs after §51; the actual order
+  (migrate → §52 → §51 → populate) is unchanged and §52.6/§52.11 leave
+  it free.
+
+Additional test hardening:
+
+- complete non-list structural coverage for all 15 list surfaces
+  (adds observations/relations/rule_definitions/claim_lifecycle_events/
+  hint_evidence_types);
+- extra top-level metadata admit-and-drop positive test
+  (canonical 18-key output preserved);
+- int-subclass / IntEnum exact-int coverage on next_id values and
+  rule_stats / gap_dedup_index identity components.
+
+Record corrections (this development record):
+
+- the historical 222차 count "94 test methods" is corrected to
+  "42 test methods producing 94 collected test cases" (§2 / §13);
+- the §6 pre-implementation accounting "silent-acceptance failures 0"
+  is corrected to 41 (41 DID NOT RAISE + 16 raw-KeyError = 57);
+- the §1 raw-`KeyError` closure claim is scoped to the top-level /
+  collection-structure surfaces the original tests covered; nested
+  payload misses are closed only by this correction.
+
+Explicitly unchanged semantics:
+
+```
+cross-claim contradiction freedom
+Gap.claim_id first-registering meaning
+advisory unregistered RuleStats identity
+no gap-dedup component back-validation
+sparse IDs admitted
+missing-counter virtual-zero rule
+v1 migration / v2 deterministic round-trip
+snapshot schema_version 2
+canonical 18-key output
+public API surface (Engine 42 public / 20 private, __all__ 50)
+no new public symbol / Engine method / exception class / dependency
+input snapshot never mutated on rejection
+```
+
+Post-audit measured values:
+
+```
+test classes                     32
+test methods (def test_)         73
+focused collected cases         187
+focused passed                  187
+full suite passed              1987
 ```
