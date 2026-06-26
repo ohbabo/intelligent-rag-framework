@@ -615,7 +615,7 @@ class TestEffectiveConfidenceTraceDiagnosis:
 
     def test_diagnosis_present(self):
         diag = build()["effective_confidence_trace_diagnosis"]
-        assert diag["future_contract"] == "OC-D"
+        assert diag["historical_future_contract"] == "OC-D"
 
     def test_diagnosis_does_not_substitute_schema_version(self):
         diag = build()["effective_confidence_trace_diagnosis"]
@@ -627,7 +627,7 @@ class TestRuleStatsProvenanceDiagnosis:
 
     def test_diagnosis_present(self):
         diag = build()["rule_stats_provenance_diagnosis"]
-        assert diag["future_contract"] == "OC-G"
+        assert diag["historical_future_contract"] == "OC-G"
 
     def test_diagnosis_does_not_promote_to_engine_field(self):
         diag = build()["rule_stats_provenance_diagnosis"]
