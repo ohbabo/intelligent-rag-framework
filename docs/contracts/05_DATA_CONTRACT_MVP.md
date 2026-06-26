@@ -14868,7 +14868,7 @@ Top-level locks:
   Gap resolution         ≠ automatic Claim lifecycle transition
 ```
 
-> **§54 records what the current implementation already means; everything below is observable today on `main` `0fae073`.**
+> **§54 records what the current implementation already means. Most clauses below describe the live Engine API observed on `main` `0fae073`. Where a clause concerns snapshot restoration, the live-API meaning is distinguished from what `from_snapshot` / §52 actually validate (see §54.7, §54.9, §54.14): live-API creation history (first-registration provenance, register-time slot allocation, intended value shapes) is NOT derivable from an arbitrary admissible snapshot.**
 
 §54 builds on PR4 §16 (Gap dedup + `first registering claim`), PR11-D §24 (status modifier composition), PR20-F §32 + PR26-R §38 + PR29-R §41 (rule-stats modifier sentinel + lookup-miss + maturity + precision composition), PR28-O §40 (`(rule_id, rule_version)` joint identity for rule pinning), PR47 §39 (frozen Engine internal posture), PR52 §6 / PR53 (LLM packet / proposal layer boundaries), PR59 §17 (DataAccessProfile axes), §51 / §52 / §53. It is a clarification PR; everything it locks already holds at runtime.
 
@@ -14903,9 +14903,12 @@ Three layers must be kept apart.
 #### Layer 1 — Stored rule reference
 
 ```text
-- an int (or pair of ints) stored on a Claim, Gap, Relation, or
-  similar record at the time the caller invoked an Engine API
-- caller-supplied; ragcore stores it verbatim
+- the intended shape is an int (or pair of ints) stored on a
+  Claim, Gap, Relation, or similar record at the time the caller
+  invoked an Engine API
+- caller-supplied; ragcore stores it verbatim and applies no
+  deliberate type validation (admission is path-dependent — see
+  §54.7)
 - existence of the field does NOT prove the caller previously
   called register_rule()
 - existence of the field does NOT prove that a RuleStats slot
@@ -14931,8 +14934,13 @@ Three layers must be kept apart.
 ```text
 - the (rule_id, rule_version) -> RuleStats record currently in
   self._rule_stats
-- a slot is allocated on register_rule() (engine.py:1461);
-  Engine never auto-creates a slot for an unregistered pair
+- a slot is allocated on register_rule() (engine.py:1461) in the
+  live registration path; Engine never auto-creates a slot for an
+  unregistered pair on that path. `from_snapshot` restores
+  rule_definitions and rule_stats as independent serialized
+  collections, so a restored state may hold a RuleDefinition
+  without its RuleStats slot, or a RuleStats entry without a
+  RuleDefinition (§54.14)
 - read via Engine.get_rule_stats(rule_id, rule_version)
 - carries firing_count + optional observed_precision +
   optional false_positive_rate; mutated by update_rule_stats
@@ -15160,22 +15168,61 @@ behavior described above.
 Rule loader and mapping documents may state a numeric convention
 (for example, `1..65535` as mapped values with `0` reserved).
 The current Engine admission path does **not** enforce that
-convention at the public API surface:
+convention at the public API surface, and it has **no deliberate,
+shared runtime type validator** for these rule-reference values.
+The `: int` annotations declare the intended shape; they are not a
+runtime gate. Admission is therefore **path-dependent** — it is
+neither "only ints" nor "every value on every path":
 
 ```text
-add_claim(rule_id=*, rule_version=*)             admits any int
-add_gap(rule_id=*)                                admits any int
-add_relation(rule_id=*)                           admits any int
-register_rule(RuleDefinition(id=*, version=*))   admits any int
-                                                  except duplicates
-from_snapshot(...)                                admits stored
-                                                  rule references
-                                                  irrespective of
-                                                  registration
-                                                  status (PR67 §52
-                                                  preserves advisory
-                                                  references; see
-                                                  §54.14)
+add_claim(rule_id=*, rule_version=*)   stores the value verbatim on
+                                       the Claim record; admits any
+                                       value, including non-int and
+                                       unhashable (list / dict)
+add_relation(rule_id=*)                stores the value verbatim on
+                                       the Relation record; admits
+                                       any value, including
+                                       unhashable
+add_gap(rule_id=*)                     no deliberate type check, but
+                                       rule_id becomes a component of
+                                       the _gap_dedup_index hash key:
+                                       a hashable non-int is admitted;
+                                       an UNHASHABLE value (list /
+                                       dict) raises an incidental
+                                       TypeError before storage
+register_rule(id=*, version=*)         no deliberate type check, but
+                                       (id, version) becomes a tuple
+                                       dict key: hashable non-int
+                                       admitted (except duplicates);
+                                       UNHASHABLE raises an incidental
+                                       TypeError
+from_snapshot(...)                     restores the nested rule-
+                                       reference value fields
+                                       (Claim/Gap/Relation) verbatim
+                                       — any value — irrespective of
+                                       registration status (PR67 §52
+                                       preserves advisory references;
+                                       see §54.14). Serialized
+                                       collection KEYS may carry
+                                       separate §52 structural
+                                       validation (gap_dedup_index key
+                                       = 4 built-in ints, rule_stats
+                                       key = 2 built-in ints); that
+                                       key validation is NOT a check
+                                       on the unvalidated nested value
+                                       fields and must not be
+                                       conflated with them
+```
+
+A document MUST NOT write either false universal:
+
+```text
+- "the Engine admits only ints"          (non-int passes on several
+                                          paths)
+- "the Engine admits every value on
+   every path"                            (an unhashable value raises
+                                          an incidental TypeError
+                                          where it enters a hash key)
 ```
 
 #### Locks
@@ -15198,8 +15245,32 @@ unless they qualify the statement with the specific code path
 that enforces it.
 
 §54 does **not** add any range check. The decision whether to
-enforce a numeric convention is left to a future PR that names
-this work explicitly; §54 does not schedule it.
+enforce a numeric convention — or any rule-reference type gate —
+is left to a future PR that names this work explicitly; §54 does
+not schedule it.
+
+#### Equality / hash aliasing
+
+Where a rule reference participates in a sentinel comparison or a
+dict / dedup key, the runtime uses ordinary Python equality and
+hashing. Consequently (observed on `main` `0fae073`):
+
+```text
+created_by_rule ∈ {0, False, 0.0}   all satisfy the `== 0`
+                                    rule-stats sentinel (§54.6)
+register_rule (id=1) then (id=True) collide as the same (id,
+                                    version) key (True == 1) ->
+                                    duplicate ValueError
+add_gap rule_id=1 then rule_id=True collide as the same dedup key
+                                    (True == 1) -> same Gap reused
+```
+
+§54 does NOT introduce an exact-built-in-int boundary for these
+fields and MUST NOT be read as if one already exists. It also does
+NOT grant `False` / `0.0` / `True` / `1.0` any new rule semantics;
+these are consequences of existing Python equality / hash behavior,
+recorded only so that documents do not assume a type gate that is
+absent.
 
 ---
 
@@ -15285,9 +15356,18 @@ gaps_for_claim(B) contains G,
 even though G.claim_id is still A.
 ```
 
-§54 does not rename, delete, split, or duplicate the
-`claim_id` field on `Gap`. §52 already locks the meaning at the
-restore boundary; §54.9 is the consumer-facing restatement.
+§54 does not rename, delete, split, or duplicate the `claim_id`
+field on `Gap`. The first-registration interpretation is a
+property of the **live** `add_gap` / dedup path (above).
+`from_snapshot` restores the serialized `Gap.claim_id` value
+verbatim; current §52 does **not** validate that value's existence
+in the restored Claim set, its membership in `claim_gap_refs`, or
+its historical first-registration provenance (see §54.14, where
+`Gap.claim_id` is correspondingly absent from the enforced list).
+For an arbitrary admissible snapshot, `Gap.claim_id` is therefore
+whatever was serialized — not a proven first-registration record.
+Whether to add such restore validation is a separate future
+contract decision; §54 does not schedule it.
 
 ---
 
@@ -15542,6 +15622,23 @@ Relation.rule_id               ∈ _rule_definitions
                               (advisory; unregistered admitted)
 rule_stats key                 ∈ rule_definitions
                               (advisory; §52.4 explicit lock)
+Gap.claim_id                   ∈ restored Claim set
+                              (NOT validated; restored verbatim)
+Gap.claim_id                   ∈ claim_gap_refs membership
+                              (NOT validated)
+Gap.claim_id                   historical first-registration
+                              provenance (NOT proven by restore;
+                              see §54.9)
+RuleDefinition present         ⇒ RuleStats present
+                              (NOT implied; rule_definitions and
+                              rule_stats restore independently)
+RuleStats present              ⇒ RuleDefinition present
+                              (NOT implied; advisory orphan stats
+                              permitted, §52.4)
+nested rule-reference value    exact built-in int
+fields (created_by_rule,       (NOT validated at restore; the
+ rule_version, Gap/Relation     dataclass int annotation is not a
+ rule fields)                   restore gate — see §54.7)
 ```
 
 Observed on `main` `0fae073` (empirical probe):
