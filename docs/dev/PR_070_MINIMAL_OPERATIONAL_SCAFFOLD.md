@@ -464,7 +464,7 @@ does NOT auto-schedule any of them.
 ## §14 Tests
 
 `tests/test_minimal_operational_scaffold.py` (`+644` lines, 59
-test methods across 13 test classes mapping to §17 categories
+test methods across 14 test classes mapping to §17 categories
 A-K plus three cross-cutting categories).
 
 Test load uses `importlib.util` and never mutates `sys.path` or
@@ -472,7 +472,7 @@ introduces `__init__.py` files.
 
 ```
 TestBaselineShape                       8
-TestExistingComponentReuse              7
+TestExistingComponentReuse              8
 TestAdapterRoleDiscontinuity            4
 TestRoleAssignmentBoundary              4
 TestEngineFixtureSeparation             5
@@ -701,3 +701,128 @@ No follow-up PR is auto-scheduled by PR70-M01.
 M01 does not complete the operational spine. It makes the
 current operational discontinuities explicit, executable, and
 reviewable.
+
+---
+
+## §15 Post-Audit Correction (independent audit, 2026-06-26)
+
+PR70-M01 received an independent post-merge audit on the current
+`main` baseline. The three M01 files and their loaded dependencies
+were verified byte-identical between the M01 squash (`896e01ea`) and
+current `main`. The audit confirmed M01's structure, authority
+boundaries, fixture isolation, domain neutrality, and stage
+arithmetic (5 CONNECTED / 2 MANUAL_FIXTURE / 4 BLOCKED / 8 UNDEFINED
+/ 3 TODO = 22) are sound, and that A1 is a transparently-disclosed
+PR64 static-artifact reuse — not an execution overclaim. There is
+**no "six stages" defect**; the repository consistently records 5
+CONNECTED. Two documentation-level corrections were required, both
+arising because M01 is **byte-identical** since merge while the
+surrounding RAGCORE capability advanced (M07).
+
+Corrected findings (documentation / example only):
+
+- **G-M01-04 / G-M01-14** — the executable report's temporality was
+  ambiguous and its `effective_confidence_trace_diagnosis` returned
+  three present-tense "no" answers (`modifier_breakdown_available_
+  today`, `calculation_policy_identity_available`, `source_state_
+  reference_available`, plus `future_contract`) that **PR76-M07** had
+  since made false. M07 added `EffectiveConfidenceTrace` and
+  `Engine.compute_effective_confidence_with_trace`, exposing the six
+  per-modifier values, `calculation_policy_id`, and
+  `source_state_identity`. The report now declares itself a
+  `HISTORICAL_SNAPSHOT` (`report_temporality` block; base commit
+  `9874b441…`, merge commit `896e01ea…`), preserves the historical
+  M01 answers as explicit `*_at_m01` fields, and records OC-D
+  closure as `supersession.status = CLOSED_BY_PR76_M07` with the
+  exact public surfaces and the eight trace capabilities. The PR51
+  packet shape is unchanged and B3 is **not** retroactively
+  connected (`pr51_packet_shape_changed` /
+  `b3_packet_binding_retroactively_connected` = False). M01 stage
+  statuses are **not** rewritten to M02-M09 states.
+
+- **OC-G distinction** — the six RuleStats `caller/update/source/
+  delta/precision/policy` answers describe **Engine-internal**
+  provenance fields and **remain `no`**: **PR78-M09** closed OC-G
+  through a consumer-owned provenance contract and an executable
+  example, NOT by adding an Engine-internal provenance store. The
+  diagnosis now records `supersession.status =
+  CLOSED_BY_PR78_M09_CONSUMER_OWNED_LAYER`,
+  `engine_internal_fields_added = False`, `scope =
+  CONSUMER_OWNED_EXAMPLE_LOCAL`. "answers remain no" therefore does
+  not mean OC-G is unimplemented.
+
+- **G-M01-16** — §14 accounting corrected: "13 test classes" → "14";
+  `TestExistingComponentReuse` 7 → 8 (the per-class column now sums
+  to the correct 59). The historical M01 total of 59 test methods is
+  unchanged.
+
+`required_future_contracts` (OC-A..OC-G) is preserved verbatim and
+ordered as at M01; a new `required_future_contracts_scope =
+HISTORICAL_OPEN_ITEMS_AT_PR70_M01` marks it as the open-items list
+**at PR70-M01**, not a current roadmap or capability inventory.
+
+### Sequencing note
+
+The original post-audit directive contained a contradiction: the
+new `future_contract`-absent locks (T5/T11) conflicted with two
+pre-existing tests that asserted `future_contract == "OC-D"/"OC-G"`,
+but the directive did not include those two updates in the tests
+commit. Work stopped at **69 passed / 2 failed** and reported the
+conflict; **no known-red example commit was created**. Per GPT
+adjudication, commit `76947db` was **preserved without amend / reset
+/ rebase**, and a **second test-only commit** aligned the two
+assertions with `historical_future_contract`. This correction
+therefore uses **four** linear commits rather than three. This is a
+directive sequencing artifact, **not** an M01 implementation defect.
+
+### Unchanged behavior (this correction)
+
+```text
+ragcore delta:               0
+public API delta:            0
+snapshot schema delta:       0
+PR51 packet-shape delta:     0
+stage-id / ordering delta:   0
+stage-status delta:          0
+status-arithmetic delta:     0
+blocked_handoffs derivation: 0
+validator behavior delta:    0
+Engine mutation delta:       0
+dependency delta:            0
+```
+
+### Historical vs post-audit accounting
+
+Historical M01 facts (preserved, NOT rewritten):
+
+```text
+M01 focused tests:           59
+M01 full suite:            1423
+test classes:                14
+Engine public / private:   40 / 18
+ragcore.__all__:             48
+snapshot schema_version:      2
+snapshot top-level keys:     18
+historical changed files:     3
+```
+
+Measured current `main` values at this post-audit correction
+(distinct from the historical M01 values above):
+
+```text
+M01 focused tests:           71  (59 historical + 12 supersession locks)
+full suite:                1999
+Engine public / private:   42 / 20
+ragcore.__all__:             50
+snapshot schema_version:      2
+snapshot top-level keys:     18
+correction changed files:     3 (example + test + this record)
+correction commits:           4
+```
+
+Findings requiring no change (audit accepted): A1 CONNECTED (PR64
+artifact reuse, disclosed); 5 CONNECTED stages, no "six" defect;
+stage-status local labels; aggregate report consistency; component
+reuse; Engine fixture isolation; input/output immutability;
+determinism; JSON serializability; authority-boundary preservation;
+no invented types; domain neutrality.
