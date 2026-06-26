@@ -642,3 +642,144 @@ class TestRuleStatsProvenanceDiagnosis:
             "policy_reference_recorded",
         ):
             assert diag[k] == "no"
+
+
+# ===========================================================================
+# Post-audit: historical-snapshot temporality + M07/M09 supersession
+# (G-M01-04 / G-M01-14 / G-M01-16)
+# ===========================================================================
+
+
+_HISTORICAL_OC_ORDER = ["OC-A", "OC-C", "OC-B", "OC-E", "OC-D", "OC-F", "OC-G"]
+
+
+class TestHistoricalSnapshotSupersession:
+    """The scaffold report is an explicit PR70-M01 historical snapshot.
+    Later M-series supersession (M07 trace, M09 consumer-owned provenance)
+    is recorded as metadata WITHOUT rewriting the historical stage statuses."""
+
+    def test_t1_explicit_historical_mode(self):
+        report = build()
+        assert report["report_temporality"]["mode"] == "HISTORICAL_SNAPSHOT"
+
+    def test_t2_exact_m01_identity(self):
+        t = build()["report_temporality"]
+        assert t["internal_track"] == "PR70-M01"
+        assert t["base_commit"] == "9874b44127c765176cb4ec6bb7158e5f7a8b7316"
+        assert t["merge_commit"] == "896e01ea3142e17a591a3054963d498744709e2e"
+
+    def test_t3_stage_status_temporal_boundary(self):
+        t = build()["report_temporality"]
+        assert t["stage_statuses_as_of"] == "PR70-M01"
+        assert t["current_capability_inventory"] is False
+
+    def test_t4_historical_future_contract_scope(self):
+        report = build()
+        assert (
+            report["required_future_contracts_scope"]
+            == "HISTORICAL_OPEN_ITEMS_AT_PR70_M01"
+        )
+        ocs = [c["id"] for c in report["required_future_contracts"]]
+        assert ocs == _HISTORICAL_OC_ORDER
+
+    def test_t5_stale_present_tense_confidence_keys_removed(self):
+        diag = build()["effective_confidence_trace_diagnosis"]
+        for stale in (
+            "modifier_breakdown_available_today",
+            "calculation_policy_identity_available",
+            "source_state_reference_available",
+            "future_contract",
+        ):
+            assert stale not in diag
+
+    def test_t6_m01_historical_confidence_answers_retained(self):
+        diag = build()["effective_confidence_trace_diagnosis"]
+        for k in (
+            "modifier_breakdown_available_at_m01",
+            "calculation_policy_identity_available_at_m01",
+            "source_state_reference_available_at_m01",
+        ):
+            assert k in diag
+            assert str(diag[k]).lower().startswith("no")
+
+    def test_t7_oc_d_supersession(self):
+        diag = build()["effective_confidence_trace_diagnosis"]
+        assert diag["historical_future_contract"] == "OC-D"
+        assert diag["supersession"]["status"] == "CLOSED_BY_PR76_M07"
+
+    def test_t8_exact_m07_public_surfaces(self):
+        sup = build()["effective_confidence_trace_diagnosis"]["supersession"]
+        assert sup["public_type"] == "EffectiveConfidenceTrace"
+        assert (
+            sup["public_method"]
+            == "Engine.compute_effective_confidence_with_trace"
+        )
+        import ragcore
+        from ragcore import Engine
+        assert "EffectiveConfidenceTrace" in ragcore.__all__
+        assert hasattr(Engine, "compute_effective_confidence_with_trace")
+
+    def test_t9_exact_m07_capability_list(self):
+        sup = build()["effective_confidence_trace_diagnosis"]["supersession"]
+        assert sup["trace_capabilities"] == [
+            "status_modifier",
+            "freshness_modifier",
+            "gap_modifier",
+            "count_modifier",
+            "rule_stats_modifier",
+            "evidence_type_modifier",
+            "calculation_policy_id",
+            "source_state_identity",
+        ]
+
+    def test_t10_b3_and_pr51_packet_boundary_preserved(self):
+        report = build()
+        stages = {s["stage_id"]: s for s in _all_stages(report)}
+        assert stages["B3"]["status"] == "UNDEFINED"
+        assert len(stages["B2"]["packet_keys"]) == 7
+        sup = report["effective_confidence_trace_diagnosis"]["supersession"]
+        assert sup["pr51_packet_shape_changed"] is False
+        assert sup["b3_packet_binding_retroactively_connected"] is False
+
+    def test_t11_rule_stats_diagnosis_m09_distinction(self):
+        diag = build()["rule_stats_provenance_diagnosis"]
+        for k in (
+            "caller_identity_recorded",
+            "update_reason_recorded",
+            "source_observation_reference_recorded",
+            "delta_provenance_recorded",
+            "precision_input_basis_recorded",
+            "policy_reference_recorded",
+        ):
+            assert diag[k] == "no"
+        assert "future_contract" not in diag
+        assert diag["historical_future_contract"] == "OC-G"
+        sup = diag["supersession"]
+        assert sup["status"] == "CLOSED_BY_PR78_M09_CONSUMER_OWNED_LAYER"
+        assert sup["engine_internal_fields_added"] is False
+        assert sup["scope"] == "CONSUMER_OWNED_EXAMPLE_LOCAL"
+
+    def test_t12_preservation(self):
+        import json
+        from copy import deepcopy
+        report = build()
+        stages = _all_stages(report)
+        assert len(stages) == 22
+        counts = {}
+        for s in stages:
+            counts[s["status"]] = counts.get(s["status"], 0) + 1
+        assert counts == {
+            "CONNECTED": 5,
+            "MANUAL_FIXTURE": 2,
+            "BLOCKED": 4,
+            "UNDEFINED": 8,
+            "TODO": 3,
+        }
+        json.dumps(report)  # JSON serializable
+        assert build() == build()  # deterministic
+        report1 = build()
+        report1["report_temporality"]["mode"] = "MUTATED"
+        report1["lanes"]["external_ingress"][0]["status"] = "MUTATED"
+        report2 = build()
+        assert report2["report_temporality"]["mode"] == "HISTORICAL_SNAPSHOT"
+        assert report2["lanes"]["external_ingress"][0]["status"] == "CONNECTED"
