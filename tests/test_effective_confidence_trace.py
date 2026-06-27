@@ -829,11 +829,15 @@ class TestModifierHelperCallCount:
 
 
 class TestSingleMultiplicationSite:
-    """AST-level lock that the six-modifier multiplication
-    expression lives in exactly one Engine method body
-    (_compute_effective_confidence_core). Contract §6
-    explicitly forbids two multiplication sites for the
-    same formula."""
+    """Locks the single fixed-v1 composition site in
+    ragcore._engine.confidence.compose_effective_confidence (the pure
+    composer is the only place the six-modifier multiplication lives),
+    and verifies at RUNTIME that Engine's private core invokes each of
+    the six modifier wrappers and the composer exactly once. Contract §6
+    forbids a second multiplication site for the same formula. Phase 2
+    relocated the composition out of the Engine method body into the
+    composer; these checks are runtime / inspect.getsource based, so they
+    survive a Phase-3 relocation of the Engine methods."""
 
     _HELPER_NAMES = frozenset({
         "_status_modifier_for_claim",
@@ -979,26 +983,32 @@ class TestSingleMultiplicationSite:
 
 
 class TestExactCompositionExpression:
-    """261차 audit closure — contract §6 requires the private core
-    to contain exactly one ordered base × six-modifier composition.
-    The earlier `>= 6 Mult ops` test detected formula truncation but
-    did not lock the exact expression. This class walks the AST of
-    the ScoreValue(...) argument inside
-    _compute_effective_confidence_core, flattens the left-associative
-    Mult chain, and asserts:
+    """261차 audit closure — contract §6 requires exactly one ordered
+    base × six-modifier composition. The earlier `>= 6 Mult ops` test
+    detected formula truncation but did not lock the exact expression.
 
-      1. exactly one ScoreValue(...) call appears inside the core body
-      2. the call's first positional argument is a Mult chain
-      3. flattening that chain yields exactly 7 leaf operands
-      4. flattening contains exactly 6 ast.Mult nodes
-      5. the 7 leaves are, in order:
-           claim.base_confidence.value
-           status_modifier
-           freshness_modifier
-           gap_modifier
-           count_modifier
-           rule_stats_modifier
-           evidence_type_modifier
+    Phase 2 moved the composition into the pure composer
+    confidence.compose_effective_confidence; the Engine private core now
+    wraps the composer's float result in one ScoreValue. This class walks
+    the AST of the composer's single return expression, flattens the
+    left-associative Mult chain, and asserts:
+
+      1. flattening that chain yields exactly 7 leaf operands
+      2. flattening contains exactly 6 ast.Mult nodes
+      3. the 7 leaves are, in order (the composer parameter names):
+           base_confidence
+           status_mod
+           freshness_mod
+           gap_mod
+           count_mod
+           rule_stats_mod
+           evidence_type_mod
+
+    Separately, it verifies that
+    Engine._compute_effective_confidence_core (resolved at runtime via
+    inspect.getsource, location-agnostic) contains exactly one ScoreValue
+    construction wrapped around exactly one composer delegation, and no
+    composition multiplication of its own.
     """
 
     # Phase 2: the composition moved to the pure composer
