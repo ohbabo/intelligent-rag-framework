@@ -510,3 +510,19 @@ then (only on separate direction):
 Push and Draft PR creation are not part of this 283차 commit.
 
 No automatic next PR. Framework waits for directive.
+
+---
+
+## Post-merge reconciliation (independent audit, 2026-06-27)
+
+PR78-M09 was squash-merged as GitHub PR #79 (6d43cd8959fa9e37a60efe527f84b5ba60c6413e) onto 31e0210998374815c90dc9671069034bf6e10d1b, 2026-06-25 (KST 20:34). The
+intermediate "Draft / OPEN — DRAFT, NOT MERGED" and "Framework
+waits for directive" language, and any "(this commit)" / "(this)"
+차수 self-references earlier in this record, are historical accounts
+of the pre-merge correction cycle; they are superseded by this
+block.
+
+Final state: PR78-M09 CLOSED (merged). This reconciliation changes no
+runtime, contract semantics, or historical metric recorded above.
+Current main baseline: 1999 passed, Engine 42 / 20, ragcore.__all__
+50, snapshot schema_version 2 / 18 keys, PR51 packet 7 keys.

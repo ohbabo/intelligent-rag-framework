@@ -886,3 +886,19 @@ PR78-M09   NOT STARTED
 
 No automatic next PR. PR remains Draft. Framework waits for
 directive.
+
+---
+
+## Post-merge reconciliation (independent audit, 2026-06-27)
+
+PR75-M06 was squash-merged as GitHub PR #76 (9f576a5b072f4d194083d9b4c20d997d78c4b787) onto 80759048e98d9255596a8aa56bf4ea94cd9d1250, 2026-06-19 (KST 14:51). The
+intermediate "Draft / OPEN — DRAFT, NOT MERGED" and "Framework
+waits for directive" language, and any "(this commit)" / "(this)"
+차수 self-references earlier in this record, are historical accounts
+of the pre-merge correction cycle; they are superseded by this
+block.
+
+Final state: PR75-M06 CLOSED (merged). This reconciliation changes no
+runtime, contract semantics, or historical metric recorded above.
+Current main baseline: 1999 passed, Engine 42 / 20, ragcore.__all__
+50, snapshot schema_version 2 / 18 keys, PR51 packet 7 keys.
