@@ -27,7 +27,6 @@ Expected result:
 from __future__ import annotations
 
 import inspect
-import re
 
 import ragcore
 from ragcore import Engine
@@ -267,13 +266,30 @@ class TestImportSurfaceSideEffects:
         }
         # We allow standard library modules that other parts of pytest may
         # have already imported (e.g., asyncio is used by pytest plugins).
-        # The strict check is on ragcore's own source:
-        import ragcore.engine
-        engine_src = inspect.getsource(ragcore.engine)
-        for forbidden in {"requests", "urllib", "httpx", "socket.socket"}:
-            assert f"import {forbidden}" not in engine_src, (
-                f"ragcore.engine must not import {forbidden} (§48.9)"
-            )
+        # The strict check is PACKAGE-WIDE on ragcore's own source (Phase 0):
+        # ragcore.engine plus the private ragcore._engine package once code
+        # relocates there, so a forbidden import in a relocated module is not
+        # missed (the previous scan covered ragcore.engine only).
+        import importlib
+        import pkgutil
+
+        modules_to_scan = [importlib.import_module("ragcore.engine")]
+        try:
+            engine_pkg = importlib.import_module("ragcore._engine")
+        except ModuleNotFoundError:
+            engine_pkg = None  # private package not created yet (pre-Phase-1)
+        if engine_pkg is not None:
+            modules_to_scan.append(engine_pkg)
+            for info in pkgutil.walk_packages(
+                engine_pkg.__path__, "ragcore._engine."
+            ):
+                modules_to_scan.append(importlib.import_module(info.name))
+        for mod in modules_to_scan:
+            mod_src = inspect.getsource(mod)
+            for forbidden in {"requests", "urllib", "httpx", "socket.socket"}:
+                assert f"import {forbidden}" not in mod_src, (
+                    f"{mod.__name__} must not import {forbidden} (§48.9)"
+                )
 
 
 class TestModifierHelperSignatures:
@@ -313,64 +329,28 @@ class TestModifierHelperSignatures:
 
 
 class TestSerializeRestoreSymmetry:
-    """§48.2 + PR35-O7 §47 — serialize / restore helper 6 × 6 symmetry.
+    """§48.2 — serialize / restore correctness.
 
-    PR35-O7 S1+S2 added 4 missing _restore_dict_* helpers to achieve
-    6 × 6 symmetry with _serialize_dict_*. PR36-PKG locks this symmetry
-    so future snapshot internal refactors preserve it.
+    The previous in-source `_serialize_dict_*` / `_restore_dict_*` regex
+    counts were an implementation-LOCATION lock (they break a pure
+    relocation of the helpers). Per the Engine v1 refactoring plan
+    (Phase 0 — contract-test taxonomy migration) the exhaustive coverage
+    moved to a location-agnostic BEHAVIORAL round-trip exercising all six
+    snapshot shape families: see tests/test_engine_phase0_taxonomy.py
+    (TestSerializeRestoreRoundTrip). This smoke test stays as a quick
+    in-file guard.
     """
 
-    def _engine_source(self) -> str:
-        import ragcore.engine as engine_mod
-        return inspect.getsource(engine_mod)
-
-    def test_serialize_dict_helpers_count_is_6(self) -> None:
-        src = self._engine_source()
-        helpers = re.findall(r"^def (_serialize_dict_\w+)", src, re.MULTILINE)
-        assert len(helpers) == 6, f"Expected 6 serialize helpers, got {len(helpers)}: {helpers}"
-
-    def test_restore_dict_helpers_count_is_6(self) -> None:
-        src = self._engine_source()
-        helpers = re.findall(r"^def (_restore_dict_\w+)", src, re.MULTILINE)
-        assert len(helpers) == 6, f"Expected 6 restore helpers, got {len(helpers)}: {helpers}"
-
-    def test_serialize_restore_shape_class_symmetry(self) -> None:
-        src = self._engine_source()
-        # Extract shape class identifiers from each helper name
-        # _serialize_dict_int_dataclass → "int_dataclass"
-        # _restore_dict_int             → "int" (mirrors int_dataclass)
-        # _restore_dict_tuple           → "tuple" (mirrors tuple_dataclass)
-        # _serialize_dict_tuple4_int    ↔ _restore_dict_tuple4_int
-        # etc.
-        ser_shapes = set(
-            name.replace("_serialize_dict_", "")
-            for name in re.findall(r"^def (_serialize_dict_\w+)", src, re.MULTILINE)
+    def test_populated_round_trip_smoke(self) -> None:
+        import copy
+        e = Engine()
+        ent = e.add_entity(entity_type=1)
+        e.add_claim(
+            subject_id=ent, claim_type=1, rule_id=1, rule_version=1,
+            reason_code=0, base_confidence=0.5,
         )
-        res_shapes = set(
-            name.replace("_restore_dict_", "")
-            for name in re.findall(r"^def (_restore_dict_\w+)", src, re.MULTILINE)
-        )
-        # Expected shape pairs after PR35-O7:
-        expected_ser = {
-            "int_dataclass",
-            "tuple_dataclass",
-            "tuple4_int",
-            "int_set",
-            "int_int",
-            "int_list_dataclass",
-        }
-        # Restore helpers use slightly different naming (no _dataclass suffix
-        # for the two that take a from_dict factory) per §47.5 note.
-        expected_res = {
-            "int",
-            "tuple",
-            "tuple4_int",
-            "int_set",
-            "int_int",
-            "int_list_dataclass",
-        }
-        assert ser_shapes == expected_ser
-        assert res_shapes == expected_res
+        snap = e.to_snapshot()
+        assert Engine.from_snapshot(copy.deepcopy(snap)).to_snapshot() == snap
 
 
 class TestSnapshotShapeFreeze:

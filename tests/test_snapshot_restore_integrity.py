@@ -667,26 +667,20 @@ class TestV1MigrationPreserved:
 class TestStructuralInvariantsUnchanged:
     """PR67 must not change Engine method count or public surface."""
 
-    def test_engine_method_counts(self) -> None:
-        import ast
-        src = open("ragcore/engine.py").read()
-        tree = ast.parse(src)
-        public = private = 0
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef) and node.name == "Engine":
-                for item in node.body:
-                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        if item.name.startswith("_"):
-                            private += 1
-                        else:
-                            public += 1
-        # PR73-M04 shift: 40 → 41 public (state_identity);
-        # 18 → 19 private (_advance_state_revision).
-        # PR76-M07 shift: 41 → 42 public
-        # (compute_effective_confidence_with_trace);
-        # 19 → 20 private (_compute_effective_confidence_core).
-        assert public == 42
-        assert private == 20
+    def test_engine_public_method_count(self) -> None:
+        # Phase 0 (Engine v1 refactoring plan): the public surface is the
+        # external contract — checked at RUNTIME via introspection, not by an
+        # AST class-body location count. The private TOTAL count is
+        # intentionally NOT locked: it is not an external contract, and the
+        # refactor introduces private seams (e.g. _install). Named private
+        # seams (the 6 modifier helpers) are locked by name + signature in
+        # test_engine_method_surface_freeze.py; full public signatures are
+        # locked in test_engine_phase0_taxonomy.py.
+        public = [
+            name for name in dir(Engine)
+            if not name.startswith("_") and callable(getattr(Engine, name))
+        ]
+        assert len(public) == 42
 
     def test_ragcore_all_unchanged(self) -> None:
         import ragcore
