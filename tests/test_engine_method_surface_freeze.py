@@ -26,10 +26,45 @@ Expected result:
 
 from __future__ import annotations
 
+import ast
 import inspect
+from pathlib import Path
+
+import pytest
 
 import ragcore
 from ragcore import Engine
+
+
+# Forbidden import roots — ragcore's judgment core must not pull in network /
+# process / async modules. Checked by AST over the FILESYSTEM so every import
+# form (`from requests import Session`, bare `import socket`, `urllib.parse`)
+# is caught, and the modules are never imported/executed (a relocated
+# module's internal ModuleNotFoundError cannot mask the scan).
+_FORBIDDEN_IMPORT_ROOTS: frozenset[str] = frozenset({
+    "requests", "urllib", "urllib3", "httpx", "socket", "subprocess", "asyncio",
+})
+
+
+def _import_roots(source: str) -> set[str]:
+    roots: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.split(".", 1)[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            roots.add(node.module.split(".", 1)[0])
+    return roots
+
+
+def _ragcore_refactor_source_files() -> list[Path]:
+    """ragcore/engine.py + every file in the private ragcore/_engine package
+    (when it exists). Resolved from the package location, not cwd."""
+    root = Path(ragcore.__file__).resolve().parent
+    files = [root / "engine.py"]
+    engine_pkg = root / "_engine"
+    if engine_pkg.is_dir():
+        files.extend(sorted(engine_pkg.rglob("*.py")))
+    return files
 
 
 # ----------------------------------------------------------------------
@@ -248,48 +283,35 @@ class TestImportSurfaceSideEffects:
         restored = Engine.from_snapshot(engine.to_snapshot())
         assert restored.to_snapshot() == engine.to_snapshot()
 
-    def test_ragcore_module_has_no_forbidden_runtime_imports(self) -> None:
-        # ragcore must not pull in network / scanner / LLM dependencies
-        # at import time (§48.9).
-        forbidden_modules = {
-            "requests",
-            "urllib3",
-            "httpx",
-            "socket",
-            "subprocess",
-            "asyncio",
-        }
-        import sys
-        # Force re-import to test fresh import behavior
-        loaded_after_import = {
-            mod for mod in forbidden_modules if mod in sys.modules
-        }
-        # We allow standard library modules that other parts of pytest may
-        # have already imported (e.g., asyncio is used by pytest plugins).
-        # The strict check is PACKAGE-WIDE on ragcore's own source (Phase 0):
-        # ragcore.engine plus the private ragcore._engine package once code
-        # relocates there, so a forbidden import in a relocated module is not
-        # missed (the previous scan covered ragcore.engine only).
-        import importlib
-        import pkgutil
+    def test_ragcore_engine_sources_have_no_forbidden_imports(self) -> None:
+        # §48.9 (Phase 0): ragcore's judgment core must not import network /
+        # process / async modules. Checked PACKAGE-WIDE by AST over the
+        # FILESYSTEM (ragcore/engine.py + ragcore/_engine/** when it exists),
+        # so every import form is caught and no module is imported/executed
+        # (a relocated module's internal ModuleNotFoundError cannot mask the
+        # scan; the previous substring scan missed `from X import ...` forms).
+        for path in _ragcore_refactor_source_files():
+            offending = _import_roots(path.read_text()) & _FORBIDDEN_IMPORT_ROOTS
+            assert not offending, (
+                f"{path} imports forbidden module(s): {sorted(offending)} (§48.9)"
+            )
 
-        modules_to_scan = [importlib.import_module("ragcore.engine")]
-        try:
-            engine_pkg = importlib.import_module("ragcore._engine")
-        except ModuleNotFoundError:
-            engine_pkg = None  # private package not created yet (pre-Phase-1)
-        if engine_pkg is not None:
-            modules_to_scan.append(engine_pkg)
-            for info in pkgutil.walk_packages(
-                engine_pkg.__path__, "ragcore._engine."
-            ):
-                modules_to_scan.append(importlib.import_module(info.name))
-        for mod in modules_to_scan:
-            mod_src = inspect.getsource(mod)
-            for forbidden in {"requests", "urllib", "httpx", "socket.socket"}:
-                assert f"import {forbidden}" not in mod_src, (
-                    f"{mod.__name__} must not import {forbidden} (§48.9)"
-                )
+    @pytest.mark.parametrize("source", [
+        "import socket",
+        "from socket import socket",
+        "import urllib.request",
+        "from urllib.parse import urlparse",
+        "from requests import Session",
+        "from httpx import Client",
+        "import subprocess",
+        "import asyncio",
+    ])
+    def test_forbidden_import_detector_catches_common_forms(
+        self, source: str
+    ) -> None:
+        # Negative control: the AST detector flags the common import forms the
+        # previous substring scan silently passed.
+        assert _import_roots(source) & _FORBIDDEN_IMPORT_ROOTS
 
 
 class TestModifierHelperSignatures:
