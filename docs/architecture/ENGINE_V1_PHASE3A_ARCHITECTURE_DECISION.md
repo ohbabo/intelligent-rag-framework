@@ -49,6 +49,14 @@ Historical figures deliberately NOT reused: "engine.py 1800", "40 public / 21
 private", "1145 tests". Superseded by the table above.
 
 ## Current measured topology
+> **Raw evidence is persisted in `ENGINE_V1_PHASE3A_EVIDENCE.md`** (companion
+> file): a sparse 63-method table (per method: visibility, cluster, **read
+> stores**, mutated stores + operation, **all self-call edges**, cross-cluster
+> callees, read-only/mutating) plus every derived value below recomputed from it
+> (SCC count, revision/ID-authority callers, the full cross-cluster edge list
+> incl. the `C2↔C5 = 0` and `C9→C5` edges, cross-cluster write ownership, and the
+> module-function port width). A future reviewer can re-verify each conclusion in
+> this section from that table alone, without the (uncommitted) analysis scripts.
 
 ### State inventory (19 instance fields)
 17 persisted (in snapshot / `_state_view` / `_install`):
@@ -185,7 +193,7 @@ The **discriminating** gates:
 |---|---|---|---|
 | **G4** named private seams preserved (`Engine._seam` resolvable **and** `getsource` returns the seam's real body for the M07-pinned `_compute_effective_confidence_core`) | **PASS** — inherited; `getsource` follows the function to the mixin module → real body (measured) | **CONDITIONAL** — if the confidence cluster is delegated, `getsource(Engine._compute_effective_confidence_core)` returns the **wrapper**, not the body (measured) → M07 body assertions fail; passes only if this seam is kept on `Engine` (an exception to the pattern) | **CONDITIONAL** — identical to B |
 | **G6** no runtime import cycle | PASS (mixins use `self`, import `types`+kernels only) | PASS (TYPE_CHECKING-only Engine import) | PASS (TYPE_CHECKING-only port import) |
-| **G7** per-kind stores, no generic store | PASS (stores on `self`, accessed directly) | PASS on letter — but each delegate's back-ref exposes the **whole** store set | PASS on letter — but the `state` port must expose **14 stores + 12 private methods** (measured; ≈ entire private surface) |
+| **G7** per-kind stores, no generic store | PASS (stores on `self`, accessed directly) | PASS on letter — but each delegate's back-ref exposes the **whole** store set | PASS on letter — but the `state` port must expose **14 stores + 11 infra methods directly (transitive closure: 19 stores + 12 private methods)** (measured; ≈ entire private surface) |
 | **G9** 3B as independent cluster PRs | PASS — one mixin per cluster; shared C1 extracted/retained as base | CONDITIONAL — shared infra (12 methods) must be resolved into the port/base first; heavier first PR | CONDITIONAL — same |
 | **G11** don't revert tests to location locks | PASS — no test change needed | CONDITIONAL — delegating the seam forces an M07 change/re-pin | CONDITIONAL — same |
 
@@ -285,7 +293,7 @@ existing introspection surface**:
    Mixins reach all of this through the same `self` with **zero back-reference
    and zero generic store**. Delegation needs a back-reference that exposes the
    whole store set to every delegate; module functions need a `state` port
-   **measured at 14 stores + 12 private methods** (≈ the entire private surface).
+   **measured at 14 stores + 11 infra methods directly (transitive closure: 19 stores + 12 private methods)** (≈ the entire private surface).
 2. Mixins pass **G4/G9/G11 cleanly**: `getsource(Engine._compute_effective_confidence_core)`
    still returns the real body (the M07 lock), zero façade boilerplate, zero test
    change. Delegation/module-fn pass these only **conditionally** — by keeping
@@ -318,8 +326,10 @@ while preserving the one seam-introspection property a test actually pins.
 
 ### Rejected — Candidate C (module functions)
 - Same conditional G4/G11 seam-`getsource` break + traceback frame as B.
-- G7 quantified: the `state` port is **measured at 14 stores + 12 private
-  methods** — essentially the entire private surface threaded as a parameter.
+- G7 quantified: the `state` port is **measured at 14 stores + 11 infra methods
+  called directly (transitive closure: all 19 stores + 12 private methods)** —
+  essentially the entire private surface threaded as a parameter. See
+  `ENGINE_V1_PHASE3A_EVIDENCE.md` §Derived.
   Either the port is `self` (then the functions are relocated methods that still
   need Engine wrappers — B's boilerplate) or a `Protocol` duplicating the whole
   private surface.
@@ -330,13 +340,19 @@ while preserving the one seam-introspection property a test actually pins.
 Because the selected architecture composes mixins that share `self`:
 
 - **No-expansion rule (a 3B design constraint that FOLLOWS from selecting mixins
-  — it was not a premise of the selection):** any cluster that reads or writes a
-  `self._<store>`, or calls a shared-`self` seam (`_advance_state_revision`,
-  `_allocate_id`, `_assert_*_exists`, `_record_claim_lifecycle_transition`), is
-  implemented as a **mixin**. Only **fully stateless pure computation** may be a
-  module function. That exception is closed today at exactly **two** modules —
-  `confidence.py` and `serialization.py` — and may not expand to any stateful
-  cluster.
+  — it was not a premise of the selection):** **except for the explicitly
+  retained C1 core infrastructure (which stays on the `Engine` base), every
+  *extracted* state-accessing cluster is implemented as a mixin** — i.e. a cluster
+  that reads or writes a `self._<store>` or calls a shared-`self` seam
+  (`_advance_state_revision`, `_allocate_id`, `_assert_*_exists`,
+  `_record_claim_lifecycle_transition`) is a mixin, not a module function. Only
+  **fully stateless pure computation** may be a module function; that exception is
+  closed today at exactly **two** modules — `confidence.py` and
+  `serialization.py` — and may not expand to any stateful cluster. **C1 is the one
+  named exception: it is neither extracted as a mixin nor a module function — it
+  remains on `Engine`.** This resolves the apparent tension that C1 itself writes
+  `_next_id`/`_state_revision` and owns the shared seams: the rule governs
+  *extracted* clusters, and C1 is, by this decision, not extracted.
 - **Accepted introspection deltas (explicitly approved, not hidden):**
   `method.__qualname__` becomes `"<Mixin>.<name>"`; `method.__module__` becomes
   the mixin module; the declaring class becomes the mixin; methods are inherited
@@ -381,7 +397,9 @@ largest line count):
 3B-8  C5 lifecycle/contra. confirm/dispute/refute/resolve_*_if_ready, register_contradiction(_resolution), *contradictions_* queries
                            (writes _claims status; placed AFTER C4 and C6 on which it depends)
 3B-9  C10 snapshot façade  to_snapshot, from_snapshot, _state_view, _install (delegate to serialization kernel)
-(C1 core/identity/id/guards: stays on the Engine base — optional final CoreMixin extraction only if it adds clarity)
+(C1 core/identity/id/guards: **stays on the `Engine` base. No optional CoreMixin
+extraction is authorized by this ADR** — moving C1 later requires a separate
+decision / change-control entry, not an ad-hoc "adds clarity" judgment during 3B.)
 C2 and C5 are SEPARATE steps: they share the `_claims` store (which stays on Engine) but have no direct cross-call,
 so neither alone breaks a cycle/seam/runnable-main/contract-suite. The shared-store write is verified by regression,
 not forced into one PR. Recombine ONLY on measured evidence of non-isolability (see Consequences).
@@ -421,7 +439,7 @@ inline instead, producing the same record.
   *more* of what tests actually assert. Rejected.
 - *Module functions are the most testable/pure.* → The pure parts are **already**
   module functions (confidence/serialization). For the stateful clusters the
-  measured port is 14 stores + 12 private methods ≈ the whole private surface.
+  measured port is 14 stores + 11 infra methods directly (transitive closure: 19 stores + 12 private methods) ≈ the whole private surface.
   Rejected on measured exposure.
 - *Mixins are a code smell / MRO is fragile.* → The self-call graph is a **DAG
   with 0 SCCs**; no `super()` cooperation or diamond is required (mixins are
@@ -450,7 +468,9 @@ any selection.
    hidden — yes (measured table + Accepted deltas).
 3. delegation's +1 traceback frame classified as a **cost**, not a blocker — yes;
    the blocker-candidate (seam `getsource`) is separated out as G4/G11.
-4. module-fn state-port width proven from the store matrix — yes (14 + 12).
+4. module-fn state-port width proven from the store matrix — yes (14 stores + 11
+   infra methods directly; transitive closure all 19 stores + 12 private methods;
+   see `ENGINE_V1_PHASE3A_EVIDENCE.md`).
 5. the 10 clusters' real independence stated honestly — yes (DAG, but shared C1 +
    C6 + `_claims` co-ownership; not ten islands).
 6. first 3B cluster is the lowest write-coupling, not the largest — yes (C8/C3,

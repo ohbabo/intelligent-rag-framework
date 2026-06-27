@@ -49,13 +49,16 @@ engine.py 1596 lines; Engine class 1461 lines; 42 public / 21 private runtime me
 __all__ 50; snapshot schema 2 / 18 keys; packet 7 keys
 self-call graph: DAG, 0 non-trivial SCCs
 single revision authority _advance_state_revision (20 callers); single ID authority _allocate_id (6)
-cross-cluster WRITE coupling: _claims only (C2 CRUD-add + C5 lifecycle status)
+cross-cluster WRITE coupling: _claims only — operational mutation ownership,
+  excluding the C10 bulk _install restore (C2 CRUD-add + C5 lifecycle status)
 lock inventory: 0 fixed-file engine.py locks; binding = dir(Engine)==42 (runtime),
   getsource(Engine._seam)=real body, setattr(Engine, name, spy)
 introspection deltas (4 prototypes): mixin changes __dict__/__qualname__/__module__/
   declaring-class/mro (asserted by NO test) but preserves getsource(seam)=real body;
   delegation/module-fn wrap the seam (getsource=wrapper) + add 1 traceback frame
-module-fn state-port width: 14 stores + 12 private methods (≈ entire private surface)
+module-fn state-port width: 14 stores + 11 infra methods called directly;
+  transitive closure = all 19 stores + 12 private methods (≈ entire private surface)
+full per-method evidence + recomputed derived values: docs/architecture/ENGINE_V1_PHASE3A_EVIDENCE.md
 ```
 
 ## Commit chronology
@@ -65,8 +68,10 @@ f49cedc docs(architecture): audit current Engine topology and compare decomposit
 a785d01 docs(architecture): select Phase 3 architecture (mixins) and define 3B entry gates
         (ADR commit 2 — selection AFTER comparison; consequences/3B/entry/adversarial record + plan addendum)
 c3d0a95 docs(dev): record Phase 3A decision-gate history (this file, initial)
-<R1-R4> docs(review): correct Phase 3A scope, store ownership, and 3B sequencing
+8ed8aaf docs(review): correct Phase 3A scope, store ownership, and 3B sequencing
         (GPT review round 1: v2 over-spec removed; mutator/owner matrix; C2/C5 split; wording)
+<this>  docs(review): add persistent evidence appendix, scope C1 in the no-expansion rule, fix chronology
+        (GPT review round 2: BLOCKER 1 evidence file; BLOCKER 2 C1 boundary; BLOCKER 3 chronology/qualifier)
 ```
 No commit was amended, rebased, or squashed.
 
@@ -111,20 +116,46 @@ No commit was amended, rebased, or squashed.
   to "mixin composition for the state-accessing Engine method clusters, with C1
   on Engine and confidence/serialization kept as module functions."
 
+## GPT independent review corrections (round 2 — second review)
+- **BLOCKER 1 — persistent audit evidence was missing.** The raw self-call graph
+  and read/write matrix lived only in uncommitted `/tmp` scripts, so a reviewer
+  could not re-verify "DAG", "C2↔C5 = 0", "C9→C5 edges", or the port width from
+  the documents alone. Added `docs/architecture/ENGINE_V1_PHASE3A_EVIDENCE.md`: a
+  sparse 63-method table (visibility, cluster, read stores, mutated stores + op,
+  all self-call edges, cross-cluster callees, read-only/mutating) plus every
+  derived value recomputed from it. Referenced from the ADR.
+- **BLOCKER 2 — C1 boundary self-contradiction.** The no-expansion rule
+  ("touch a `self._store` or shared-`self` seam ⇒ mixin") would have implied C1
+  (which writes `_next_id`/`_state_revision` and owns the seams) must be a mixin,
+  contradicting "C1 retained on Engine". Scoped the rule to *extracted* clusters
+  ("except for the explicitly retained C1 core infrastructure, every extracted
+  state-accessing cluster is a mixin"), and closed the 3B plan: **C1 remains on
+  Engine; no optional CoreMixin extraction is authorized by this ADR** (moving C1
+  later needs a separate change-control decision, not an ad-hoc "adds clarity").
+- **BLOCKER 3 — chronology placeholder + missing qualifier.** Replaced the
+  `<R1-R4>` placeholder with the real SHA `8ed8aaf389cfe9d9499dddcc1fc043366b4b65a3`,
+  and made the "only store written by >1 cluster" claim consistently carry the
+  qualifier "operational mutation ownership, excluding the C10 bulk `_install`
+  restore". Also refined the port-width figure to "14 stores + 11 infra methods
+  directly; transitive closure all 19 stores + 12 private methods" (the earlier
+  bare "12" was the transitive count; the table now shows both).
+
 ## Authoritative selected architecture
 **Mixin composition for the state-accessing Engine method clusters,** with C1
 core infrastructure on the `Engine` base and `confidence.py` + `serialization.py`
 kept as module functions. Selected for **least delta** from the measured
 shared-`self` topology and existing introspection surface, preserving the M07
 seam-`getsource` lock. Delegation and module functions rejected with measured
-reasons (conditional seam break + traceback frame; back-ref / 14+12 port
-exposure). The no-expansion rule + accepted introspection deltas + the 3B
+reasons (conditional seam break + traceback frame; back-ref / 14-store+11-method
+direct, 19+12 transitive port exposure). The no-expansion rule (scoped to
+extracted clusters; C1 stays on Engine) + accepted introspection deltas + the 3B
 sequence (C2 and C5 separate) are in the ADR.
 
 ## No-code-move proof
 ```
 git diff --stat main..HEAD  -> only:
   docs/architecture/ENGINE_V1_PHASE3A_ARCHITECTURE_DECISION.md (new)
+  docs/architecture/ENGINE_V1_PHASE3A_EVIDENCE.md              (new — persistent evidence appendix)
   docs/architecture/ENGINE_V1_REFACTORING_PLAN.md              (append-only addendum)
   docs/dev/PR_085_ENGINE_V1_PHASE3A_ARCHITECTURE_DECISION.md   (new)
 ragcore/** tests/** examples/** pyproject/config: 0 changed
