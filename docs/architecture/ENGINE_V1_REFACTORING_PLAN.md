@@ -376,9 +376,10 @@ measured and accepted explicitly, not assumed away.
 Phase 3A resolved the decomposition shape. This addendum points to the decision;
 it does not rewrite the plan above.
 
-- **Selected architecture: mixin composition** for the ten stateful method
-  clusters; the pure stateless kernels (`confidence.py`, `serialization.py`) stay
-  module functions. Rationale: least delta from the *measured* shared-`self`
+- **Selected architecture: mixin composition for the state-accessing Engine
+  method clusters,** with C1 core infrastructure retained on `Engine` and the
+  existing fully-stateless `confidence.py` / `serialization.py` kernels retained
+  as module functions. Rationale: least delta from the *measured* shared-`self`
   topology (DAG, single revision/ID authority, per-kind stores) and the existing
   introspection surface, while preserving `getsource(Engine._compute_effective_confidence_core)`
   (the M07 lock). Full record + measured evidence:
@@ -393,9 +394,11 @@ it does not rewrite the plan above.
   computation may be a module function (closed today at `confidence.py` +
   `serialization.py`).
 - **3B sequence (ascending coupling, lowest first):** C8 hint → C3 relations →
-  C7 rules → C4 gaps → C9 confidence adapters → C6 lifecycle history → C2+C5
-  (co-own `_claims`, together) → C10 snapshot façade; C1 core/identity/id/guards
-  stays on the Engine base.
+  C7 rules → C4 gaps → C9 confidence adapters → C6 lifecycle history → **C2 CRUD →
+  C5 lifecycle/contradiction (separate steps)** → C10 snapshot façade; C1
+  core/identity/id/guards stays on the Engine base. C2 and C5 co-write `_claims`
+  (kept on Engine) but have no direct cross-call, so they are separate 3B PRs
+  with regression verification — recombined only on measured non-isolability.
 - **3B entry gate:** Phase 3B is prohibited until the Phase 3A entry conditions
   (ADR §"Phase 3B entry conditions") are independently reviewed, approved,
   merged, and post-merge verified.

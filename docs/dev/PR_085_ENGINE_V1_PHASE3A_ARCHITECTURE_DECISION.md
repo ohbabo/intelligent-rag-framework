@@ -64,7 +64,9 @@ f49cedc docs(architecture): audit current Engine topology and compare decomposit
         (ADR commit 1 — evidence + NEUTRAL 3-candidate comparison; no conclusion fixed)
 a785d01 docs(architecture): select Phase 3 architecture (mixins) and define 3B entry gates
         (ADR commit 2 — selection AFTER comparison; consequences/3B/entry/adversarial record + plan addendum)
-<this>  docs(dev): record Phase 3A decision-gate history (this file)
+c3d0a95 docs(dev): record Phase 3A decision-gate history (this file, initial)
+<R1-R4> docs(review): correct Phase 3A scope, store ownership, and 3B sequencing
+        (GPT review round 1: v2 over-spec removed; mutator/owner matrix; C2/C5 split; wording)
 ```
 No commit was amended, rebased, or squashed.
 
@@ -82,14 +84,42 @@ No commit was amended, rebased, or squashed.
   `evidences_for_claim` unassigned (read-only claim→evidence query; no coupling
   impact). Recorded, not hidden.
 
+## GPT independent review corrections (round 1 — this PR's first review)
+- **R1 — v2 seam over-specified.** The ADR/PR/dev record claimed the existing
+  `_state_view() → DecodedEngineState` is the future v2 read-only projection seam.
+  Removed: the v2 section now states only that the v1 decomposition must not
+  *structurally prevent* a future derived layer; the concrete v2 projection,
+  identity, and materialization boundaries are **deferred to a separate v2 design
+  phase** and not designed here. `_state_view()` is described only as the current
+  internal snapshot-encoding carrier.
+- **R2 — method mutator count confused with write-cluster ownership.** The store
+  matrix was regenerated with **two separate columns** (mutating methods | owning
+  write-cluster). The earlier write-detection also missed `difference_update`, so
+  `unregister_hint_evidence_types` was wrongly read-only — corrected. Result:
+  `_claims` is the **only** store written by more than one cluster (C2+C5); all
+  others have one owning cluster, though `_rule_stats` (2) and
+  `_hint_evidence_types` (3) have multiple mutating methods *within* their one
+  cluster. Removed: "per-kind 1-mutator" / "every other store exactly one mutator".
+- **R3 — C2+C5 combined 3B PR lacked a non-isolability proof.** Split into
+  separate steps (3B-7 C2, 3B-8 C5). Evidence: no C2↔C5 direct call (measured
+  cross-cluster edges are only C5→C4, C5→C6, C9→C5), so an independent move
+  creates no cycle / no broken seam / no unrunnable intermediate `main`. The
+  shared `_claims` write is recorded as coupling needing regression verification,
+  not a forced combined PR; recombine only on measured non-isolability.
+- **R4 — "ten stateful clusters" was inaccurate.** C1 stays on the Engine base,
+  C9 is read-only, and the pure kernels are module functions. Wording corrected
+  to "mixin composition for the state-accessing Engine method clusters, with C1
+  on Engine and confidence/serialization kept as module functions."
+
 ## Authoritative selected architecture
-**Mixin composition** for the ten stateful clusters; `confidence.py` +
-`serialization.py` stay module functions. Selected for **least delta** from the
-measured shared-`self` topology and existing introspection surface, preserving
-the M07 seam-`getsource` lock. Delegation and module functions rejected with
-measured reasons (conditional seam break + traceback frame; back-ref / 14+12 port
+**Mixin composition for the state-accessing Engine method clusters,** with C1
+core infrastructure on the `Engine` base and `confidence.py` + `serialization.py`
+kept as module functions. Selected for **least delta** from the measured
+shared-`self` topology and existing introspection surface, preserving the M07
+seam-`getsource` lock. Delegation and module functions rejected with measured
+reasons (conditional seam break + traceback frame; back-ref / 14+12 port
 exposure). The no-expansion rule + accepted introspection deltas + the 3B
-sequence are in the ADR.
+sequence (C2 and C5 separate) are in the ADR.
 
 ## No-code-move proof
 ```

@@ -75,20 +75,38 @@ them into one generic state object; this record honors that.
 - Highest fan-out: `_compute_effective_confidence_core` (8 → six modifier seams +
   guard + `state_identity`); the lifecycle mutators (4–5 each).
 
-### Store read/write matrix (AST) — cross-cluster write coupling
-Per-store true mutators (excluding `_install`, which is the bulk-restore
-boundary):
+### Store read/write matrix (AST) — mutating methods vs. owning write-cluster
+**Method-level mutator count and cluster-level write ownership are distinct** and
+are reported in separate columns. Excludes `__init__` (construction) and
+`_install`/`_state_view` (the bulk restore/encode boundary).
 
-| store | mutators |
-|---|---|
-| `_claims` | add_claim **and** confirm/dispute/refute(×3)/resolve lifecycle (7) |
-| every other persisted store | exactly **one** mutator (its CRUD/register method) |
-| `_state_revision` | `_advance_state_revision` only |
-| `_next_id` | `_allocate_id` only |
-| `_state_identity_token` | none (set once in `__init__`) |
+| store | mutating methods | owning write-cluster(s) |
+|---|---|---|
+| `_next_id` | `_allocate_id` (1) | C1 |
+| `_entities` | `add_entity` (1) | C2 |
+| `_observations` | `add_observation` (1) | C2 |
+| `_claims` | `add_claim`, confirm/dispute/refute(×3)/resolve_disputed (7) | **C2, C5** |
+| `_evidences` | `add_evidence` (1) | C2 |
+| `_relations` | `add_relation` (1) | C3 |
+| `_gaps` | `add_gap` (1) | C4 |
+| `_rule_definitions` | `register_rule` (1) | C7 |
+| `_rule_stats` | `register_rule`, `update_rule_stats` (**2**) | C7 |
+| `_gap_dedup_index` | `add_gap` (1) | C4 |
+| `_claim_gap_refs` | `add_gap` (1) | C4 |
+| `_gap_resolutions` | `resolve_gaps_for_evidence` (1) | C4 |
+| `_contradictions` | `register_contradiction` (1) | C5 |
+| `_resolved_contradictions` | `register_contradiction_resolution` (1) | C5 |
+| `_lifecycle_seq` | `_record_claim_lifecycle_transition` (1) | C6 |
+| `_claim_lifecycle_events` | `_record_claim_lifecycle_transition` (1) | C6 |
+| `_hint_evidence_types` | register/unregister/clear_hint_evidence_types (**3**) | C8 |
+| `_state_identity_token` | — (set once in `__init__`) (0) | — |
+| `_state_revision` | `_advance_state_revision` (1) | C1 |
 
-**Cross-cluster WRITE coupling is `_claims` and only `_claims`** (creation vs.
-status-transition). Every other store has a single owning cluster.
+**`_claims` is the only store written by more than one proposed cluster** (C2
+creation + C5 status-transition). All other stores have **one owning
+write-cluster**, although some have **multiple mutating methods inside that one
+cluster** — `_rule_stats` (2 methods, both C7) and `_hint_evidence_types` (3
+methods, all C8). "One owning write-cluster" ≠ "one mutating method".
 
 ### Cluster proposal (from the call graph + store ownership, not comments)
 | cluster | methods (abbrev.) | owns (writes) | non-infra cross-cluster calls |
@@ -156,7 +174,7 @@ wrappers that pass a `state` port (`return crud_fns.add_gap(self, …)`). The
 
 ## Mandatory gate result (neutral, applied to all three)
 G1 import path/`__module__`, G2 42 names/signatures, G3 semantics, G5
-snapshot/identity boundary, G8 fixed confidence policy, G10 v2 boundary, G12
+snapshot/identity boundary, G8 fixed confidence policy, G10 future-extension non-prevention, G12
 rollback granularity — **PASS for all three** (G1–G3 confirmed by the
 introspection experiment below; G5/G8/G10 are unaffected by internal
 decomposition).
@@ -231,25 +249,31 @@ and `confidence.py` stay pure (`{__future__, ragcore.types}` only).
   (`confidence.py → engine`, `serialization.py → engine`, `serialization ↔
   confidence`) are introduced by **none** of the candidates.
 
-## v2 extension-seam analysis
-The v2 physics/derived layer reads an **immutable/read-only state projection**,
-computes derived results with a **separate trace identity**, and mutates the
-engine (advancing `_state_revision`) **only** through an explicit official API.
-The seam for this is the **existing** `_state_view() → DecodedEngineState`
-projection plus the public mutation API — it is **independent of the internal
-decomposition**, so all three candidates can host it. The relevant differentiator
-is incidental: under mixin a future read-only physics adapter reads `self._<store>`
-through the same shared-`self` pattern with no back-ref; under delegation it needs
-another back-ref'd delegate. No candidate forces a generic store, a runtime
-modifier registry, a new snapshot schema, or a new state kind — and **none of
-those is designed or implemented here** (out of Phase 3A scope).
+## Future-extension non-prevention (v2 out of scope)
+The selected v1 decomposition **must not structurally prevent** a future
+derived/physics layer. The concrete v2 projection type, identity, and
+materialization boundaries are **explicitly out of Phase 3A scope and will be
+decided in a separate v2 design phase** — they are not designed, named, or fixed
+here.
+
+This Phase makes only the negative (non-prevention) check, which all three
+candidates pass: none forces a generic store, a runtime modifier registry, a new
+snapshot schema, or a new state kind, and each keeps the per-kind stores and the
+committed-mutation revision rule. `_state_view()` is the **current internal
+carrier for snapshot encoding** (it aliases the live stores); this Phase does
+**not** declare it — or `DecodedEngineState` — a future v2 projection, API, or
+seam, and does not design a v2 read path on top of it.
 
 ---
 
 ## Decision
-**Selected: Candidate A — mixin composition** for the ten stateful method
-clusters, with the existing pure stateless kernels (`confidence.py`,
-`serialization.py`) retained as module functions.
+**Selected: Candidate A — mixin composition for the state-accessing Engine method
+clusters, with C1 core infrastructure retained on `Engine` and the existing
+fully-stateless `confidence.py` / `serialization.py` kernels retained as module
+functions.** (C1 stays on the assembling `Engine` class as the shared base; C9
+effective-confidence adapters are read-only; the pure kernels are not mixins. It
+is therefore inaccurate to call this "ten stateful clusters as mixins" — only the
+state-accessing clusters become mixins.)
 
 **Selection reason — grounded in the measured discriminating gates and costs,
 not in an a-priori preference.** Among the gate-passing candidates, mixins
@@ -325,8 +349,17 @@ Because the selected architecture composes mixins that share `self`:
   shared base; mixins call `self._advance_state_revision()` etc., resolved via
   the MRO. No store ownership transfer is required — every store stays a
   `self._<kind>` attribute of `Engine`; mixins only *contribute methods*.
-- **`_claims` co-ownership (C2 + C5)** needs no special handling: both mixins
-  write `self._claims`; the store never leaves `Engine`.
+- **`_claims` is co-written by C2 and C5.** Because the selected mixin structure
+  keeps `_claims` on `Engine` and both clusters only contribute methods, this is a
+  **shared-store coupling that requires careful regression verification, but does
+  not by itself require a combined PR.** Evidence: there is **no C2→C5 or C5→C2
+  direct call** (measured cross-cluster edges: only C5→C4, C5→C6, C9→C5), so
+  moving one cluster alone creates no import cycle, breaks no named seam, and
+  leaves a runnable intermediate `main`. C2 and C5 are therefore **separate 3B
+  steps** (below). They would be recombined into one PR **only** if a future
+  measurement shows an independent move (a) creates an import cycle, (b) breaks a
+  named seam, (c) produces an unrunnable intermediate `main`, or (d) cannot keep
+  the full contract suite green — none of which the current evidence shows.
 
 ## Phase 3B decomposition sequence
 Each 3B PR moves **one** cluster's method bodies into a mixin module under
@@ -344,9 +377,14 @@ largest line count):
 3B-5  C9 confidence adapt. read-only; compute_*+_compute_effective_confidence_core+6 _*_modifier_for_claim+evidence_freshness
                            NOTE: M07 pins getsource(Engine._compute_effective_confidence_core)=real body — the mixin PRESERVES it
 3B-6  C6 lifecycle history _record_claim_lifecycle_transition, claim_lifecycle_history (recorder; precede C5)
-3B-7  C2+C5 together       CRUD + lifecycle/contradiction — co-own _claims; the only cross-cluster write coupling → one PR
-3B-8  C10 snapshot façade  to_snapshot, from_snapshot, _state_view, _install (delegate to serialization kernel)
+3B-7  C2 CRUD              add_/get_ entity·observation·claim·evidence, evidences_for_claim (writes _claims via add)
+3B-8  C5 lifecycle/contra. confirm/dispute/refute/resolve_*_if_ready, register_contradiction(_resolution), *contradictions_* queries
+                           (writes _claims status; placed AFTER C4 and C6 on which it depends)
+3B-9  C10 snapshot façade  to_snapshot, from_snapshot, _state_view, _install (delegate to serialization kernel)
 (C1 core/identity/id/guards: stays on the Engine base — optional final CoreMixin extraction only if it adds clarity)
+C2 and C5 are SEPARATE steps: they share the `_claims` store (which stays on Engine) but have no direct cross-call,
+so neither alone breaks a cycle/seam/runnable-main/contract-suite. The shared-store write is verified by regression,
+not forced into one PR. Recombine ONLY on measured evidence of non-isolability (see Consequences).
 ```
 Each step must keep green: full pytest; public 42 exact signatures; `__all__` 50;
 snapshot 2/18/key-order/canonical bytes; PR51 7 keys; fresh lineage; policy id;
@@ -360,7 +398,7 @@ no import cycle; intended files only.
 [x] store read/write matrix complete (cross-cluster write coupling = _claims only)
 [x] introspection-delta experiment complete (4 prototypes, measured)
 [x] import-graph / cycle proof complete (no candidate adds a runtime cycle)
-[x] v2 seam evaluated (state projection + public API; decomposition-independent)
+[x] future-extension non-prevention checked (all candidates pass; concrete v2 projection/identity/materialization deferred to a separate v2 design phase)
 [x] 3B cluster sequence defined (ascending coupling, lowest first)
 [x] test-migration list: NONE required by 3A; 3B keeps runtime/getsource locks (no reversion)
 [x] accepted introspection deltas explicitly listed and approved
