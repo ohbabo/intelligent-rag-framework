@@ -42,7 +42,7 @@ excluded from *operational* mutation-ownership and port totals.
 | `get_observation` | pub  | C2 | observations | — | — | — | read-only |
 | `add_relation` | pub  | C3 | — | relations:A | _advance_state_revision _allocate_id _id_exists | C1:_advance_state_revision C1:_allocate_id C1:_id_exists | mutating |
 | `get_relation` | pub  | C3 | relations | — | — | — | read-only |
-| `add_gap` | pub  | C4 | claims gap_dedup_index | claim_gap_refs:A gap_dedup_index:W gaps:A | _advance_state_revision _allocate_id _assert_claim_exists | C1:_advance_state_revision C1:_allocate_id C1:_assert_claim_exists | mutating |
+| `add_gap` | pub  | C4 | claims gap_dedup_index | claim_gap_refs:A gap_dedup_index:A gaps:A | _advance_state_revision _allocate_id _assert_claim_exists | C1:_advance_state_revision C1:_allocate_id C1:_assert_claim_exists | mutating |
 | `gap_resolution` | pub  | C4 | gap_resolutions | — | _assert_gap_exists | C1:_assert_gap_exists | read-only |
 | `gaps_for_claim` | pub  | C4 | claim_gap_refs gaps | — | _assert_claim_exists | C1:_assert_claim_exists | read-only |
 | `get_gap` | pub  | C4 | gaps | — | — | — | read-only |
@@ -79,6 +79,27 @@ excluded from *operational* mutation-ownership and port totals.
 | `compute_effective_confidence` | pub  | C9 | — | — | _compute_effective_confidence_core | — | read-only |
 | `compute_effective_confidence_with_trace` | pub  | C9 | — | — | _compute_effective_confidence_core | — | read-only |
 | `evidence_freshness` | pub  | C9 | — | — | _assert_evidence_exists | C1:_assert_evidence_exists | read-only |
+
+## Classification notes (precision boundaries)
+- **`register_rule` → `_rule_stats`: `A` in the table, but `A/W` in general.**
+  `register_rule` guards only `_rule_definitions` (`if key in self._rule_definitions: raise`)
+  and then assigns `self._rule_stats[key] = RuleStats(...)` unconditionally. For a
+  fresh rule that is an INSERT (`A`). The snapshot-restore contract permits an
+  **orphan `_rule_stats` key with no matching `_rule_definitions`**; calling
+  `register_rule` on such a key REPLACES the existing stats (`W`). So the precise
+  operation is `A/W` (insert when absent; replace when an orphan stat pre-exists);
+  the table shows the common `A` path. This does not affect ownership (still C7) or
+  the port width.
+- **`reads` column = direct syntactic `self._store` access only** (subscript-Load
+  `self._s[k]`, reading method `.get/.keys/.values/.items`, membership `k in self._s`,
+  iteration/len/arg). Content reads performed through a **local alias** bound to a
+  `self._store` element/collection are NOT separately listed — e.g.
+  `bucket = self._contradictions.setdefault(claim_id, set()); if evidence_id in bucket:`
+  (in `register_contradiction` / `register_contradiction_resolution`) does read the
+  contradiction set's contents via `bucket`, shown here only as the `setdefault`
+  write. This alias-scope limitation affects only the `reads` column; it does not
+  change any mutation op, the cross-cluster write ownership, the port width, or any
+  architecture conclusion.
 
 ## Derived values (recomputed from the table above)
 ```
