@@ -160,7 +160,7 @@ actual Engine mutation        =  caller explicitly invokes one
                                   Engine public method
 ```
 
-These twelve load-bearing boundary statements (eleven
+These thirteen load-bearing boundary statements (eleven
 inequalities, one implication, one equality) are the locks of
 M02. Every other section refines one of them.
 
@@ -1361,6 +1361,36 @@ caller explicitly invoking one existing **state-mutating**
 Engine public method. M02 does not introduce a faster path, an
 automatic path, a reflective path, or any alternative path to
 that invocation.
+
+---
+
+## §22.1 Temporality and scope lock
+
+```text
+§1–§22 record the PR71-M02 normative body and the operational
+concerns M02 deferred at that historical point. The words
+"future", "deferred", "out of scope", and "NOT STARTED" in §19
+and elsewhere describe M02's own scope and sequencing AT
+PR71-M02; they are NOT a claim that those later work items
+remain incomplete today.
+
+§23–§25 are static cross-PR annotations added by specific later
+PRs that directly consumed the M02 boundary. They are NOT an
+exhaustive or dynamically updated current-repository capability
+inventory. M02 is a mutation-handoff authority contract, not a
+rolling capability ledger.
+
+Later completion of:
+  OC-D / PR76-M07   a later read-only confidence-trace surface
+  OC-F / PR77-M08   consumer-owned reference-operation conformance
+  OC-G / PR78-M09   consumer-owned example-local RuleStats provenance
+does NOT retroactively alter M02's four-layer authority, the
+state-mutating target rule (§3 / §12), the explicit-call boundary,
+A2 preservation (§17), or the lifecycle / rule-stats separation
+principles (§14 / §15). These completions added no Engine mutation
+candidate target, no canonical ragcore request type, and no
+Engine-internal RuleStats provenance store.
+```
 
 ---
 
