@@ -26,11 +26,45 @@ Expected result:
 
 from __future__ import annotations
 
+import ast
 import inspect
-import re
+from pathlib import Path
+
+import pytest
 
 import ragcore
 from ragcore import Engine
+
+
+# Forbidden import roots — ragcore's judgment core must not pull in network /
+# process / async modules. Checked by AST over the FILESYSTEM so every import
+# form (`from requests import Session`, bare `import socket`, `urllib.parse`)
+# is caught, and the modules are never imported/executed (a relocated
+# module's internal ModuleNotFoundError cannot mask the scan).
+_FORBIDDEN_IMPORT_ROOTS: frozenset[str] = frozenset({
+    "requests", "urllib", "urllib3", "httpx", "socket", "subprocess", "asyncio",
+})
+
+
+def _import_roots(source: str) -> set[str]:
+    roots: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.split(".", 1)[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            roots.add(node.module.split(".", 1)[0])
+    return roots
+
+
+def _ragcore_refactor_source_files() -> list[Path]:
+    """ragcore/engine.py + every file in the private ragcore/_engine package
+    (when it exists). Resolved from the package location, not cwd."""
+    root = Path(ragcore.__file__).resolve().parent
+    files = [root / "engine.py"]
+    engine_pkg = root / "_engine"
+    if engine_pkg.is_dir():
+        files.extend(sorted(engine_pkg.rglob("*.py")))
+    return files
 
 
 # ----------------------------------------------------------------------
@@ -249,31 +283,35 @@ class TestImportSurfaceSideEffects:
         restored = Engine.from_snapshot(engine.to_snapshot())
         assert restored.to_snapshot() == engine.to_snapshot()
 
-    def test_ragcore_module_has_no_forbidden_runtime_imports(self) -> None:
-        # ragcore must not pull in network / scanner / LLM dependencies
-        # at import time (§48.9).
-        forbidden_modules = {
-            "requests",
-            "urllib3",
-            "httpx",
-            "socket",
-            "subprocess",
-            "asyncio",
-        }
-        import sys
-        # Force re-import to test fresh import behavior
-        loaded_after_import = {
-            mod for mod in forbidden_modules if mod in sys.modules
-        }
-        # We allow standard library modules that other parts of pytest may
-        # have already imported (e.g., asyncio is used by pytest plugins).
-        # The strict check is on ragcore's own source:
-        import ragcore.engine
-        engine_src = inspect.getsource(ragcore.engine)
-        for forbidden in {"requests", "urllib", "httpx", "socket.socket"}:
-            assert f"import {forbidden}" not in engine_src, (
-                f"ragcore.engine must not import {forbidden} (§48.9)"
+    def test_ragcore_engine_sources_have_no_forbidden_imports(self) -> None:
+        # §48.9 (Phase 0): ragcore's judgment core must not import network /
+        # process / async modules. Checked PACKAGE-WIDE by AST over the
+        # FILESYSTEM (ragcore/engine.py + ragcore/_engine/** when it exists),
+        # so every import form is caught and no module is imported/executed
+        # (a relocated module's internal ModuleNotFoundError cannot mask the
+        # scan; the previous substring scan missed `from X import ...` forms).
+        for path in _ragcore_refactor_source_files():
+            offending = _import_roots(path.read_text()) & _FORBIDDEN_IMPORT_ROOTS
+            assert not offending, (
+                f"{path} imports forbidden module(s): {sorted(offending)} (§48.9)"
             )
+
+    @pytest.mark.parametrize("source", [
+        "import socket",
+        "from socket import socket",
+        "import urllib.request",
+        "from urllib.parse import urlparse",
+        "from requests import Session",
+        "from httpx import Client",
+        "import subprocess",
+        "import asyncio",
+    ])
+    def test_forbidden_import_detector_catches_common_forms(
+        self, source: str
+    ) -> None:
+        # Negative control: the AST detector flags the common import forms the
+        # previous substring scan silently passed.
+        assert _import_roots(source) & _FORBIDDEN_IMPORT_ROOTS
 
 
 class TestModifierHelperSignatures:
@@ -313,64 +351,28 @@ class TestModifierHelperSignatures:
 
 
 class TestSerializeRestoreSymmetry:
-    """§48.2 + PR35-O7 §47 — serialize / restore helper 6 × 6 symmetry.
+    """§48.2 — serialize / restore correctness.
 
-    PR35-O7 S1+S2 added 4 missing _restore_dict_* helpers to achieve
-    6 × 6 symmetry with _serialize_dict_*. PR36-PKG locks this symmetry
-    so future snapshot internal refactors preserve it.
+    The previous in-source `_serialize_dict_*` / `_restore_dict_*` regex
+    counts were an implementation-LOCATION lock (they break a pure
+    relocation of the helpers). Per the Engine v1 refactoring plan
+    (Phase 0 — contract-test taxonomy migration) the exhaustive coverage
+    moved to a location-agnostic BEHAVIORAL round-trip exercising all six
+    snapshot shape families: see tests/test_engine_phase0_taxonomy.py
+    (TestSerializeRestoreRoundTrip). This smoke test stays as a quick
+    in-file guard.
     """
 
-    def _engine_source(self) -> str:
-        import ragcore.engine as engine_mod
-        return inspect.getsource(engine_mod)
-
-    def test_serialize_dict_helpers_count_is_6(self) -> None:
-        src = self._engine_source()
-        helpers = re.findall(r"^def (_serialize_dict_\w+)", src, re.MULTILINE)
-        assert len(helpers) == 6, f"Expected 6 serialize helpers, got {len(helpers)}: {helpers}"
-
-    def test_restore_dict_helpers_count_is_6(self) -> None:
-        src = self._engine_source()
-        helpers = re.findall(r"^def (_restore_dict_\w+)", src, re.MULTILINE)
-        assert len(helpers) == 6, f"Expected 6 restore helpers, got {len(helpers)}: {helpers}"
-
-    def test_serialize_restore_shape_class_symmetry(self) -> None:
-        src = self._engine_source()
-        # Extract shape class identifiers from each helper name
-        # _serialize_dict_int_dataclass → "int_dataclass"
-        # _restore_dict_int             → "int" (mirrors int_dataclass)
-        # _restore_dict_tuple           → "tuple" (mirrors tuple_dataclass)
-        # _serialize_dict_tuple4_int    ↔ _restore_dict_tuple4_int
-        # etc.
-        ser_shapes = set(
-            name.replace("_serialize_dict_", "")
-            for name in re.findall(r"^def (_serialize_dict_\w+)", src, re.MULTILINE)
+    def test_populated_round_trip_smoke(self) -> None:
+        import copy
+        e = Engine()
+        ent = e.add_entity(entity_type=1)
+        e.add_claim(
+            subject_id=ent, claim_type=1, rule_id=1, rule_version=1,
+            reason_code=0, base_confidence=0.5,
         )
-        res_shapes = set(
-            name.replace("_restore_dict_", "")
-            for name in re.findall(r"^def (_restore_dict_\w+)", src, re.MULTILINE)
-        )
-        # Expected shape pairs after PR35-O7:
-        expected_ser = {
-            "int_dataclass",
-            "tuple_dataclass",
-            "tuple4_int",
-            "int_set",
-            "int_int",
-            "int_list_dataclass",
-        }
-        # Restore helpers use slightly different naming (no _dataclass suffix
-        # for the two that take a from_dict factory) per §47.5 note.
-        expected_res = {
-            "int",
-            "tuple",
-            "tuple4_int",
-            "int_set",
-            "int_int",
-            "int_list_dataclass",
-        }
-        assert ser_shapes == expected_ser
-        assert res_shapes == expected_res
+        snap = e.to_snapshot()
+        assert Engine.from_snapshot(copy.deepcopy(snap)).to_snapshot() == snap
 
 
 class TestSnapshotShapeFreeze:
