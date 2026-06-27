@@ -961,8 +961,9 @@ other test file's expectations are changed.
 
 ## §15 Final audit reconciliation — 246차
 
-PR73-M04 is held in Draft for a docs-only final cleanup. The
-246차 commit `docs(dev): reconcile M04 final audit record`
+At 246차 (pre-merge), PR73-M04 was held in Draft for a docs-only
+final cleanup (now CLOSED post-merge; see §15.9). The 246차 commit
+`docs(dev): reconcile M04 final audit record`
 reconciles the dev record and architecture contracts so that
 this file accurately describes the verified branch HEAD. No
 runtime code, no test code, no `examples/*` file, and no
@@ -980,8 +981,11 @@ runtime code, no test code, no `examples/*` file, and no
                   (initial pre-review checkpoint — §2 ~ §13)
 245차  2456149   fix(engine): close state identity audit gaps
                   (C1 ~ C7 post-review correction — §14)
-246차  (this)    docs(dev): reconcile M04 final audit record
-                  (docs-only final cleanup — §15)
+246차  (squashed) docs(dev): reconcile M04 final audit record
+                  (docs-only final cleanup — §15. Squashed into the
+                   GitHub #74 merge 04f591b; the standalone 246차 SHA
+                   was not retained on any ref post-merge. 241~245차
+                   SHAs above remain recoverable.)
 ```
 
 The five preceding commits are **not** amended, rebased, or
@@ -1086,14 +1090,18 @@ packet runtime shape delta     0
 snapshot runtime shape delta   0
 ```
 
-### §15.8 Final M-series state
+### §15.8 M-series state at 246차 (intermediate, pre-merge)
+
+The table below records the M-series state AT 246차 — before the
+GitHub squash merge. It is an explicitly historical intermediate
+snapshot, NOT the final merged state (recorded in §15.9 below):
 
 ```
 P-series   CLOSED
 PR70-M01   CLOSED
 PR71-M02   CLOSED
 PR72-M03   CLOSED
-PR73-M04   OPEN — DRAFT, NOT MERGED (this PR)
+PR73-M04   OPEN — DRAFT, NOT MERGED   (intermediate, at 246차)
 PR74-M05   NOT STARTED
 PR75-M06   NOT STARTED
 PR76-M07   NOT STARTED
@@ -1101,5 +1109,33 @@ PR77-M08   NOT STARTED
 PR78-M09   NOT STARTED
 ```
 
-No automatic next PR. PR remains Draft. Framework waits for
-directive.
+At that 246차 intermediate point no automatic next PR was
+scheduled. The six commits (241~246차) were then squash-merged
+into GitHub PR #74.
+
+### §15.9 Original PR73-M04 final merged state (post-merge reconciliation)
+
+```
+GitHub PR:              #74
+merge mode:             squash
+squash merge:           04f591b14b9156bb7b17089ded2670d84745fdd2
+merged onto:            7ce41b3  (PR72-M03 squash)
+merge date:             2026-06-19  (KST 09:18; UTC 2026-06-19T00:18:03Z)
+PR73-M04 status:        CLOSED (merged)
+historical tests:       1517 passed
+historical Engine:      41 public / 19 private
+historical ragcore.__all__: 49
+historical snapshot:    schema_version 2 / 18 top-level keys
+historical PR51 packet: 7 keys
+recoverable commits:    241차 86ce33e / 242차 b6bcdde / 243차 9aa65dc /
+                        244차 e352ec4 / 245차 2456149
+246차:                  docs-only final cleanup; squashed into 04f591b,
+                        standalone SHA not retained on any ref post-merge
+```
+
+This post-merge reconciliation block was added by an independent
+audit on 2026-06-27 (base `main` faab657). It does not alter M04's
+runtime, contract semantics, or the historical 1517 / 41·19 / 49
+figures above; later M05~M09 work raised the live repository totals
+separately (current `main`: 1999 passed, Engine 42 / 20,
+ragcore.__all__ 50).
