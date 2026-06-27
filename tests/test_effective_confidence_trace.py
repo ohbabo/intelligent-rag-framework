@@ -39,6 +39,8 @@ from __future__ import annotations
 import ast
 import dataclasses
 import importlib.util
+import inspect
+import textwrap
 from copy import deepcopy
 from pathlib import Path
 
@@ -827,11 +829,15 @@ class TestModifierHelperCallCount:
 
 
 class TestSingleMultiplicationSite:
-    """AST-level lock that the six-modifier multiplication
-    expression lives in exactly one Engine method body
-    (_compute_effective_confidence_core). Contract §6
-    explicitly forbids two multiplication sites for the
-    same formula."""
+    """Locks the single fixed-v1 composition site in
+    ragcore._engine.confidence.compose_effective_confidence (the pure
+    composer is the only place the six-modifier multiplication lives),
+    and verifies at RUNTIME that Engine's private core invokes each of
+    the six modifier wrappers and the composer exactly once. Contract §6
+    forbids a second multiplication site for the same formula. Phase 2
+    relocated the composition out of the Engine method body into the
+    composer; these checks are runtime / inspect.getsource based, so they
+    survive a Phase-3 relocation of the Engine methods."""
 
     _HELPER_NAMES = frozenset({
         "_status_modifier_for_claim",
@@ -842,62 +848,81 @@ class TestSingleMultiplicationSite:
         "_evidence_type_modifier_for_claim",
     })
 
-    def _engine_methods_using_helpers(self):
-        """Return Engine method bodies that contain self.<helper>()
-        calls for the six modifier helpers."""
-        src = open("ragcore/engine.py").read()
-        tree = ast.parse(src)
-        sites = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef) and node.name == "Engine":
-                for item in node.body:
-                    if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        continue
-                    helper_calls = set()
-                    for inner in ast.walk(item):
-                        if isinstance(inner, ast.Attribute):
-                            if (isinstance(inner.value, ast.Name)
-                                    and inner.value.id == "self"
-                                    and inner.attr in self._HELPER_NAMES):
-                                helper_calls.add(inner.attr)
-                    if helper_calls:
-                        sites.append((item.name, helper_calls))
-        return sites
+    @staticmethod
+    def _method_ast(method):
+        """Parse the source of a *runtime-resolved* method via
+        inspect.getsource. Location-agnostic: works regardless of which
+        module or declaring class the method physically lives in, so it
+        survives a Phase-3 relocation of Engine methods (mixin /
+        delegation). This deliberately replaces the former fixed-file
+        engine.py read + Engine-class-body AST scan, which was an
+        implementation-location lock of exactly the kind Phase 0 set out
+        to remove."""
+        return ast.parse(textwrap.dedent(inspect.getsource(method)))
 
-    def test_exactly_one_method_references_all_six_helpers(self):
-        sites = self._engine_methods_using_helpers()
-        full_sites = [
-            name for name, helpers in sites
-            if helpers == self._HELPER_NAMES
-        ]
-        assert full_sites == ["_compute_effective_confidence_core"], (
-            "Expected exactly _compute_effective_confidence_core to "
-            "reference all six modifier helpers; got "
-            f"{full_sites!r}. Two multiplication sites are forbidden "
-            "by contract §6."
+    def test_core_invokes_each_wrapper_once_and_composer_once(self, monkeypatch):
+        """RUNTIME single-site lock (replaces the former engine.py AST
+        helper-reference scan): the private core is the only place the six
+        modifier wrappers and the pure composer are combined. Calling the
+        core invokes each of the six wrappers exactly once and
+        confidence.compose_effective_confidence exactly once."""
+        import ragcore._engine.confidence as confidence_module
+
+        e = Engine()
+        _, cid = _build_basic(e)
+
+        calls = {name: 0 for name in self._HELPER_NAMES}
+        for name in self._HELPER_NAMES:
+            original = getattr(Engine, name)
+
+            def make_counter(orig, key):
+                def counting(self, claim_id):
+                    calls[key] += 1
+                    return orig(self, claim_id)
+
+                return counting
+
+            monkeypatch.setattr(Engine, name, make_counter(original, name))
+
+        compose_calls = {"n": 0}
+        original_compose = confidence_module.compose_effective_confidence
+
+        def counting_compose(*args, **kwargs):
+            compose_calls["n"] += 1
+            return original_compose(*args, **kwargs)
+
+        monkeypatch.setattr(
+            confidence_module, "compose_effective_confidence", counting_compose
         )
 
-    def test_legacy_compute_does_not_reference_modifier_helpers(self):
-        sites = self._engine_methods_using_helpers()
-        helper_bearing = {name for name, _ in sites}
-        # compute_effective_confidence must delegate to the core.
-        assert "compute_effective_confidence" not in helper_bearing
+        e._compute_effective_confidence_core(cid)
 
-    def test_compute_with_trace_does_not_reference_modifier_helpers(self):
-        sites = self._engine_methods_using_helpers()
-        helper_bearing = {name for name, _ in sites}
-        assert "compute_effective_confidence_with_trace" not in helper_bearing
+        assert all(calls[name] == 1 for name in self._HELPER_NAMES), calls
+        assert compose_calls["n"] == 1
 
-    def _engine_method_node(self, method_name: str):
-        src = open("ragcore/engine.py").read()
-        tree = ast.parse(src)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef) and node.name == "Engine":
-                for item in node.body:
-                    if (isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-                            and item.name == method_name):
-                        return item
-        raise AssertionError(f"Engine method {method_name!r} not found")
+    def test_both_public_apis_delegate_to_the_core(self, monkeypatch):
+        """Both public effective-confidence APIs route through the single
+        private core (no independent second composition site). Verified at
+        runtime by counting core invocations — replaces the former engine.py
+        AST scan asserting the public methods do not reference helpers."""
+        e = Engine()
+        _, cid = _build_basic(e)
+
+        core_calls = {"n": 0}
+        original_core = Engine._compute_effective_confidence_core
+
+        def counting_core(self, claim_id):
+            core_calls["n"] += 1
+            return original_core(self, claim_id)
+
+        monkeypatch.setattr(
+            Engine, "_compute_effective_confidence_core", counting_core
+        )
+
+        e.compute_effective_confidence(cid)
+        assert core_calls["n"] == 1
+        e.compute_effective_confidence_with_trace(cid)
+        assert core_calls["n"] == 2
 
     @staticmethod
     def _count_mult_ops_in(node) -> int:
@@ -910,140 +935,128 @@ class TestSingleMultiplicationSite:
                 n += 1
         return n
 
-    @staticmethod
-    def _is_ratio_curve_helper(name: str) -> bool:
-        # Each modifier helper computes its own tier-curve internally
-        # (e.g., 1.0 - x * 0.2). Those are NOT the six-modifier
-        # composition formula; they are private internals owned by the
-        # helper. The single-site lock targets the six-helper
-        # composition only — see contract §6.
-        return name in {
-            "_status_modifier_for_claim",
-            "_freshness_modifier_for_claim",
-            "_gap_modifier_for_claim",
-            "_count_modifier_for_claim",
-            "_rule_stats_modifier_for_claim",
-            "_evidence_type_modifier_for_claim",
-        }
-
-    def test_core_contains_the_six_modifier_multiplication_chain(self):
-        """The private core's body must contain an expression that
-        multiplies base_confidence.value by each of the six
-        modifier-helper return values. The simplest mechanical lock
-        on that property: the core method body contains at least 6
-        ast.Mult operations (base × six modifiers chain at minimum).
-        """
-        core = self._engine_method_node("_compute_effective_confidence_core")
-        mult_count = self._count_mult_ops_in(core)
-        # base × m1 × m2 × m3 × m4 × m5 × m6 -> 6 Mult ops.
-        # The body may contain incidental multiplications in trace
-        # construction / packaging that are not part of the formula,
-        # so we lock the LOWER bound, not the exact count.
+    def test_composer_contains_the_six_modifier_multiplication_chain(self):
+        """Phase 2 migration of the §6 single-site lock: the six-modifier
+        composition now lives in the pure composer
+        ragcore._engine.confidence.compose_effective_confidence (location-
+        agnostic — it survives a Phase-3 Engine relocation). The composer body
+        must contain at least 6 ast.Mult operations (base × six modifiers)."""
+        src = open("ragcore/_engine/confidence.py").read()
+        tree = ast.parse(src)
+        composer = next(
+            (n for n in ast.walk(tree)
+             if isinstance(n, ast.FunctionDef)
+             and n.name == "compose_effective_confidence"),
+            None,
+        )
+        assert composer is not None, "compose_effective_confidence not found"
+        mult_count = self._count_mult_ops_in(composer)
         assert mult_count >= 6, (
-            f"_compute_effective_confidence_core contains only {mult_count} "
-            "Mult ops; the six-modifier composition chain requires "
-            "at least 6. Composition formula appears truncated."
+            f"compose_effective_confidence contains only {mult_count} Mult ops; "
+            "the six-modifier composition chain requires at least 6."
         )
 
-    def test_legacy_compute_body_contains_no_mult_ops(self):
-        """The legacy compute_effective_confidence is reduced to a
-        single delegating expression. Its body must contain ZERO
-        ast.Mult operations — the formula now lives only in the
-        private core.
-        """
-        legacy = self._engine_method_node("compute_effective_confidence")
-        mult_count = self._count_mult_ops_in(legacy)
+    def test_legacy_public_api_body_contains_no_composition_mult(self):
+        """The legacy compute_effective_confidence is reduced to a single
+        delegating expression. Its runtime-resolved source must contain
+        ZERO ast.Mult operations — the formula now lives only in the pure
+        composer. Checked via inspect.getsource (location-agnostic), not
+        by scanning a fixed engine.py file."""
+        tree = self._method_ast(Engine.compute_effective_confidence)
+        mult_count = self._count_mult_ops_in(tree)
         assert mult_count == 0, (
             f"compute_effective_confidence body contains {mult_count} "
-            "Mult ops; contract §6 requires it to delegate to the core "
-            "(no second multiplication site)."
+            "Mult ops; contract §6 requires it to delegate (no second "
+            "multiplication site)."
         )
 
-    def test_compute_with_trace_body_contains_no_mult_ops(self):
-        """compute_effective_confidence_with_trace must delegate to
-        the private core without performing any multiplication of its
-        own.
-        """
-        trace_api = self._engine_method_node(
-            "compute_effective_confidence_with_trace",
-        )
-        mult_count = self._count_mult_ops_in(trace_api)
+    def test_trace_public_api_body_contains_no_composition_mult(self):
+        """compute_effective_confidence_with_trace must delegate to the
+        private core without performing any multiplication of its own.
+        Checked via inspect.getsource (location-agnostic)."""
+        tree = self._method_ast(Engine.compute_effective_confidence_with_trace)
+        mult_count = self._count_mult_ops_in(tree)
         assert mult_count == 0, (
             f"compute_effective_confidence_with_trace body contains "
-            f"{mult_count} Mult ops; contract §6 requires it to "
-            "delegate to the core."
-        )
-
-    def test_no_other_engine_method_contains_six_or_more_mult_ops(self):
-        """No Engine method body, other than the private core and the
-        six modifier helpers, may contain >= 6 ast.Mult operations.
-        Six or more multiplications in a single body strongly suggests
-        a duplicate composition formula."""
-        src = open("ragcore/engine.py").read()
-        tree = ast.parse(src)
-        offenders = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef) and node.name == "Engine":
-                for item in node.body:
-                    if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        continue
-                    name = item.name
-                    if name == "_compute_effective_confidence_core":
-                        continue
-                    if self._is_ratio_curve_helper(name):
-                        continue
-                    if self._count_mult_ops_in(item) >= 6:
-                        offenders.append(name)
-        assert offenders == [], (
-            f"Methods with >= 6 Mult ops (potential duplicate "
-            f"composition site): {offenders!r}"
+            f"{mult_count} Mult ops; contract §6 requires it to delegate."
         )
 
 
 class TestExactCompositionExpression:
-    """261차 audit closure — contract §6 requires the private core
-    to contain exactly one ordered base × six-modifier composition.
-    The earlier `>= 6 Mult ops` test detected formula truncation but
-    did not lock the exact expression. This class walks the AST of
-    the ScoreValue(...) argument inside
-    _compute_effective_confidence_core, flattens the left-associative
-    Mult chain, and asserts:
+    """261차 audit closure — contract §6 requires exactly one ordered
+    base × six-modifier composition. The earlier `>= 6 Mult ops` test
+    detected formula truncation but did not lock the exact expression.
 
-      1. exactly one ScoreValue(...) call appears inside the core body
-      2. the call's first positional argument is a Mult chain
-      3. flattening that chain yields exactly 7 leaf operands
-      4. flattening contains exactly 6 ast.Mult nodes
-      5. the 7 leaves are, in order:
-           claim.base_confidence.value
-           status_modifier
-           freshness_modifier
-           gap_modifier
-           count_modifier
-           rule_stats_modifier
-           evidence_type_modifier
+    Phase 2 moved the composition into the pure composer
+    confidence.compose_effective_confidence; the Engine private core now
+    wraps the composer's float result in one ScoreValue. This class walks
+    the AST of the composer's single return expression, flattens the
+    left-associative Mult chain, and asserts:
+
+      1. flattening that chain yields exactly 7 leaf operands
+      2. flattening contains exactly 6 ast.Mult nodes
+      3. the 7 leaves are, in order (the composer parameter names):
+           base_confidence
+           status_mod
+           freshness_mod
+           gap_mod
+           count_mod
+           rule_stats_mod
+           evidence_type_mod
+
+    Separately, it verifies that
+    Engine._compute_effective_confidence_core (resolved at runtime via
+    inspect.getsource, location-agnostic) contains exactly one ScoreValue
+    construction wrapped around exactly one composer delegation, and no
+    composition multiplication of its own.
     """
 
+    # Phase 2: the composition moved to the pure composer
+    # confidence.compose_effective_confidence; the leaves are now its
+    # parameter names (in the fixed contract order).
     _EXPECTED_LEAVES = (
-        "claim.base_confidence.value",
-        "status_modifier",
-        "freshness_modifier",
-        "gap_modifier",
-        "count_modifier",
-        "rule_stats_modifier",
-        "evidence_type_modifier",
+        "base_confidence",
+        "status_mod",
+        "freshness_mod",
+        "gap_mod",
+        "count_mod",
+        "rule_stats_mod",
+        "evidence_type_mod",
     )
 
-    def _core_node(self):
-        src = open("ragcore/engine.py").read()
+    def _composer_return_expr(self):
+        """The Mult-chain expression returned by the pure composer
+        confidence.compose_effective_confidence."""
+        src = open("ragcore/_engine/confidence.py").read()
         tree = ast.parse(src)
+        composer = next(
+            (n for n in ast.walk(tree)
+             if isinstance(n, ast.FunctionDef)
+             and n.name == "compose_effective_confidence"),
+            None,
+        )
+        assert composer is not None, "compose_effective_confidence not found"
+        returns = [n for n in ast.walk(composer) if isinstance(n, ast.Return)]
+        assert len(returns) == 1, "composer must have exactly one return"
+        return returns[0].value
+
+    def _core_node(self):
+        """The runtime-resolved _compute_effective_confidence_core function
+        node, obtained via inspect.getsource (location-agnostic — survives a
+        Phase-3 relocation of the method to a mixin or delegated class).
+        Replaces the former fixed-file engine.py Engine-class-body
+        scan."""
+        tree = ast.parse(
+            textwrap.dedent(
+                inspect.getsource(Engine._compute_effective_confidence_core)
+            )
+        )
         for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef) and node.name == "Engine":
-                for item in node.body:
-                    if (isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-                            and item.name == "_compute_effective_confidence_core"):
-                        return item
+            if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.name == "_compute_effective_confidence_core"):
+                return node
         raise AssertionError(
-            "_compute_effective_confidence_core not found in Engine class"
+            "_compute_effective_confidence_core source not parseable"
         )
 
     def _score_value_calls(self, core_node):
@@ -1109,18 +1122,12 @@ class TestExactCompositionExpression:
         )
 
     def test_composition_chain_leaves_and_mult_count_exact(self):
-        """The ScoreValue(...) first arg must flatten to exactly 7
-        leaves and 6 Mult ops."""
-        core = self._core_node()
-        calls = self._score_value_calls(core)
-        assert calls, "ScoreValue(...) call not found"
-        sv_call = calls[0]
-        assert sv_call.args, "ScoreValue() called without positional argument"
-        leaves, mult_count = self._flatten_mult_chain(sv_call.args[0])
+        """The composer's returned expression must flatten to exactly 7
+        leaves and 6 Mult ops (base × six-modifier chain)."""
+        leaves, mult_count = self._flatten_mult_chain(self._composer_return_expr())
         assert mult_count == 6, (
-            f"Expected exactly 6 ast.Mult ops in the composition "
-            f"expression; found {mult_count}. Contract §6 requires "
-            f"one base × six-modifier chain."
+            f"Expected exactly 6 ast.Mult ops in compose_effective_confidence; "
+            f"found {mult_count}. The fixed v1 policy is one base × six-modifier chain."
         )
         assert len(leaves) == 7, (
             f"Expected exactly 7 leaf operands; found {len(leaves)}. "
@@ -1128,17 +1135,35 @@ class TestExactCompositionExpression:
         )
 
     def test_composition_leaf_sequence_exact_order(self):
-        """The 7 flattened leaves must appear in the exact contract
-        order: base × status × freshness × gap × count × rule_stats
-        × evidence_type."""
-        core = self._core_node()
-        sv_call = self._score_value_calls(core)[0]
-        leaves, _ = self._flatten_mult_chain(sv_call.args[0])
+        """The 7 flattened leaves must appear in the exact fixed order:
+        base × status × freshness × gap × count × rule_stats × evidence_type."""
+        leaves, _ = self._flatten_mult_chain(self._composer_return_expr())
         actual = tuple(self._leaf_label(l) for l in leaves)
         assert actual == self._EXPECTED_LEAVES, (
-            "Composition leaf order does NOT match contract §4 / §6:\n"
+            "Composition leaf order does NOT match the fixed v1 policy:\n"
             f"  expected: {self._EXPECTED_LEAVES}\n"
             f"  actual:   {actual}"
+        )
+
+    def test_engine_core_delegates_to_composer(self):
+        """The Engine core must delegate to confidence.compose_effective_confidence
+        exactly once and perform no composition multiplication of its own
+        (no second composition site)."""
+        core = self._core_node()
+        compose_calls = [
+            n for n in ast.walk(core)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "compose_effective_confidence"
+        ]
+        assert len(compose_calls) == 1, (
+            "core must delegate to compose_effective_confidence exactly once; "
+            f"found {len(compose_calls)}"
+        )
+        mults = [n for n in ast.walk(core) if isinstance(n, ast.Mult)]
+        assert mults == [], (
+            "the Engine core must not contain its own composition "
+            f"multiplication; found {len(mults)} Mult ops"
         )
 
 

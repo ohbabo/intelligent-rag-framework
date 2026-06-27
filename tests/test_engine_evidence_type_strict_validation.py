@@ -20,6 +20,9 @@ import pytest
 
 import ragcore
 import ragcore.engine as engine_module
+# Phase 2: confidence policy constants + status admission relocated to
+# ragcore._engine.confidence; read them from their new canonical home.
+import ragcore._engine.confidence as confidence_module
 import ragcore.types as types_module
 from ragcore import (
     CLAIM_STATUS_CANDIDATE,
@@ -374,7 +377,7 @@ class TestStrictValidationSnapshotAndFormulaUnchanged:
 
     # 34 — _EVIDENCE_TYPE_PENALTY_MODIFIER constant unchanged
     def test_penalty_modifier_constant_unchanged(self) -> None:
-        val = getattr(engine_module, "_EVIDENCE_TYPE_PENALTY_MODIFIER", None)
+        val = getattr(confidence_module, "_EVIDENCE_TYPE_PENALTY_MODIFIER", None)
         assert val == 0.9
 
     # 36 — no new public export

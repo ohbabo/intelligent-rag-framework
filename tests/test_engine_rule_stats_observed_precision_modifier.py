@@ -40,6 +40,9 @@ import pytest
 
 import ragcore
 import ragcore.engine as engine_module
+# Phase 2: confidence policy constants + status admission relocated to
+# ragcore._engine.confidence; read them from their new canonical home.
+import ragcore._engine.confidence as confidence_module
 import ragcore.types as types_module
 from ragcore import (
     CLAIM_STATUS_CANDIDATE,
@@ -485,11 +488,11 @@ class TestObservedPrecisionPublicBoundary:
     """§41.11 J — no new public exports; private constants exist in engine."""
 
     def test_precision_base_private_constant_exists_in_engine(self) -> None:
-        val = getattr(engine_module, "_RULE_STATS_PRECISION_BASE", None)
+        val = getattr(confidence_module, "_RULE_STATS_PRECISION_BASE", None)
         assert val == pytest.approx(0.9)
 
     def test_precision_range_private_constant_exists_in_engine(self) -> None:
-        val = getattr(engine_module, "_RULE_STATS_PRECISION_RANGE", None)
+        val = getattr(confidence_module, "_RULE_STATS_PRECISION_RANGE", None)
         assert val == pytest.approx(0.1)
 
     def test_precision_constants_not_publicly_exported(self) -> None:

@@ -41,6 +41,9 @@ import pytest
 
 import ragcore
 import ragcore.engine as engine_module
+# Phase 2: confidence policy constants + status admission relocated to
+# ragcore._engine.confidence; read them from their new canonical home.
+import ragcore._engine.confidence as confidence_module
 import ragcore.types as types_module
 from ragcore import (
     CLAIM_STATUS_CANDIDATE,
@@ -570,12 +573,12 @@ class TestRuleStatsContinuousPrivateConstants:
 
     # invariant 30 ★ — 신규 weight 상수
     def test_maturity_penalty_weight_constant_is_point_two(self) -> None:
-        val = getattr(engine_module, "_RULE_STATS_MATURITY_PENALTY_WEIGHT", None)
+        val = getattr(confidence_module, "_RULE_STATS_MATURITY_PENALTY_WEIGHT", None)
         assert val == pytest.approx(0.2)
 
     # invariant 31 ★ — 신규 saturation 상수
     def test_maturity_saturation_count_constant_is_two(self) -> None:
-        val = getattr(engine_module, "_RULE_STATS_MATURITY_SATURATION_COUNT", None)
+        val = getattr(confidence_module, "_RULE_STATS_MATURITY_SATURATION_COUNT", None)
         assert val == 2
 
     # invariant 32 — 신규 상수 미노출 (private)

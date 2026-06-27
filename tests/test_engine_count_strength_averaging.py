@@ -39,6 +39,9 @@ import pytest
 
 import ragcore
 import ragcore.engine as engine_module
+# Phase 2: confidence policy constants + status admission relocated to
+# ragcore._engine.confidence; read them from their new canonical home.
+import ragcore._engine.confidence as confidence_module
 import ragcore.types as types_module
 from ragcore import (
     CLAIM_STATUS_CANDIDATE,
@@ -476,7 +479,7 @@ class TestCountStrengthAveragingPrivateAndPublicSurface:
 
     def test_count_strength_penalty_weight_private_constant_exists_in_engine(self) -> None:
         assert getattr(
-            engine_module,
+            confidence_module,
             "_COUNT_STRENGTH_PENALTY_WEIGHT",
             None,
         ) == pytest.approx(0.25)

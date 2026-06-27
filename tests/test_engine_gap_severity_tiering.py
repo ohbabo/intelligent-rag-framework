@@ -23,6 +23,9 @@ import pytest
 
 import ragcore
 import ragcore.engine as engine_module
+# Phase 2: confidence policy constants + status admission relocated to
+# ragcore._engine.confidence; read them from their new canonical home.
+import ragcore._engine.confidence as confidence_module
 import ragcore.types as types_module
 from ragcore import (
     CLAIM_STATUS_CANDIDATE,
@@ -541,19 +544,19 @@ class TestGapSeverityPrivacyAndRegression:
 
     # invariants 31~34 ★ — 4 신규 tier 상수 존재 (현재 None)
     def test_tier_zero_constant_is_one(self) -> None:
-        val = getattr(engine_module, "_GAP_TIER_ZERO_UNRESOLVED_MODIFIER", None)
+        val = getattr(confidence_module, "_GAP_TIER_ZERO_UNRESOLVED_MODIFIER", None)
         assert val == 1.0
 
     def test_tier_one_constant_is_zero_point_nine(self) -> None:
-        val = getattr(engine_module, "_GAP_TIER_ONE_UNRESOLVED_MODIFIER", None)
+        val = getattr(confidence_module, "_GAP_TIER_ONE_UNRESOLVED_MODIFIER", None)
         assert val == 0.9
 
     def test_tier_two_constant_is_zero_point_eight(self) -> None:
-        val = getattr(engine_module, "_GAP_TIER_TWO_UNRESOLVED_MODIFIER", None)
+        val = getattr(confidence_module, "_GAP_TIER_TWO_UNRESOLVED_MODIFIER", None)
         assert val == 0.8
 
     def test_tier_three_or_more_constant_is_zero_point_seven(self) -> None:
-        val = getattr(engine_module, "_GAP_TIER_THREE_OR_MORE_UNRESOLVED_MODIFIER", None)
+        val = getattr(confidence_module, "_GAP_TIER_THREE_OR_MORE_UNRESOLVED_MODIFIER", None)
         assert val == 0.7
 
     # invariant 35 — 4 신규 상수 모두 public namespace 미노출
