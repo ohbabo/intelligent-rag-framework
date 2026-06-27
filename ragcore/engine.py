@@ -36,6 +36,11 @@ from ragcore.types import (
     ScoreValue,
 )
 
+# Phase 2 — the fixed v1 effective-confidence kernel + status admission domain.
+# Engine's six _*_modifier_for_claim wrappers collect facts from its stores and
+# delegate the arithmetic here; this module reads no Engine state.
+from ragcore._engine import confidence
+
 # Phase 1 decode/install boundary — the explicit state-projection surface
 # Engine uses for persistence (see ragcore._engine.serialization).
 from ragcore._engine.serialization import (
@@ -104,172 +109,6 @@ from ragcore._engine.serialization import (  # noqa: F401
 # disputed → refuted. Engine 내부 private — public export 안 함.
 # 미래 정책 (freshness / RuleStats / 가중합) 도입 시 자연스럽게 조정/대체.
 _REFUTATION_STRENGTH_THRESHOLD = 0.8
-
-# ---- Status modifier (PR11-D §24.8) ----
-# Status-only effective confidence multipliers.
-# Engine 내부 private — public export 안 함.
-# 미래 정책 (gap / contradiction / freshness / RuleStats) 도입 시
-# modifier 분해 가능 (예: status × gap × contradiction).
-_STATUS_MODIFIER_CANDIDATE = 1.0
-_STATUS_MODIFIER_CONFIRMED = 1.0
-_STATUS_MODIFIER_DISPUTED = 0.5
-_STATUS_MODIFIER_REFUTED = 0.0
-
-_STATUS_TO_MODIFIER: dict[int, float] = {
-    CLAIM_STATUS_CANDIDATE: _STATUS_MODIFIER_CANDIDATE,
-    CLAIM_STATUS_CONFIRMED: _STATUS_MODIFIER_CONFIRMED,
-    CLAIM_STATUS_DISPUTED: _STATUS_MODIFIER_DISPUTED,
-    CLAIM_STATUS_REFUTED: _STATUS_MODIFIER_REFUTED,
-}
-
-# ---- Effective-confidence calculation policy id (PR76-M07 §7) ----
-# Module-private — observable only via
-# EffectiveConfidenceTrace.calculation_policy_id. Not re-exported in
-# ragcore.__all__. Bump under §7.4 conditions only.
-_EFFECTIVE_CONFIDENCE_POLICY_ID = "ragcore.effective-confidence.v1"
-
-# ---- Claim status admission domain (PR65-P01 §51) ----
-# Engine 내부 private — public export 안 함.
-# Admission gate for Claim.status: only the four registered constants
-# are admissible. bool / float / None / str / out-of-range int are rejected
-# before any state mutation. See §51.1 / §51.2 / §51.5.
-_VALID_CLAIM_STATUSES: frozenset[int] = frozenset(_STATUS_TO_MODIFIER)
-
-
-def _validate_claim_status_admission(value: object) -> None:
-    """§51.2/§51.5 — fail-fast Claim.status admission check.
-
-    Raises:
-        TypeError: ``value`` is not a built-in int (includes bool, which
-            is an int subclass but rejected for Claim.status).
-        ValueError: ``value`` is an int but not one of the four
-            admissible status constants.
-    """
-    # bool is an int subclass; reject explicitly per §51.2.
-    if isinstance(value, bool) or type(value) is not int:
-        raise TypeError(
-            "Claim.status must be a built-in int and one of "
-            "CLAIM_STATUS_CANDIDATE / CLAIM_STATUS_CONFIRMED / "
-            "CLAIM_STATUS_REFUTED / CLAIM_STATUS_DISPUTED, "
-            f"not {type(value).__name__}"
-        )
-    if value not in _VALID_CLAIM_STATUSES:
-        raise ValueError(
-            f"Claim.status {value} is not admissible; "
-            f"admissible values: {sorted(_VALID_CLAIM_STATUSES)}"
-        )
-
-
-# ---- Freshness modifier (PR11-C §26) ----
-# freshness modifier 의 strength → penalty 가중치.
-# effective = base × status_modifier × (1.0 - most_recent.strength × WEIGHT)
-# Engine 내부 private — public export 안 함.
-# 0.5 의 의미: "가장 최근 active contradiction 의 strength 가 1.0 이면 modifier 0.5"
-_FRESHNESS_PENALTY_WEIGHT = 0.5
-
-# ---- Gap modifier (PR12-D §28 + PR23-M §35) ----
-# gap modifier — count-tier (was binary 0.8).
-# effective = base × status × freshness × gap × count × rule_stats × evidence_type
-# unresolved gap count → tier:
-#   0 → 1.0 (gap 없음 또는 모두 resolved, PR12-D Sub-decision T 정신 보존)
-#   1 → 0.9 (가장 약한 정보 부족)
-#   2 → 0.8 (PR12-D binary 와 동일 지점)
-#   3+ → 0.7 (누적 불확실성, hard floor)
-# Engine 내부 private — public export 안 함.
-# 의미: "정보 부족" 의 약한 신호. lifecycle / contradiction 보다 약함.
-# (PR11-D status disputed=0.5 보다 항상 약함 — 0.7 floor > 0.5)
-# Sub-decision AS: 구 _GAP_PENALTY_MODIFIER 제거, 4 개 tier 상수로 교체.
-_GAP_TIER_ZERO_UNRESOLVED_MODIFIER = 1.0
-_GAP_TIER_ONE_UNRESOLVED_MODIFIER = 0.9
-_GAP_TIER_TWO_UNRESOLVED_MODIFIER = 0.8
-_GAP_TIER_THREE_OR_MORE_UNRESOLVED_MODIFIER = 0.7
-
-# ---- Count modifier (PR19-E §31 + PR24-N §36) ----
-# count modifier — strength averaging (was binary 0.8).
-# effective = base × status × freshness × gap × count × rule_stats × evidence_type
-#
-# PR19-E (binary, 제거됨):
-#   active count >= 2 → 0.8 (repeated-pressure attenuation)
-#
-# PR24-N (continuous):
-#   active count >= 2 → 1.0 - average_active_strength × 0.25
-#   active count < 2  → 1.0 (PR11-C freshness 영역 보존)
-#
-# 핵심 명제 (§36.2):
-#   빈 강도의 contradiction 은 repeated pressure 가 아니다.
-#
-# Center preservation (Sub-decision AY):
-#   avg strength 0.8 → 1.0 - 0.8 × 0.25 = 0.8
-#   PR19-E binary 0.8 중심점이 자연 재현된다.
-#
-# Range: count_modifier ∈ [0.75, 1.0] (max 25% attenuation, hard floor 0.75)
-# Engine 내부 private — public export 안 함.
-# Sub-decision AZ: 구 _COUNT_PENALTY_MODIFIER 제거, 신규 weight 도입.
-_COUNT_STRENGTH_PENALTY_WEIGHT = 0.25
-
-# ---- Rule_stats modifier — maturity part (PR20-F §32 + PR26-R §38) ----
-# rule_stats modifier — continuous maturity signal.
-# effective = base × status × freshness × gap × count × rule_stats × evidence_type
-#
-# PR20-F (binary, 제거됨):
-#   firing_count < 2 → 0.9, 그 외 → 1.0
-#
-# PR26-R (continuous, Sub-decision BK/BL/BM/BN):
-#   clamped = min(max(firing_count, 0), 2)         (Sub-decision BQ defensive clamp)
-#   maturity_ratio = clamped / 2
-#   modifier = 1.0 - (1.0 - maturity_ratio) × 0.2  (Sub-decision BM)
-#
-# 핵심 명제 (§38.2):
-#   RuleStats modifier is a weak maturity signal, not a rule quality verdict.
-#   Continuous refinement separates zero-observation from one-observation
-#   without introducing quality judgment.
-#
-# Mapping:
-#   firing_count == 0 → 0.8 (신규, PR20-F 0.9 자연 만료)
-#   firing_count == 1 → 0.9 (PR20-F 중심점 자연 재현)
-#   firing_count >= 2 → 1.0 (saturated)
-#
-# Range: rule_stats_modifier ∈ [0.8, 1.0] (max 20% attenuation, floor 0.8)
-# 의미: outcome ratio / precision / FPR / timestamp / rule quality verdict 모두 OOS.
-# Engine 내부 private — public export 안 함.
-# Sub-decision BS: 구 _RULE_STATS_PENALTY_MODIFIER / _MIN_FIRING_COUNT 제거,
-#                  신규 weight + saturation 상수 도입.
-_RULE_STATS_MATURITY_PENALTY_WEIGHT = 0.2
-_RULE_STATS_MATURITY_SATURATION_COUNT = 2
-
-# ---- Rule_stats modifier — precision part (PR29-R §41) ----
-# observed_precision modifier — bounded no-boost adjustment signal.
-#
-# rule_stats_modifier = maturity_modifier × precision_modifier
-#
-# precision_modifier:
-#   observed_precision is None → 1.0
-#   observed_precision value p → _RULE_STATS_PRECISION_BASE + p × _RULE_STATS_PRECISION_RANGE
-#                              = 0.9 + p × 0.1
-#
-# Range: [0.9, 1.0], no boost.
-#
-# 핵심 명제 (§41.1):
-#   Observed precision is a bounded adjustment signal, not a rule quality verdict.
-#
-# 보수적 명제:
-#   Observed precision is optional evidence for rule maturity, not ground truth.
-#
-# Engine 내부 private — public export 안 함.
-# Sub-decision J: types.py / __init__.py / rule_output.py 변경 없음.
-# Sub-decision H: false_positive_rate 는 PR29-R 에서 사용하지 않음 (OOS).
-_RULE_STATS_PRECISION_BASE = 0.9
-_RULE_STATS_PRECISION_RANGE = 0.1
-
-# ---- Evidence_type modifier (PR21-L §33) ----
-# evidence_type modifier — caller-registered weak source-quality.
-# effective = base × status × freshness × gap × count × rule_stats × evidence_type
-# direct evidence 전부 caller-registered hint set 에 포함되면 0.9, 그 외 → 1.0.
-# Engine 내부 private — public export 안 함.
-# 의미: caller 가 "이 type 은 보조 신호" 라고 등록한 경우만 약하게 감쇠.
-# framework 는 Evidence.type 정수 의미를 소유하지 않는다 (Sub-decision AF).
-# 0.9 (PR20-F rule_stats 와 동일 강도 — 가장 약한 modifier 자리).
-_EVIDENCE_TYPE_PENALTY_MODIFIER = 0.9
 
 
 
@@ -514,7 +353,7 @@ class Engine:
             # entity_id callers, so keep this inline (helper handles entity_id label).
             raise KeyError(f"unknown subject_id (entity): {subject_id}")
         # §51.3 — reject invalid status before any state mutation.
-        _validate_claim_status_admission(status)
+        confidence._validate_claim_status_admission(status)
         # PR73-M04 §3 C1 — validate base_confidence BEFORE allocating an
         # id so a failed ScoreValue admission cannot consume _next_id
         # while leaving the revision and snapshot unchanged.
@@ -1287,149 +1126,66 @@ class Engine:
     # (gap / count / rule_stats / evidence_type).
 
     def _status_modifier_for_claim(self, claim_id: int) -> float:
-        """PR11-D §24.8 — status-only effective confidence multiplier.
-
-        4-state mapping (status modifier 강 — 0.0 / 0.5 / 1.0).
-        """
-        return _STATUS_TO_MODIFIER[self._claims[claim_id].status]
+        """PR11-D §24.8 — status-only multiplier. Engine wrapper: read the
+        claim status, delegate to the pure confidence kernel."""
+        return confidence.status_modifier(self._claims[claim_id].status)
 
     def _freshness_modifier_for_claim(self, claim_id: int) -> float:
         """PR11-C §26 — most-recent active contradiction strength weight.
-
-        active contradictions 없으면 1.0. 있으면
-        ``1.0 - most_recent.strength × _FRESHNESS_PENALTY_WEIGHT``
-        (Sub-decision O — 가장 최근 1개만 사용).
-        """
+        Engine wrapper: collect the most-recent active strength (None if none),
+        delegate to the pure kernel."""
         active = self.active_contradictions_by_freshness(claim_id)
-        if not active:
-            return 1.0
-        most_recent_evidence = self._evidences[active[0]]
-        return 1.0 - most_recent_evidence.strength.value * _FRESHNESS_PENALTY_WEIGHT
+        most_recent_strength = (
+            None if not active
+            else self._evidences[active[0]].strength.value
+        )
+        return confidence.freshness_modifier(most_recent_strength)
 
     def _gap_modifier_for_claim(self, claim_id: int) -> float:
-        """PR12-D §28 + PR23-M §35 — count-tier weak attenuation.
-
-        Sub-decision AO/AP/AQ/AR/AS:
-            - AO: severity source = unresolved gap count only (no new taxonomy)
-            - AP: tier table 0→1.0 / 1→0.9 / 2→0.8 / 3+→0.7
-            - AQ: information shortage remains weak (never 0.0)
-            - AR: formula shape unchanged (gap 항 내부 계산만 변경)
-            - AS: 4 개 private tier 상수 사용
-        """
+        """PR12-D §28 + PR23-M §35 — count-tier weak attenuation. Engine
+        wrapper: count unresolved gaps, delegate to the pure kernel."""
         unresolved_gap_count = sum(
             1
             for gap_id in self._claim_gap_refs.get(claim_id, ())
             if gap_id not in self._gap_resolutions
         )
-        if unresolved_gap_count == 0:
-            return _GAP_TIER_ZERO_UNRESOLVED_MODIFIER
-        if unresolved_gap_count == 1:
-            return _GAP_TIER_ONE_UNRESOLVED_MODIFIER
-        if unresolved_gap_count == 2:
-            return _GAP_TIER_TWO_UNRESOLVED_MODIFIER
-        return _GAP_TIER_THREE_OR_MORE_UNRESOLVED_MODIFIER
+        return confidence.gap_modifier(unresolved_gap_count)
 
     def _count_modifier_for_claim(self, claim_id: int) -> float:
-        """PR19-E §31 + PR24-N §36 — count modifier as continuous repeated pressure.
-
-        Sub-decision AV~BB:
-            - AV: name/source/threshold=2 preserved from PR19-E
-            - AW: active count < 2 → 1.0, preserving PR11-C freshness role
-            - AX: active count >= 2 → 1.0 - avg_strength × 0.25
-            - AY: center preservation, avg 0.8 → 0.8 (PR19-E binary 재현)
-            - AZ: _COUNT_STRENGTH_PENALTY_WEIGHT private, old binary constant removed
-            - BA: no snapshot schema bump (state shape 무변화)
-            - BB: PR19-E binary expectations naturally expire
-
-        핵심 문장:
-            빈 강도의 contradiction 은 repeated pressure 가 아니다.
-        """
+        """PR19-E §31 + PR24-N §36 — repeated-pressure strength averaging. Engine
+        wrapper: collect active contradiction strengths, delegate to the pure
+        kernel. (An empty-strength contradiction is not repeated pressure.)"""
         active = self.active_contradictions_for_claim(claim_id)
-        if len(active) < 2:
-            return 1.0
-        average_strength = sum(
+        strengths = tuple(
             self._evidences[evidence_id].strength.value
             for evidence_id in active
-        ) / len(active)
-        return 1.0 - average_strength * _COUNT_STRENGTH_PENALTY_WEIGHT
+        )
+        return confidence.count_modifier(strengths)
 
     def _rule_stats_modifier_for_claim(self, claim_id: int) -> float:
-        """PR20-F §32 + PR26-R §38 + PR29-R §41 — continuous maturity × bounded precision.
-
-        PR29-R refines rule_stats_modifier internally:
-            rule_stats_modifier = maturity_modifier × precision_modifier
-
-        Sub-decision BK/BL/BM/BN/BO/BQ (PR26-R §38, maturity 부분):
-            - BK: source = firing_count only for maturity
-            - BL: saturation count = 2 (PR20-F threshold 보존)
-            - BM: penalty weight = 0.2 (maturity max 20% attenuation)
-            - BN: no boost — maturity_modifier ∈ [0.8, 1.0]
-            - BO: sentinel (created_by_rule == 0) / lookup miss → 1.0
-            - BQ: defensive clamp min(max(firing_count, 0), saturation_count)
-
-        Sub-decision A~J (PR29-R §41, precision 부분):
-            - A: observed_precision is None → precision_modifier = 1.0 (PR26-R 보존)
-            - B: precision_modifier = _RULE_STATS_PRECISION_BASE + p × _RULE_STATS_PRECISION_RANGE
-                                    = 0.9 + p × 0.1, range [0.9, 1.0]
-            - C: rule_stats_modifier = maturity_modifier × precision_modifier
-            - D: no boost — rule_stats_modifier ∈ [0.72, 1.0]
-                 (maturity floor 0.8 × precision floor 0.9 = 0.72)
-            - E/F: status (refuted/disputed) dominance is preserved at compose level
-            - G: other modifiers unchanged
-            - H: false_positive_rate ignored (PR29-R OOS)
-            - I: snapshot round-trip preserves observed_precision + computed confidence
-            - J: types.py / __init__.py / rule_output.py unchanged
-
-        Maturity mapping (PR26-R):
-            firing_count == 0 → 0.8
-            firing_count == 1 → 0.9
-            firing_count >= 2 → 1.0
-
-        Precision mapping (PR29-R):
-            observed_precision is None → 1.0
-            observed_precision p=0.0 → 0.9
-            observed_precision p=0.5 → 0.95
-            observed_precision p=1.0 → 1.0
-
-        Composition examples (§41.11 C):
-            firing 0 + p None → 0.8 × 1.0 = 0.8 (PR26-R 보존)
-            firing 0 + p 0.0 → 0.8 × 0.9 = 0.72
-            firing 1 + p 0.5 → 0.9 × 0.95 = 0.855
-            firing 2 + p 1.0 → 1.0 × 1.0 = 1.0
-
-        핵심 명제 (§41.1):
-            Observed precision is a bounded adjustment signal,
-            not a rule quality verdict.
-
-        보수적 명제:
-            Observed precision is optional evidence for rule maturity,
-            not ground truth.
-        """
+        """PR20-F §32 + PR26-R §38 + PR29-R §41 — continuous maturity × bounded
+        precision. Engine wrapper: resolve the applicable rule stats (sentinel
+        rule id 0 or a lookup miss → no applicable stats → ``firing_count``
+        None), then delegate the arithmetic to the pure confidence kernel.
+        false_positive_rate is ignored (PR29-R OOS)."""
         claim = self._claims[claim_id]
         if claim.created_by_rule == 0:
-            return 1.0
-        key = (claim.created_by_rule, claim.created_by_rule_version)
-        stats = self._rule_stats.get(key)
-        if stats is None:
-            return 1.0
-        clamped_count = min(
-            max(stats.firing_count, 0),
-            _RULE_STATS_MATURITY_SATURATION_COUNT,
-        )
-        maturity_ratio = clamped_count / _RULE_STATS_MATURITY_SATURATION_COUNT
-        maturity_modifier = 1.0 - (
-            (1.0 - maturity_ratio) * _RULE_STATS_MATURITY_PENALTY_WEIGHT
-        )
-
-        if stats.observed_precision is None:
-            precision_modifier = 1.0
+            firing_count = None
+            observed_precision = None
         else:
-            precision_modifier = (
-                _RULE_STATS_PRECISION_BASE
-                + stats.observed_precision.value * _RULE_STATS_PRECISION_RANGE
+            stats = self._rule_stats.get(
+                (claim.created_by_rule, claim.created_by_rule_version)
             )
-
-        return maturity_modifier * precision_modifier
+            if stats is None:
+                firing_count = None
+                observed_precision = None
+            else:
+                firing_count = stats.firing_count
+                observed_precision = (
+                    None if stats.observed_precision is None
+                    else stats.observed_precision.value
+                )
+        return confidence.rule_stats_modifier(firing_count, observed_precision)
 
     def _validate_hint_evidence_type_values(
         self, types: Iterable[int],
@@ -1537,31 +1293,21 @@ class Engine:
             self._advance_state_revision()
 
     def _evidence_type_modifier_for_claim(self, claim_id: int) -> float:
-        """PR21-L §33 — weak source-quality signal (NOT truth verdict).
-
-        Sub-decision AA/AB/AC/AD/AE:
-            - AA: direct evidence only (Evidence.claim_id == claim_id),
-                  contradiction / resolved contradiction evidence 제외
-            - AB: direct evidence 0 개 → 1.0
-            - AC: direct evidence 1+ 개이고 전부 hint set 에 포함 → 0.9
-            - AD: no boost (modifier ∈ {0.9, 1.0})
-            - AE: hint set empty → 항상 1.0 (vacuous truth 함정 회피)
-        """
-        if not self._hint_evidence_types:
-            return 1.0
+        """PR21-L §33 — weak source-quality signal (NOT truth verdict). Engine
+        wrapper: collect the types of DIRECT supporting evidence (Evidence.claim_id
+        == claim_id, excluding contradiction / resolved-contradiction evidence),
+        then delegate to the pure kernel with the caller-registered hint set."""
         contradicting = self._contradictions.get(claim_id, set())
         resolved = self._resolved_contradictions.get(claim_id, set())
         excluded = contradicting | resolved
-        direct = [
-            ev
+        direct_evidence_types = tuple(
+            ev.type
             for ev in self._evidences.values()
             if ev.claim_id == claim_id and ev.id not in excluded
-        ]
-        if not direct:
-            return 1.0
-        if all(ev.type in self._hint_evidence_types for ev in direct):
-            return _EVIDENCE_TYPE_PENALTY_MODIFIER
-        return 1.0
+        )
+        return confidence.evidence_type_modifier(
+            direct_evidence_types, self._hint_evidence_types
+        )
 
     # ============================================================================
     # Region J  —  Effective confidence + rule stats update
@@ -1675,18 +1421,20 @@ class Engine:
         rule_stats_modifier = self._rule_stats_modifier_for_claim(claim_id)
         evidence_type_modifier = self._evidence_type_modifier_for_claim(claim_id)
         effective_confidence = ScoreValue(
-            claim.base_confidence.value
-            * status_modifier
-            * freshness_modifier
-            * gap_modifier
-            * count_modifier
-            * rule_stats_modifier
-            * evidence_type_modifier
+            confidence.compose_effective_confidence(
+                claim.base_confidence.value,
+                status_modifier,
+                freshness_modifier,
+                gap_modifier,
+                count_modifier,
+                rule_stats_modifier,
+                evidence_type_modifier,
+            )
         )
         return EffectiveConfidenceTrace(
             claim_id=claim_id,
             source_state_identity=self.state_identity(),
-            calculation_policy_id=_EFFECTIVE_CONFIDENCE_POLICY_ID,
+            calculation_policy_id=confidence._EFFECTIVE_CONFIDENCE_POLICY_ID,
             base_confidence=claim.base_confidence,
             status_modifier=status_modifier,
             freshness_modifier=freshness_modifier,
@@ -1825,7 +1573,7 @@ class Engine:
         # confidence status-domain, not pure serialization). Reject an invalid
         # status before constructing or populating any Engine state.
         for _claim in decoded.claims.values():
-            _validate_claim_status_admission(_claim.status)
+            confidence._validate_claim_status_admission(_claim.status)
         # Install boundary: fresh lineage (cls()) + persisted state.
         engine = cls()
         engine._install(decoded)
