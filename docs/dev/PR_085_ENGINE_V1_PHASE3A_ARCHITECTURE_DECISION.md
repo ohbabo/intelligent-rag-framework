@@ -70,8 +70,10 @@ a785d01 docs(architecture): select Phase 3 architecture (mixins) and define 3B e
 c3d0a95 docs(dev): record Phase 3A decision-gate history (this file, initial)
 8ed8aaf docs(review): correct Phase 3A scope, store ownership, and 3B sequencing
         (GPT review round 1: v2 over-spec removed; mutator/owner matrix; C2/C5 split; wording)
-<this>  docs(review): add persistent evidence appendix, scope C1 in the no-expansion rule, fix chronology
+a369b5b docs(review): add persistent evidence appendix, scope C1 in the no-expansion rule, fix chronology
         (GPT review round 2: BLOCKER 1 evidence file; BLOCKER 2 C1 boundary; BLOCKER 3 chronology/qualifier)
+<this>  docs(review): correct evidence-table store-access classification
+        (GPT review round 3: read false-positives removed; lifecycle/update_rule_stats A->W; _install next_id ID->W; direct port lists)
 ```
 No commit was amended, rebased, or squashed.
 
@@ -139,6 +141,32 @@ No commit was amended, rebased, or squashed.
   restore". Also refined the port-width figure to "14 stores + 11 infra methods
   directly; transitive closure all 19 stores + 12 private methods" (the earlier
   bare "12" was the transitive count; the table now shows both).
+
+## GPT independent review corrections (round 3 — third review)
+- **BLOCKER 1 — evidence-table store-access classification was wrong.** The AST
+  analyzer counted the write-container load of `self._store[k] = …` (and of
+  `self._store.append(…)`) as a **read**, producing false `reads` (e.g.
+  `add_entity reads entities`, `register_rule reads rule_stats`). It also marked
+  every subscript-assign as `A`, so the lifecycle replace
+  (`self._claims[id] = replace(self._claims[id], …)`) and `update_rule_stats`
+  showed `A` instead of `W`, and `_install`'s whole rebind `self._next_id = …`
+  showed `ID` instead of `W`. Rewrote the analyzer parent-aware:
+  `R` = read of contents only; `W` = whole-rebind or subscript replace-existing
+  (the method also subscript-reads the store); `A` = insert of a new key /
+  append; `ID` = only `_allocate_id`'s counter; `I` = only the revision counter.
+  Regenerated the 63-method table. The fix removed the false reads and corrected
+  lifecycle/`update_rule_stats` → `W`, `_install` `next_id` → `W`.
+- **BLOCKER 2 — direct port-width list was missing.** Added to the evidence the
+  explicit **direct port stores (14)** and **direct infra methods (11)** lists,
+  plus the **transitive-only additions** (5 stores + the one method
+  `_storage_for_kind`, reached via `_id_exists`), and stated that "direct"
+  excludes the C1/C6 infra and the C10 `_install`/`_state_view` boundary. The
+  totals are unchanged (14+11 direct / 19+12 transitive) — the corrected reads
+  were of stores already counted via their writes — but are now reproducible.
+- **BLOCKER 3 — chronology placeholder + PR stale figure.** Replaced the
+  dev-record `<this>` with the real round-2 SHA `a369b5b…`; corrected the one
+  remaining `14+12` figure in the PR body's adversarial record to the
+  direct/transitive form.
 
 ## Authoritative selected architecture
 **Mixin composition for the state-accessing Engine method clusters,** with C1
