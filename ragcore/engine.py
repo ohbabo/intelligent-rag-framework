@@ -86,22 +86,16 @@ from ragcore._engine.serialization import (  # noqa: F401
 )
 
 # ============================================================================
-# Module-level private constants
+# Module-level private constant — refutation lifecycle policy
 # ----------------------------------------------------------------------------
-# Order follows the 7-modifier composition formula:
-#
-#   effective = base
-#             × status        (4-state modifier)
-#             × freshness     (most-recent contradiction strength weight)
-#             × gap           (unresolved gap count tier)
-#             × count         (repeated-pressure strength averaging)
-#             × rule_stats    (maturity × observed_precision)
-#             × evidence_type (caller-registered hint set)
-#
-# Led by the refutation-helper threshold. (The snapshot schema-version
-# constants moved to ragcore._engine.serialization in Phase 1.) All constants
-# are Engine-internal — never exported via __all__, never part of the public
-# API surface (PR31-S frozenset).
+# Only the refutation-strength threshold remains module-level in engine.py.
+# It is a refutation *lifecycle* policy constant (disputed → refuted), NOT part
+# of the effective-confidence kernel: the 18 effective-confidence policy
+# constants + the status domain moved to ragcore._engine.confidence in Phase 2,
+# and the snapshot schema-version constants moved to
+# ragcore._engine.serialization in Phase 1. This constant is Engine-internal —
+# never exported via __all__, never part of the public API surface
+# (PR31-S frozenset).
 # ============================================================================
 
 # ---- Refutation helper ----
