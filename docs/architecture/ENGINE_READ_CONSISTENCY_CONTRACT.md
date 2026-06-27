@@ -7,7 +7,7 @@ status:  normative
 date:    2026-06-18
 ```
 
-> **A consumer-side read projection is not a state-bound capture. A capture-time fact is not a use-time fact. A snapshot-schema identity is not a state-instance identity.**
+> **A consumer-side read projection is not a state-bound capture. A capture-time fact is not a use-time fact. A snapshot-schema identity is not an Engine state identity.**
 
 This document defines the **conceptual boundary** between what
 the current `Engine` read surface actually guarantees, what it
@@ -220,14 +220,15 @@ from_snapshot(s)   restores Engine state from a snapshot dict
 
 Snapshot serialization is a **persistence boundary**. It is
 not the same as Engine state identity, and the
-`schema_version` integer is not the same as a state-instance
-identity (§4.1).
+`schema_version` integer is not an Engine state identity
+(§4.1 / §4.2).
 
 ---
 
 ## §3 Core boundary statement
 
-Twelve load-bearing boundary statements:
+Thirteen load-bearing boundary statements
+(thirteen inequalities):
 
 ```
 snapshot schema_version          != Engine state revision

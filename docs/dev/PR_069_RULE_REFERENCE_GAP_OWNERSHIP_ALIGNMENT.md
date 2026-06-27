@@ -534,3 +534,139 @@ PR69-P05  Rule Reference / Gap Ownership / Shared Gap     ready
 ```
 
 No follow-up PR is auto-scheduled by PR69-P05.
+
+---
+
+## §11 Post-Audit Correction (independent audit, 2026-06-26)
+
+PR69-P05 received an independent post-merge audit on the current
+`main` baseline. §54 was verified byte-identical between the P05
+squash (`9874b44`) and current `main`; every finding was present at
+merge and at audit time. The correction is documentation-only and
+lands on a fresh branch as two commits (contract, then this
+record); it does not amend the historical merge. §54 was found to
+be high quality (a dedicated, accurate §54.14 restore-boundary
+section; live behavior labeled "empirical probe"); three clauses
+needed correction.
+
+Corrected findings (documentation only):
+
+- **G-P05-01** — §54.2 / §54.7 framed rule references as "an int"
+  / "admits any int." There is **no deliberate shared runtime int
+  gate** (the `: int` is an annotation). Admission is
+  **path-dependent**, and the original independent-audit summary
+  ("'foo'/1.5/None/[1]/{} -> all ADMITTED") was itself
+  overcompressed and is NOT preserved. Per-surface live result:
+
+```text
+add_claim    rule_id / rule_version : stores verbatim; admits ANY
+                                      value (incl. list / dict)
+add_relation rule_id                : stores verbatim; admits ANY
+                                      value (incl. list / dict)
+add_gap      rule_id                : no type check, but value enters
+                                      the _gap_dedup_index hash key:
+                                      hashable non-int ADMITTED;
+                                      list / dict -> incidental
+                                      TypeError (unhashable)
+register_rule id / version          : no type check, but (id,version)
+                                      is a tuple dict key: hashable
+                                      non-int ADMITTED (except
+                                      duplicates); list / dict ->
+                                      incidental TypeError
+```
+
+  So "only ints admitted" is wrong AND "all values admitted on
+  every path" is wrong. §54.7 now records both the absent type gate
+  and the path-dependent / hashability behavior, plus the
+  equality/hash aliasing (0/False/0.0 share the `==0` sentinel;
+  1/True collide as registry and dedup keys) without granting those
+  values new semantics.
+- **G-P05-02** — §54.2 / §54.14: register_rule allocates a RuleStats
+  slot on the live path; `from_snapshot` restores rule_definitions
+  and rule_stats independently, so a RuleDefinition without its
+  RuleStats slot (get_rule_stats then raises KeyError per §54.4) and
+  the advisory reverse are admissible restored states. get_rule
+  depends on _rule_definitions, get_rule_stats on _rule_stats.
+- **G-P05-05** — §54.9 asserted "§52 already locks the meaning at the
+  restore boundary." Probe: a Gap.claim_id pointing to a nonexistent
+  Claim (`9999`) and a Gap.claim_id disagreeing with claim_gap_refs
+  both **restore verbatim**. §52 does NOT validate Gap.claim_id at
+  all. first-registration provenance is a **live** add_gap/dedup
+  property only; §54.9 and the §54.14 NOT-enforced matrix now record
+  this.
+
+AF-1 (recorded, not implemented): current §52 does not validate
+`Gap.claim_id` existence or historical provenance. This correction
+removes the false documentary guarantee only; whether to add such
+runtime/restore enforcement is a separate **future contract
+decision**. AF-1 is not a runtime regression introduced by P05.
+
+Restore-path probes (post-audit, executed on current `main`):
+
+```text
+restore Claim.created_by_rule / Gap.created_by_rule /
+        Relation.rule_id = 'rule' / None / [] / {}   -> ADMITTED
+                                                        verbatim (the
+                                                        nested fields
+                                                        are not keys
+                                                        on restore)
+restore RuleDefinition present / RuleStats absent     -> RESTORED;
+                                                        get_rule ok;
+                                                        get_rule_stats
+                                                        -> KeyError
+restore Gap.claim_id = 9999 (nonexistent)             -> RESTORED
+restore Gap.claim_id != claim_gap_refs membership     -> RESTORED
+```
+
+Findings requiring no change (audit accepted):
+
+```text
+G-P05-03  zero-sentinel equality       NOT_A_DEFECT (== 0 accurate)
+G-P05-04  late registration            NOT_A_DEFECT
+G-P05-06  Claim-to-Gap authority       NOT_A_DEFECT
+G-P05-07  shared Gap dedup             NOT_A_DEFECT
+G-P05-08  gap resolution               NOT_A_DEFECT
+G-P05-09  lifecycle readiness          NOT_A_DEFECT
+G-P05-10  §54.14 (apart from the added omissions above)  EXACT
+G-P05-11  repository-wide scan         clean
+G-P05-12  cross-references             accurate
+G-P05-13  historical accounting        accurate
+```
+
+Unchanged behavior (this correction):
+
+```text
+runtime delta:                  0
+test delta:                     0
+public API delta:               0
+snapshot schema delta:          0
+rule admission code delta:      0
+RuleStats modifier delta:       0
+Gap dedup algorithm delta:      0
+Gap resolution algorithm delta: 0
+lifecycle delta:                0
+```
+
+### Historical vs post-audit accounting
+
+Historical P05 facts (preserved, NOT rewritten):
+
+```text
+historical tests:             1364
+historical Engine:            40 / 18
+historical ragcore.__all__:   48
+historical schema_version:    2
+historical snapshot keys:     18
+historical files changed:     2 (docs only)
+```
+
+Measured current `main` values at this post-audit correction
+(distinct from the historical P05 values above):
+
+```text
+current full suite:           1987 passed
+current Engine:               42 / 20
+current ragcore.__all__:      50
+current schema_version:       2
+current snapshot keys:        18
+```

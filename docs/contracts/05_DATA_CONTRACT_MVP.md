@@ -13735,7 +13735,11 @@ claim_lifecycle_events
 hint_evidence_types
 ```
 
-The 18 keys above are the complete top-level set at schema_version 2. §52 does not introduce or remove a key.
+The 18 framework-defined keys above are required at schema_version 2, and
+they are the complete *canonical output* set that `Engine.to_snapshot()`
+produces. The required-key check at restore is **presence** of these 18
+keys, not exact-set equality of the input (see §52.1.2 for additional
+top-level keys). §52 does not introduce or remove a framework key.
 
 For the rest of §52:
 
@@ -13745,14 +13749,88 @@ restored Claim       — a Claim materialized from snapshot["claims"][*].value
                        whose id matches the surrounding ``key`` field.
 restored Evidence    — same pattern over snapshot["evidences"].
 restored Gap         — same pattern over snapshot["gaps"].
-restored ID set      — the set of ``key`` integers in a given top-level
-                       collection.
-identity tuple       — (rule_id, rule_version), the dict key shape for
-                       ``rule_definitions`` and ``rule_stats``.
+restored ID set      — the set of entry ``key`` values in a given top-level
+                       collection (each key admitted per §52.1.3).
+identity tuple       — (rule_id, rule_version), the logical in-memory dict
+                       key shape for ``rule_definitions`` and ``rule_stats``;
+                       its serialized form is a list (see §52.1.1).
 allocator kind       — one of ``"entity"`` / ``"observation"`` / ``"claim"``
                        / ``"evidence"`` / ``"relation"`` / ``"gap"`` as used
                        by Engine._allocate_id.
 ```
+
+#### §52.1.1 Identity representation layer
+
+Tuple-keyed identities cross a representation boundary between the
+serialized snapshot and the restored Engine. The contract fixes the layer
+for each step (no Python `tuple` is a valid *serialized* snapshot value):
+
+```text
+logical / in-memory identity   tuple
+serialized snapshot identity   JSON-compatible list
+validator input                list
+restored Engine identity       tuple
+
+step relationship:
+  tuple -> serialized list -> validated list -> restored tuple
+```
+
+This applies to the keys of:
+
+```text
+rule_definitions
+rule_stats
+gap_dedup_index
+```
+
+A `tuple` appearing as a serialized snapshot key is therefore the wrong
+serialized type (§52.7 TypeError), even though the restored in-memory key
+is a tuple. This representation layer is normative here and does not depend
+on any later development record.
+
+#### §52.1.2 Additional top-level keys
+
+The 18 framework keys are required. The presence check is **not** exact-set
+equality:
+
+```text
+- additional top-level keys are admitted as caller-adjacent metadata;
+- Engine.from_snapshot() does not interpret, preserve, or propagate any
+  additional top-level key into Engine state;
+- a subsequent Engine.to_snapshot() contains only the canonical 18
+  framework keys (schema_version stays 2; no new framework snapshot key).
+```
+
+This clause concerns additional **top-level** keys only. It does not permit
+additional keys nested inside framework-owned values.
+
+#### §52.1.3 Serialized collection entry key type
+
+For every top-level collection that represents an in-memory `dict[int, ...]`
+— namely:
+
+```text
+entities / observations / claims / evidences / relations / gaps /
+claim_gap_refs / gap_resolutions / contradictions /
+resolved_contradictions / claim_lifecycle_events
+```
+
+each entry's serialized `"key"` field is admitted only when:
+
+```text
+type(key) is int
+bool rejected
+float rejected
+str rejected
+None rejected
+int subclasses and IntEnum rejected
+no coercion ("1" -> 1, 1.0 -> 1, True -> 1 all forbidden)
+```
+
+Conceptual violation label: **COLLECTION_ENTRY_KEY_INVALID** (a documentary
+label only — not a Python class, not an enum, not a ragcore export, not an
+Engine API value). This clause concerns serialized **mapping entry keys**;
+it does not re-audit every reference *value* type.
 
 The internal representation of each storage attribute is recorded so the contract uses real shapes:
 
@@ -13844,7 +13922,26 @@ For every `(key_tuple, gap_id)` in `gap_dedup_index`:
 gap_id ∈ restored ID set of snapshot["gaps"]
 ```
 
-The key tuple shape is `(subject_id, rule_id, gap_type, required_evidence_type)`. §52 requires the **target** of each entry to be a restored Gap (label **GAP_DEDUP_TARGET_ORPHAN**). §52 does not require the key tuple components to match any other collection — `subject_id` and `rule_id` are caller-domain integers and the runtime does not back-validate them when forming the index.
+The logical key components are `(subject_id, rule_id, gap_type,
+required_evidence_type)`. §52 requires the **target** of each entry to be a
+restored Gap (label **GAP_DEDUP_TARGET_ORPHAN**).
+
+The serialized key has a fixed structural shape (per §52.1.1 the serialized
+form is a list):
+
+```text
+- a list
+- exactly four elements long
+- every element a built-in int
+- bool rejected
+- int subclasses rejected (exact-int rule, §51.2)
+```
+
+This is **structural validation only**. The four components are not required
+to match an Entity, RuleDefinition, Claim, or any other Engine collection —
+`subject_id` and `rule_id` are caller-domain integers and the runtime does
+not back-validate them when forming the index. Structural shape validation
+must not be read as semantic component back-validation.
 
 #### §52.3.2 Resolved contradictions ⊆ contradictions
 
@@ -13910,7 +14007,24 @@ True -> 1     forbidden
 None -> 0     forbidden
 ```
 
-A `kind` that does not appear in `snapshot["next_id"]` is treated by the runtime as zero (allocator default). §52 does not require an explicit entry for every kind, only that present entries satisfy the conditions above.
+A `kind` that does not appear in `snapshot["next_id"]` is interpreted as a
+**virtual counter value 0** (the allocator default). The virtual zero is
+subject to the same maximum-bound relation as an explicitly stored counter:
+
+```text
+virtual_or_present_counter >= max(restored ID set for that kind, default 0)
+
+missing kind + empty restored ID set
+    -> admissible (0 >= 0)
+
+missing kind + non-empty restored ID set
+    -> COUNTER_COLLISION_RISK
+    -> ValueError (0 < max restored ID)
+```
+
+§52 does not require every allocator kind to be physically present in
+`next_id`; it requires that each kind — whether stored or virtually zero —
+satisfy the maximum-bound condition. Sparse IDs remain permitted.
 
 ---
 
@@ -13945,7 +14059,7 @@ wrong Python type for a structural slot
   -> TypeError
 
 valid type but broken reference, broken subset, broken index
-  target, broken identity-tuple shape, broken counter relation
+  target, broken identity-tuple LENGTH, broken counter relation
   -> ValueError
 
 unsupported / missing schema_version                    -> ValueError
@@ -13953,9 +14067,63 @@ unsupported / missing schema_version                    -> ValueError
                                                              by `_migrate_snapshot_to_current`)
 ```
 
+#### §52.7.1 Serialized identity-key exception taxonomy
+
+For the serialized identity keys of `rule_stats`, `rule_definitions`
+(where applicable), and `gap_dedup_index`, the exception class is fixed
+precisely as:
+
+```text
+wrong container Python type
+  (tuple / str / dict / None instead of list)
+  -> TypeError
+
+correct list container but wrong length
+  (e.g. a 1- or 3-element rule_stats key; a 3- or 5-element
+   gap_dedup_index key)
+  -> ValueError
+
+correct list length but a component has the wrong Python type
+  (bool / float / str / None / int subclass)
+  -> TypeError
+```
+
+The conceptual labels **RULE_STATS_IDENTITY_INVALID** and
+**GAP_DEDUP_KEY_INVALID** therefore span both TypeError (container or
+component type) and ValueError (wrong length); the catalogue must not be
+read as mandating a single exception class for all three cases. Existing
+PR67-P03 runtime behavior is independently audited against this clarified
+taxonomy (the wrong-length case is a deferred P03 enforcement item).
+
 Raw `KeyError` from `dict[...]` lookups inside private restore helpers is **not** part of the §52 contract surface. PR67-P03 must convert lookup misses into the violation classes above before exiting the restore boundary; surfacing a bare `KeyError` to the caller would imply that the snapshot still had a chance of completing, which contradicts §52.7 fail-fast.
 
 §52 does not introduce a new exception class.
+
+#### §52.7.2 Duplicate serialized mapping keys
+
+Within one serialized top-level collection, no two entries may carry equal
+logical keys:
+
+```text
+- identical duplicate values are invalid;
+- conflicting duplicate values are invalid;
+- restore must NOT silently apply first-wins or last-wins;
+- restore must NOT discard one entry as an automatic repair (§52.10);
+- duplicate keys raise ValueError.
+```
+
+This applies to every list-encoded serialized mapping:
+
+```text
+int-keyed collections (entities / observations / claims / evidences /
+  relations / gaps / claim_gap_refs / gap_resolutions / contradictions /
+  resolved_contradictions / claim_lifecycle_events)
+rule_definitions / rule_stats / gap_dedup_index
+```
+
+Conceptual violation label: **DUPLICATE_SERIALIZED_KEY** (private,
+documentary only). Detection is not implemented under PR66-P02; the
+enforcement is a deferred PR67-P03 item.
 
 ---
 
@@ -14231,7 +14399,8 @@ collapsed into a single thing.
 
 ```text
 - the dataclass declared in ragcore.types and stored in
-  Engine._evidences after add_evidence()
+  Engine._evidences (created by add_evidence(); also restored,
+  already as Layer 3, by from_snapshot())
 - carries (id, claim_id, raw_ref_id, type, strength)
 - has no polarity field
 - being registered does NOT mean the surrounding Claim is
@@ -14257,8 +14426,15 @@ Operator acceptance is not ragcore.Evidence registration.
 
 A Layer 1 or Layer 2 object becomes a Layer 3 ragcore.Evidence
 only when a caller explicitly invokes the existing Engine API
-(`add_evidence`). §53 does not introduce any other promotion
-path.
+(`add_evidence`). `add_evidence` is the live **promotion** path
+that registers a NEW Layer-3 Evidence from consumer-side input;
+it is **not** the only way an Evidence object can be present in
+`Engine._evidences`. `Engine.from_snapshot()` is a separate
+**restoration** path: it reconstructs already-serialized Layer-3
+Evidence state and does NOT promote any Layer-1 or Layer-2
+object. §53 introduces no new promotion path or serialized object
+type. (A snapshot payload remains restore-contract input subject
+to §52, not a trusted external Evidence candidate.)
 
 §53 introduces no new conceptual type (no `ExternalRawItem`,
 `InterpretedEvidence`, or `EngineEvidenceCandidate` dataclass
@@ -14322,19 +14498,42 @@ contradiction relation  is a separately-registered relation,
 - no change to insertion-order return semantics
 ```
 
-#### Historical phrasing
+#### Active-wording ledger
 
-The runtime docstring on `Engine.evidences_for_claim`
-(`ragcore/engine.py`) currently uses the word "supporting" in
-its summary line. The docstring is a historical artifact and is
-NOT changed by §53 (§12 of the PR68-P04 directive forbids
-edits to `ragcore/`). The authoritative reading is §53.3 above;
-when a consumer reads the docstring, "supporting" must be
-interpreted in the polarity-neutral sense defined here.
+Two **active** runtime docstrings in `ragcore/engine.py` still use
+the polarity-laden word "supporting":
 
-A separate later PR may align the runtime docstring with §53.3
-if and when the runtime-edit ban is lifted; §53 explicitly does
-not schedule that work.
+```text
+Engine.add_evidence         "Add an Evidence supporting ``claim_id``"
+Engine.evidences_for_claim  "Return all Evidences supporting ``claim_id``"
+```
+
+These are not merely historical text — they are live documentation
+surfaces (visible via `help()` / IDEs). They are **retained as
+active legacy wording under the P04 runtime-edit boundary** (§12
+of the PR68-P04 directive forbids edits to `ragcore/`) and are an
+explicitly **deferred** documentation-alignment item, not a
+resolved one. §53.3 is the authoritative reading; "supporting" in
+either docstring must be read in the polarity-neutral sense above.
+A later PR may align both docstrings if and when the runtime-edit
+ban is lifted; §53 does not schedule a specific PR.
+
+Terminology-alignment ledger (consumer-facing / architecture docs):
+
+```text
+corrected (P04 + post-audit correction):
+  ENGINE_READ_SURFACE_AUDIT.md
+  ENGINE_READ_SURFACE_THAW_POLICY.md
+  LLM_CONTEXT_PACKET_SPEC.md §4.3 (value description)
+
+compatibility-locked label retained (name kept; value defined
+polarity-neutral, NOT renamed):
+  LLM_CONTEXT_PACKET_SPEC.md packet key "supporting_evidence"
+
+deferred — active runtime docstrings (runtime-edit boundary):
+  Engine.add_evidence
+  Engine.evidences_for_claim
+```
 
 ---
 
@@ -14440,11 +14639,18 @@ any bridging map between them.
 
 ```text
 - field on the Observation dataclass
-- declared as `source_type: int = 0`
-- caller-supplied integer; ragcore does not enumerate values
+- declared as `source_type: int = 0` — a Python type annotation
+  and default. The annotation communicates the intended
+  caller-side shape; it is NOT a runtime gate.
+- ragcore does not enumerate or standardize values
 - written via add_observation(...) source_type=...
 - persisted in the snapshot under "observations"
-- ragcore does not validate the value beyond it being an int
+- current ragcore performs **no runtime type validation** of
+  source_type: neither `add_observation` nor `from_snapshot`
+  checks it, and the supplied/serialized value is retained as
+  provided. §53 adds no validator and establishes no exact-int
+  rule. (A non-int value is neither recommended nor standardized;
+  this records only the actual absence of a runtime gate.)
 ```
 
 #### PR59 `SourceType`
@@ -14519,12 +14725,22 @@ wall-clock 안 봄 (PR10-A / PR10-B 정신 일관). engine-local 의미만
 clarification.
 
 ```text
-freshness                          evidence ingestion order,
-                                    measured as the integer
-                                    evidence_id allocated by
-                                    Engine._allocate_id("evidence").
-                                    Larger value = registered
-                                    later in this Engine.
+freshness                          the integer Evidence.id, read
+                                    as an ingestion-order proxy.
+                                    For LIVE evidence the id is
+                                    allocated monotonically by
+                                    Engine._allocate_id("evidence"),
+                                    so a larger id = registered
+                                    later in this Engine's history.
+                                    For RESTORED evidence, freshness
+                                    is the serialized/restored id
+                                    (preserved verbatim); it does
+                                    not independently prove the
+                                    original registration order or
+                                    wall-clock time of an arbitrary
+                                    contract-admissible snapshot
+                                    (sparse IDs remain admissible,
+                                    §52.5).
 
 freshness                          is NOT:
                                     - a wall-clock timestamp
@@ -14589,19 +14805,26 @@ freshness                           is not a clock.
 - add a new exception class
 - rename evidences_for_claim, compute_effective_confidence,
   evidence_freshness, source_type, or any other public symbol
-- modify ragcore/ source files (the runtime docstring on
-  evidences_for_claim is intentionally preserved as a
-  historical artifact; §53.3 is the authoritative reading)
+- modify ragcore/ source files (the active runtime docstrings on
+  add_evidence and evidences_for_claim are retained as active
+  legacy wording under the runtime-edit boundary and explicitly
+  deferred — see the §53.3 active-wording ledger; §53.3 is the
+  authoritative reading)
 - modify tests
 - modify examples Python source
 - introduce a new dataclass or enum
 - merge concerns from PR69-P05 (rule reference / shared gap)
 ```
 
-§53 is closed when consumer code and integration documentation
-describe Evidence, evidences_for_claim, effective_confidence,
+§53's terminology alignment is complete for consumer code,
+contracts, and architecture documentation when they describe
+Evidence, evidences_for_claim, effective_confidence,
 Observation.source_type, and freshness in the precise sense
-locked above.
+locked above. The two active runtime docstrings named in the
+§53.3 active-wording ledger (`Engine.add_evidence`,
+`Engine.evidences_for_claim`) remain a **known, explicitly
+deferred** alignment item under the runtime-edit boundary; §53
+does not claim repository-wide docstring closure while they stand.
 
 ---
 
@@ -14645,7 +14868,7 @@ Top-level locks:
   Gap resolution         ≠ automatic Claim lifecycle transition
 ```
 
-> **§54 records what the current implementation already means; everything below is observable today on `main` `0fae073`.**
+> **§54 records what the current implementation already means. Most clauses below describe the live Engine API observed on `main` `0fae073`. Where a clause concerns snapshot restoration, the live-API meaning is distinguished from what `from_snapshot` / §52 actually validate (see §54.7, §54.9, §54.14): live-API creation history (first-registration provenance, register-time slot allocation, intended value shapes) is NOT derivable from an arbitrary admissible snapshot.**
 
 §54 builds on PR4 §16 (Gap dedup + `first registering claim`), PR11-D §24 (status modifier composition), PR20-F §32 + PR26-R §38 + PR29-R §41 (rule-stats modifier sentinel + lookup-miss + maturity + precision composition), PR28-O §40 (`(rule_id, rule_version)` joint identity for rule pinning), PR47 §39 (frozen Engine internal posture), PR52 §6 / PR53 (LLM packet / proposal layer boundaries), PR59 §17 (DataAccessProfile axes), §51 / §52 / §53. It is a clarification PR; everything it locks already holds at runtime.
 
@@ -14680,9 +14903,12 @@ Three layers must be kept apart.
 #### Layer 1 — Stored rule reference
 
 ```text
-- an int (or pair of ints) stored on a Claim, Gap, Relation, or
-  similar record at the time the caller invoked an Engine API
-- caller-supplied; ragcore stores it verbatim
+- the intended shape is an int (or pair of ints) stored on a
+  Claim, Gap, Relation, or similar record at the time the caller
+  invoked an Engine API
+- caller-supplied; ragcore stores it verbatim and applies no
+  deliberate type validation (admission is path-dependent — see
+  §54.7)
 - existence of the field does NOT prove the caller previously
   called register_rule()
 - existence of the field does NOT prove that a RuleStats slot
@@ -14708,8 +14934,13 @@ Three layers must be kept apart.
 ```text
 - the (rule_id, rule_version) -> RuleStats record currently in
   self._rule_stats
-- a slot is allocated on register_rule() (engine.py:1461);
-  Engine never auto-creates a slot for an unregistered pair
+- a slot is allocated on register_rule() (engine.py:1461) in the
+  live registration path; Engine never auto-creates a slot for an
+  unregistered pair on that path. `from_snapshot` restores
+  rule_definitions and rule_stats as independent serialized
+  collections, so a restored state may hold a RuleDefinition
+  without its RuleStats slot, or a RuleStats entry without a
+  RuleDefinition (§54.14)
 - read via Engine.get_rule_stats(rule_id, rule_version)
 - carries firing_count + optional observed_precision +
   optional false_positive_rate; mutated by update_rule_stats
@@ -14937,22 +15168,61 @@ behavior described above.
 Rule loader and mapping documents may state a numeric convention
 (for example, `1..65535` as mapped values with `0` reserved).
 The current Engine admission path does **not** enforce that
-convention at the public API surface:
+convention at the public API surface, and it has **no deliberate,
+shared runtime type validator** for these rule-reference values.
+The `: int` annotations declare the intended shape; they are not a
+runtime gate. Admission is therefore **path-dependent** — it is
+neither "only ints" nor "every value on every path":
 
 ```text
-add_claim(rule_id=*, rule_version=*)             admits any int
-add_gap(rule_id=*)                                admits any int
-add_relation(rule_id=*)                           admits any int
-register_rule(RuleDefinition(id=*, version=*))   admits any int
-                                                  except duplicates
-from_snapshot(...)                                admits stored
-                                                  rule references
-                                                  irrespective of
-                                                  registration
-                                                  status (PR67 §52
-                                                  preserves advisory
-                                                  references; see
-                                                  §54.14)
+add_claim(rule_id=*, rule_version=*)   stores the value verbatim on
+                                       the Claim record; admits any
+                                       value, including non-int and
+                                       unhashable (list / dict)
+add_relation(rule_id=*)                stores the value verbatim on
+                                       the Relation record; admits
+                                       any value, including
+                                       unhashable
+add_gap(rule_id=*)                     no deliberate type check, but
+                                       rule_id becomes a component of
+                                       the _gap_dedup_index hash key:
+                                       a hashable non-int is admitted;
+                                       an UNHASHABLE value (list /
+                                       dict) raises an incidental
+                                       TypeError before storage
+register_rule(id=*, version=*)         no deliberate type check, but
+                                       (id, version) becomes a tuple
+                                       dict key: hashable non-int
+                                       admitted (except duplicates);
+                                       UNHASHABLE raises an incidental
+                                       TypeError
+from_snapshot(...)                     restores the nested rule-
+                                       reference value fields
+                                       (Claim/Gap/Relation) verbatim
+                                       — any value — irrespective of
+                                       registration status (PR67 §52
+                                       preserves advisory references;
+                                       see §54.14). Serialized
+                                       collection KEYS may carry
+                                       separate §52 structural
+                                       validation (gap_dedup_index key
+                                       = 4 built-in ints, rule_stats
+                                       key = 2 built-in ints); that
+                                       key validation is NOT a check
+                                       on the unvalidated nested value
+                                       fields and must not be
+                                       conflated with them
+```
+
+A document MUST NOT write either false universal:
+
+```text
+- "the Engine admits only ints"          (non-int passes on several
+                                          paths)
+- "the Engine admits every value on
+   every path"                            (an unhashable value raises
+                                          an incidental TypeError
+                                          where it enters a hash key)
 ```
 
 #### Locks
@@ -14975,8 +15245,32 @@ unless they qualify the statement with the specific code path
 that enforces it.
 
 §54 does **not** add any range check. The decision whether to
-enforce a numeric convention is left to a future PR that names
-this work explicitly; §54 does not schedule it.
+enforce a numeric convention — or any rule-reference type gate —
+is left to a future PR that names this work explicitly; §54 does
+not schedule it.
+
+#### Equality / hash aliasing
+
+Where a rule reference participates in a sentinel comparison or a
+dict / dedup key, the runtime uses ordinary Python equality and
+hashing. Consequently (observed on `main` `0fae073`):
+
+```text
+created_by_rule ∈ {0, False, 0.0}   all satisfy the `== 0`
+                                    rule-stats sentinel (§54.6)
+register_rule (id=1) then (id=True) collide as the same (id,
+                                    version) key (True == 1) ->
+                                    duplicate ValueError
+add_gap rule_id=1 then rule_id=True collide as the same dedup key
+                                    (True == 1) -> same Gap reused
+```
+
+§54 does NOT introduce an exact-built-in-int boundary for these
+fields and MUST NOT be read as if one already exists. It also does
+NOT grant `False` / `0.0` / `True` / `1.0` any new rule semantics;
+these are consequences of existing Python equality / hash behavior,
+recorded only so that documents do not assume a type gate that is
+absent.
 
 ---
 
@@ -15062,9 +15356,18 @@ gaps_for_claim(B) contains G,
 even though G.claim_id is still A.
 ```
 
-§54 does not rename, delete, split, or duplicate the
-`claim_id` field on `Gap`. §52 already locks the meaning at the
-restore boundary; §54.9 is the consumer-facing restatement.
+§54 does not rename, delete, split, or duplicate the `claim_id`
+field on `Gap`. The first-registration interpretation is a
+property of the **live** `add_gap` / dedup path (above).
+`from_snapshot` restores the serialized `Gap.claim_id` value
+verbatim; current §52 does **not** validate that value's existence
+in the restored Claim set, its membership in `claim_gap_refs`, or
+its historical first-registration provenance (see §54.14, where
+`Gap.claim_id` is correspondingly absent from the enforced list).
+For an arbitrary admissible snapshot, `Gap.claim_id` is therefore
+whatever was serialized — not a proven first-registration record.
+Whether to add such restore validation is a separate future
+contract decision; §54 does not schedule it.
 
 ---
 
@@ -15319,6 +15622,23 @@ Relation.rule_id               ∈ _rule_definitions
                               (advisory; unregistered admitted)
 rule_stats key                 ∈ rule_definitions
                               (advisory; §52.4 explicit lock)
+Gap.claim_id                   ∈ restored Claim set
+                              (NOT validated; restored verbatim)
+Gap.claim_id                   ∈ claim_gap_refs membership
+                              (NOT validated)
+Gap.claim_id                   historical first-registration
+                              provenance (NOT proven by restore;
+                              see §54.9)
+RuleDefinition present         ⇒ RuleStats present
+                              (NOT implied; rule_definitions and
+                              rule_stats restore independently)
+RuleStats present              ⇒ RuleDefinition present
+                              (NOT implied; advisory orphan stats
+                              permitted, §52.4)
+nested rule-reference value    exact built-in int
+fields (created_by_rule,       (NOT validated at restore; the
+ rule_version, Gap/Relation     dataclass int annotation is not a
+ rule fields)                   restore gate — see §54.7)
 ```
 
 Observed on `main` `0fae073` (empirical probe):

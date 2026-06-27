@@ -1362,3 +1362,11 @@ PR78-M09   RuleStats Update Provenance (OC-G) NOT STARTED
 ```
 
 No automatic next PR. Framework waits for directive.
+
+---
+
+**Post-merge note (independent audit, 2026-06-27):** PR75-M06 was
+squash-merged as GitHub PR #76 (9f576a5b072f4d194083d9b4c20d997d78c4b787, 2026-06-19) and is CLOSED (merged). The
+"opened as Draft / OPEN — DRAFT, NOT MERGED / Framework waits for
+directive" closing above is a historical pre-merge process note,
+superseded here. No normative content change.

@@ -107,9 +107,13 @@ ragcore/types.py        Evidence dataclass shape
                           (id, claim_id, raw_ref_id, type,
                            strength). No polarity field.
 ragcore/engine.py       add_evidence(claim_id, raw_ref_id,
-                          evidence_type, strength) - the only
-                          path that materializes a Layer-3
-                          Evidence into Engine state.
+                          evidence_type, strength) - the live
+                          promotion path for a NEW Layer-3
+                          Evidence from consumer input. NOT the
+                          only path into Engine._evidences:
+                          from_snapshot RESTORES already-
+                          serialized Layer-3 state (not a
+                          Layer-1/2 promotion). [post-audit]
 docs/architecture/
   EXTERNAL_ADAPTER_TRANSLATION_BOUNDARY_SPEC.md
                         PR63 "external item" / "interpreted
@@ -172,8 +176,12 @@ ragcore/types.py:64-70   Observation dataclass:
                            id / entity_id / raw_ref_id / type /
                            source_type: int = 0
 ragcore/engine.py:707     add_observation(... source_type: int = 0)
-                          — caller-domain integer, no
-                          validation beyond int type.
+                          — `: int` is an annotation/default only;
+                          NO runtime type validation in
+                          add_observation OR from_snapshot (value
+                          retained as provided). P04 adds none.
+                          [post-audit: corrected from "no
+                          validation beyond int type"]
 
 docs/architecture/DATA_ACCESS_PROFILE_CONTRACT.md §6
                           PR59 SourceType: conceptual axis
@@ -213,6 +221,17 @@ docs/dev/PR_015_FRESHNESS_REFUTE_MVP.md
 
 No code or document needs algorithmic change. §53.6 only adds
 a normative English clarification.
+
+[post-audit] Live vs restored distinction (G-P04-09): the
+runtime returns `evidence_id` unchanged. For LIVE evidence the id
+is allocated monotonically by `_allocate_id("evidence")`, so it
+is a registration-order proxy within that Engine's history. For
+RESTORED evidence, `evidence_freshness` returns the serialized id
+verbatim; it does not independently prove the original
+registration order or wall-clock time of an arbitrary
+contract-admissible snapshot (sparse IDs remain admissible per
+§52.5). The corrected §53.6 records this distinction; the
+algorithm is unchanged.
 
 ---
 
@@ -515,4 +534,120 @@ PR66-P02  Snapshot Restore Integrity Contract             CLOSED
 PR67-P03  Snapshot Restore Integrity Enforcement          CLOSED
 PR68-P04  Evidence / Confidence / Source / Freshness      ready
 PR69-P05  Rule Reference / Shared Gap                     NOT scheduled
+```
+
+---
+
+## §11 Post-Audit Correction (independent audit, 2026-06-25)
+
+PR68-P04 received an independent post-merge audit on the current
+`main` baseline. The §53 text was verified byte-identical between
+the P04 squash (`0fae073`) and current `main`, so every finding
+was present at merge and at audit time. The correction is
+documentation-only and lands on a fresh branch as two commits
+(contract+architecture, then this record); it does not amend the
+historical merge.
+
+Corrected findings (documentation only):
+
+- **G-P04-01** — §53.2 and §4.1 of this record overstated
+  `add_evidence` as "the only path that materializes a Layer-3
+  Evidence into Engine state." `from_snapshot` also materializes
+  Layer-3 Evidence (restoration of already-serialized state, not
+  a Layer-1/2 promotion). §53.2 now distinguishes the live
+  promotion path from the restoration path.
+- **G-P04-07** — §53.5 and §4.4 claimed source_type "no
+  validation beyond int type," implying a runtime int gate.
+  Empirically `add_observation` and `from_snapshot` accept any
+  value (str / float / None / bool / IntEnum / list) and store it
+  verbatim: the `: int` is a type annotation only, with NO runtime
+  validation. Corrected to record the actual absence of a gate;
+  no validator added.
+- **G-P04-09** — §53.6 framed freshness as ingestion order
+  "allocated by `_allocate_id`" without a restore qualifier.
+  `evidence_freshness` returns the serialized `evidence_id`
+  verbatim for restored snapshots (ordinal proxy, not proven
+  chronology). The live/restored distinction is now recorded.
+  Algorithm unchanged.
+- **G-P04-11** — §53.3's terminology closure was incomplete. The
+  original repository-wide scan missed two active "supporting"
+  surfaces:
+
+```text
+ragcore/engine.py  Engine.add_evidence active docstring
+                     ("Add an Evidence supporting ``claim_id``")
+docs/architecture/LLM_CONTEXT_PACKET_SPEC.md §4.3
+                     value description "supporting the claim" /
+                     "supporting facts"
+```
+
+  Final disposition:
+
+```text
+LLM_CONTEXT_PACKET_SPEC §4.3 value description
+                     CORRECTED (polarity-neutral) in this
+                     post-audit correction
+supporting_evidence packet key
+                     RETAINED as a rename-locked compatibility
+                     label; its value is defined polarity-neutral
+Engine.add_evidence docstring
+                     DEFERRED (active runtime docstring,
+                     runtime-edit boundary)
+Engine.evidences_for_claim docstring
+                     DEFERRED (active runtime docstring,
+                     runtime-edit boundary)
+```
+
+  The two active runtime docstrings are NOT reclassified as
+  resolved; §53.3's active-wording ledger records them as
+  explicitly deferred.
+
+Findings requiring no change (audit accepted):
+
+```text
+G-P04-02  Layer-1 "no polarity"      NOT_A_DEFECT (contextually safe)
+G-P04-03  polarity-neutral read       NOT_A_DEFECT (cross-claim freedom kept)
+G-P04-04  docstring deferral          ACCEPTABLE (subsumed by G-P04-11)
+G-P04-05  "7-modifier"                NOT_A_DEFECT (§53.4 = base × 6)
+G-P04-06  non-probability             NOT_A_DEFECT ("not truth probability")
+G-P04-08  PR59 SourceType            NOT_A_DEFECT (no enum; §6 conceptual)
+G-P04-12  cross-references            NOT_A_DEFECT (all accurate)
+G-P04-13  historical accounting       accurate (content issues = 01/07)
+```
+
+Unchanged behavior (this correction):
+
+```text
+runtime code delta:                0
+test delta:                        0
+public API delta:                  0
+snapshot schema delta:             0
+effective-confidence formula delta: 0
+freshness algorithm delta:         0
+SourceType registry delta:         0
+```
+
+### Historical vs post-audit accounting
+
+Historical P04 facts (preserved, NOT rewritten):
+
+```text
+base tests:                1364
+P04 tests:                 1364
+Engine public / private:   40 / 18
+ragcore.__all__:           48
+snapshot schema_version:   2
+top-level snapshot keys:   18
+P04 changed files:         4 (docs only)
+```
+
+Measured current `main` values at this post-audit correction
+(distinct from the historical P04 values above):
+
+```text
+full suite:                1987 passed
+Engine public / private:   42 / 20
+ragcore.__all__:           50
+snapshot schema_version:   2
+top-level snapshot keys:   18
 ```

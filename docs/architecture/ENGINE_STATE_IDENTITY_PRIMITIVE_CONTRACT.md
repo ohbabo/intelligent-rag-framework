@@ -345,7 +345,7 @@ No new value is included in any existing snapshot field.
 
 The identity primitive is **runtime-only**. The snapshot
 boundary continues to be a persistence-shape contract; it
-does not gain a state-instance identity field.
+does not gain an Engine state identity field.
 
 This is intentional and aligns with M03 §14
 (`snapshot schema validity != identity of the logical Engine
@@ -453,7 +453,7 @@ persistent Engine runtime lineage
 
 The 243차 implementation purposely emits a fresh lineage on
 restore (§4.4) so that an M05-style consumer cannot mistake
-snapshot content equivalence for state-instance identity.
+snapshot content equivalence for Engine state identity.
 
 ### §8.3 M02
 

@@ -1,13 +1,22 @@
 """Minimal Operational Scaffold — PR70-M01.
 
-Local illustrative operational maturity probe.
+Local illustrative operational maturity probe. This is an executable
+**historical snapshot of PR70-M01**: the stage statuses describe
+repository operational maturity AS OF M01 and are NOT the current
+repository capability inventory. They are intentionally not rewritten
+to later M02-M09 states. Where a later M-series PR superseded a PR70
+open item (e.g. PR76-M07 closing OC-D in the trace layer, PR78-M09
+closing OC-G in a consumer-owned layer), that closure is recorded as
+``supersession`` metadata on the relevant diagnosis field rather than
+by editing the historical rows. The report carries an explicit
+``report_temporality`` block (mode=HISTORICAL_SNAPSHOT).
 
 This module assembles the existing repository components into
 three lanes (External ingress / Pre-seeded Engine read /
 Downstream re-entry) and produces a deterministic plain dict
 that exposes:
 
-  - which stages connect to existing artifacts today
+  - which stages connect to existing artifacts at PR70-M01
   - which stages require an explicit manual fixture because the
     production handoff is not defined
   - which stages are partial
@@ -625,37 +634,71 @@ def _non_authority_locks() -> list[str]:
 
 
 def _effective_confidence_trace_diagnosis(packet: dict[str, Any]) -> dict[str, Any]:
-    """Diagnose effective_confidence trace completeness without
-    fabricating missing information."""
+    """Diagnose effective_confidence trace completeness AS OF PR70-M01,
+    with explicit M07 supersession metadata.
+
+    The historical M01 answers below are intentionally NOT recomputed
+    against current capability. PR76-M07 later closed OC-D in the trace
+    layer; that closure is recorded in ``supersession`` rather than by
+    rewriting the historical answers.
+    """
     return {
-        "value_available_from_packet": (
+        "assessment_scope": "HISTORICAL_PR70_M01",
+        "value_available_from_pr51_packet_at_m01": (
             "effective_confidence" in packet
         ),
-        "modifier_breakdown_available_today": (
-            "no — PR51 packet does not include a per-modifier "
-            "breakdown; consumers must call modifier helpers "
-            "individually if exposed, which they currently are not"
+        "modifier_breakdown_available_at_m01": (
+            "no — at PR70-M01 the PR51 packet did not include a "
+            "per-modifier breakdown; consumers had to call modifier "
+            "helpers individually, which were not exposed"
         ),
-        "calculation_policy_identity_available": (
-            "no — there is no explicit confidence_policy_id or "
-            "composition_revision field"
+        "calculation_policy_identity_available_at_m01": (
+            "no — at PR70-M01 there was no explicit confidence_policy_id "
+            "or composition_revision field"
         ),
-        "source_state_reference_available": (
-            "no — see B3 packet state binding UNDEFINED"
+        "source_state_reference_available_at_m01": (
+            "no — at PR70-M01, see B3 packet state binding UNDEFINED"
         ),
         "forbidden_substitutions": [
             "snapshot schema_version != confidence policy version",
             "module hash != semantic policy identity",
             "effective_confidence != probability",
         ],
-        "future_contract": "OC-D",
+        "historical_future_contract": "OC-D",
+        "supersession": {
+            "status": "CLOSED_BY_PR76_M07",
+            "public_type": "EffectiveConfidenceTrace",
+            "public_method": (
+                "Engine.compute_effective_confidence_with_trace"
+            ),
+            "trace_capabilities": [
+                "status_modifier",
+                "freshness_modifier",
+                "gap_modifier",
+                "count_modifier",
+                "rule_stats_modifier",
+                "evidence_type_modifier",
+                "calculation_policy_id",
+                "source_state_identity",
+            ],
+            "pr51_packet_shape_changed": False,
+            "b3_packet_binding_retroactively_connected": False,
+        },
     }
 
 
 def _rule_stats_provenance_diagnosis() -> dict[str, Any]:
-    """Record open RuleStats provenance questions without adding
-    fields to Engine."""
+    """Record open RuleStats provenance questions AS OF PR70-M01 against
+    Engine-internal fields, with explicit M09 supersession metadata.
+
+    The six answers describe Engine-internal provenance fields and remain
+    true: PR78-M09 closed OC-G through a consumer-owned provenance
+    contract and an executable example, NOT by adding an Engine-internal
+    provenance store. "answers remain no" therefore does not mean OC-G
+    is unimplemented.
+    """
     return {
+        "assessment_scope": "ENGINE_INTERNAL_PROVENANCE_FIELDS",
         "caller_identity_recorded": "no",
         "update_reason_recorded": "no",
         "source_observation_reference_recorded": "no",
@@ -666,7 +709,13 @@ def _rule_stats_provenance_diagnosis() -> dict[str, Any]:
             "PR70-M01 does NOT connect update_rule_stats() to any "
             "operational flow and does NOT add fields to Engine."
         ),
-        "future_contract": "OC-G",
+        "historical_future_contract": "OC-G",
+        "supersession": {
+            "status": "CLOSED_BY_PR78_M09_CONSUMER_OWNED_LAYER",
+            "scope": "CONSUMER_OWNED_EXAMPLE_LOCAL",
+            "engine_internal_fields_added": False,
+            "automatic_rule_stats_update_added": False,
+        },
     }
 
 
@@ -675,6 +724,13 @@ def _rule_stats_provenance_diagnosis() -> dict[str, Any]:
 
 def build_minimal_operational_scaffold() -> dict[str, Any]:
     """Assemble the PR70-M01 operational scaffold report.
+
+    This is an executable **historical snapshot** of PR70-M01. The stage
+    statuses describe repository operational maturity AS OF M01; they are
+    NOT a current capability inventory and are intentionally not rewritten
+    to later M02-M09 states. Later M-series work may supersede individual
+    open items; such closures are recorded as ``supersession`` metadata
+    (see the two diagnosis fields) without changing the historical rows.
 
     Returns a deterministic plain dict. The dict shape is local
     illustrative data; it is not a public framework contract.
@@ -701,11 +757,26 @@ def build_minimal_operational_scaffold() -> dict[str, Any]:
         "scaffold_kind": (
             "local illustrative operational maturity probe"
         ),
+        "report_temporality": {
+            "mode": "HISTORICAL_SNAPSHOT",
+            "internal_track": "PR70-M01",
+            "base_commit": (
+                "9874b44127c765176cb4ec6bb7158e5f7a8b7316"
+            ),
+            "merge_commit": (
+                "896e01ea3142e17a591a3054963d498744709e2e"
+            ),
+            "stage_statuses_as_of": "PR70-M01",
+            "current_capability_inventory": False,
+        },
         "overall_status": "INCOMPLETE",
         "fixture_origin_for_engine": "PRESEEDED_FOR_READ_LANE_ONLY",
         "lanes": lanes,
         "blocked_handoffs": _build_blocked_handoffs(lanes),
         "required_future_contracts": _required_future_contracts(),
+        "required_future_contracts_scope": (
+            "HISTORICAL_OPEN_ITEMS_AT_PR70_M01"
+        ),
         "read_consistency_requirements": _read_consistency_requirements(),
         "consumer_owned_decisions": _consumer_owned_decisions(),
         "non_authority_locks": _non_authority_locks(),

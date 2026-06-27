@@ -360,7 +360,8 @@ test was modified.
 PR65-P01 is closed when:
 
 - 216차 `docs(contract)` adds §51.
-- 217차 `test(core)` adds the 68 test methods.
+- 217차 `test(core)` adds the 8 test classes / 9 parametrized test
+  methods producing 68 collected test cases.
 - 218차 `fix(engine)` adds the minimal admission validator.
 - 219차 `docs(dev)` records this development record.
 
@@ -368,3 +369,64 @@ This PR is opened as draft; merge is not part of PR65-P01. The
 follow-up PRs (PR66-P02 orphan reference and PR67-P03 counter
 integrity) are NOT auto-scheduled by this PR and require
 separate directive entry.
+
+---
+
+## §11 Post-Audit Correction (independent audit, 2026-06-25)
+
+PR65-P01 received an independent post-merge audit on the current
+main baseline. Summary:
+
+- independent audit date: 2026-06-25
+- P01 runtime admission defect found: 0
+- runtime and contract behavior changed: no
+  (`ragcore/engine.py` and `docs/contracts/05_DATA_CONTRACT_MVP.md`
+  unchanged by the correction)
+
+Corrections applied to
+`tests/test_engine_claim_status_admission.py` only:
+
+- test annotation corrected: `INVALID_STATUS_VALUE_INTS` is now
+  `list[tuple[str, int]]` (its entries are `(label, int)`).
+- §51.5 message assertions added: invalid-type tests assert the
+  offending runtime type name appears in the `TypeError` message;
+  invalid-value tests assert the offending value and the admissible
+  set (`[0, 1, 2, 3]`, derived in the test from the public status
+  constants) appear in the `ValueError` message — for both
+  `Engine.add_claim()` and `Engine.from_snapshot()`.
+- `DerivedInt` and `IntEnum` exact-int cases added: a non-bool int
+  subclass and an `IntEnum` member numerically equal to a valid
+  status are now in the invalid-type catalogue, proving §51.2
+  rejects them (numerically equal to a valid status is not the same
+  as an admissible exact built-in int).
+- supported v1 invalid-status path added: a v1-shape snapshot
+  (`schema_version = 1`, no `hint_evidence_types`) with an invalid
+  status is rejected through migration without coercion and without
+  mutating the input dict.
+
+Historical original P01 merge accounting (unchanged fact):
+
+- 8 test classes
+- 9 parametrized test methods
+- 68 collected test cases
+
+Post-audit accounting, measured after the corrections:
+
+- 9 test classes
+- 10 parametrized test methods
+- 81 collected test cases
+
+Deferred findings (NOT fixed under P01):
+
+- G-P01-06B — the `§52` snapshot-restore-integrity validator
+  documentation/comment states the integrity pass runs *after* the
+  `§51` Claim.status admission, but the code runs integrity
+  *before* it. The `§51` admission itself remains correct through
+  the `§52` layer; the documentation/ordering mismatch is deferred
+  to the PR67-P03 audit.
+- G-P01-07 — Claim.status rejection preserving the M04
+  `EngineStateIdentity` (runtime correct; no regression test locks
+  state identity specifically) is deferred to the M04
+  review-boundary audit.
+
+Neither deferred item is fixed here.

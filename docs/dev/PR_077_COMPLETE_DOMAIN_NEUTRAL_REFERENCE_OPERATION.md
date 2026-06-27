@@ -1359,3 +1359,19 @@ still locked:
 ```
 
 No automatic next PR. Framework waits for directive.
+
+---
+
+## Post-merge reconciliation (independent audit, 2026-06-27)
+
+PR77-M08 was squash-merged as GitHub PR #78 (31e0210998374815c90dc9671069034bf6e10d1b) onto f57cd5da1fd4ab09d93b89bbf3d7bd08b22192be, 2026-06-25 (KST 10:21). The
+intermediate "Draft / OPEN — DRAFT, NOT MERGED" and "Framework
+waits for directive" language, and any "(this commit)" / "(this)"
+차수 self-references earlier in this record, are historical accounts
+of the pre-merge correction cycle; they are superseded by this
+block.
+
+Final state: PR77-M08 CLOSED (merged). This reconciliation changes no
+runtime, contract semantics, or historical metric recorded above.
+Current main baseline: 1999 passed, Engine 42 / 20, ragcore.__all__
+50, snapshot schema_version 2 / 18 keys, PR51 packet 7 keys.

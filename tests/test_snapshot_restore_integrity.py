@@ -38,6 +38,7 @@ Coverage map (§52 sub-section ↔ test class):
 from __future__ import annotations
 
 import copy
+import enum
 
 import pytest
 
@@ -48,6 +49,26 @@ from ragcore import (
     CLAIM_STATUS_REFUTED,
     Engine,
 )
+
+
+class _DerivedInt(int):
+    """A custom int subclass — exact-int policy must reject it (§51.2)."""
+
+
+class _StatusLikeIntEnum(enum.IntEnum):
+    """An IntEnum member equals its int value but is not a built-in int."""
+
+    CONFIRMED_LIKE = CLAIM_STATUS_CONFIRMED
+
+
+def _make_claim_value(idv: int) -> dict:
+    """Canonical valid serialized Claim value with the given id."""
+    return {
+        "id": idv, "subject_id": 1, "type": 1,
+        "status": CLAIM_STATUS_CANDIDATE,
+        "created_by_rule": 1, "created_by_rule_version": 1,
+        "reason_code": 0, "base_confidence": {"value": 0.5}, "flags": 0,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -268,16 +289,33 @@ class TestGapResolutionEvidenceOrphan:
 
 
 class TestGapDedupKeyShape:
+    """§52.7.1 taxonomy — a correct list container with the wrong length is a
+    ValueError; a wrong container type or wrong component type is a TypeError.
+    The two branches must not be collapsed into one expected exception."""
+
     @pytest.mark.parametrize(("label", "bad_key"), [
         ("two_element",   [1, 2]),
         ("three_element", [1, 2, 3]),
         ("five_element",  [1, 2, 3, 4, 5]),
-        ("not_a_list",    "1:2:3:4"),
-        ("bool_component", [True, 2, 3, 4]),
-        ("float_component", [1, 2, 3, 4.0]),
-        ("str_component",  ["1", 2, 3, 4]),
     ])
-    def test_invalid_key_shape_raises_type_error(
+    def test_wrong_length_raises_value_error(
+        self, label: str, bad_key,
+    ) -> None:
+        snap = _baseline_snapshot()
+        snap["gap_dedup_index"].append(_collection_item(bad_key, 1))
+        _assert_raises_and_input_unchanged(snap, ValueError)
+
+    @pytest.mark.parametrize(("label", "bad_key"), [
+        ("container_str",   "1:2:3:4"),
+        ("container_tuple", (1, 2, 3, 4)),
+        ("container_dict",  {"a": 1}),
+        ("container_none",  None),
+        ("bool_component",  [True, 2, 3, 4]),
+        ("float_component", [1, 2, 3, 4.0]),
+        ("str_component",   ["1", 2, 3, 4]),
+        ("none_component",  [1, 2, 3, None]),
+    ])
+    def test_wrong_type_raises_type_error(
         self, label: str, bad_key,
     ) -> None:
         snap = _baseline_snapshot()
@@ -316,13 +354,22 @@ class TestResolvedContradictionSubset:
         _assert_raises_and_input_unchanged(snap, ValueError)
 
     def test_empty_resolved_set_admitted(self) -> None:
-        """An entry with empty resolved set is admissible — nothing to subset-check."""
+        """§52.3.2 — an empty resolved set is admissible ONLY when the same
+        Claim is already a key in contradictions. The contradictions-key
+        requirement applies to every entry, empty bucket included."""
         snap = _baseline_snapshot()
-        # claim 1 has contradiction registered; empty resolved set is fine.
+        # claim 1 has a contradiction registered; empty resolved set is fine.
         snap["resolved_contradictions"].append(_collection_item(1, []))
-        # claim 1 already in contradictions, so this works.
         restored = Engine.from_snapshot(snap)
         assert restored is not None
+
+    def test_empty_resolved_set_without_contradiction_rejected(self) -> None:
+        """§52.3.2 — claim_id must be a key in contradictions for EVERY
+        resolved_contradictions entry, including empty buckets (G-P03-RESOLVED
+        -EMPTY). claim 2 has no contradictions entry."""
+        snap = _baseline_snapshot()
+        snap["resolved_contradictions"].append(_collection_item(2, []))
+        _assert_raises_and_input_unchanged(snap, ValueError)
 
 
 # ===========================================================================
@@ -338,10 +385,27 @@ _RULE_STATS_VALUE_TEMPLATE = {
 
 
 class TestRuleStatsIdentityShape:
+    """§52.7.1 taxonomy — wrong length is a ValueError; wrong container or
+    component type is a TypeError."""
+
     @pytest.mark.parametrize(("label", "bad_key"), [
         ("one_element",   [1]),
         ("three_element", [1, 1, 1]),
-        ("not_a_list",    "1:1"),
+    ])
+    def test_wrong_length_raises_value_error(
+        self, label: str, bad_key,
+    ) -> None:
+        snap = _baseline_snapshot()
+        snap["rule_stats"].append(_collection_item(
+            bad_key, dict(_RULE_STATS_VALUE_TEMPLATE),
+        ))
+        _assert_raises_and_input_unchanged(snap, ValueError)
+
+    @pytest.mark.parametrize(("label", "bad_key"), [
+        ("container_str",   "1:1"),
+        ("container_tuple", (1, 1)),
+        ("container_dict",  {"a": 1}),
+        ("container_none",  None),
         ("bool_first",    [True, 1]),
         ("bool_second",   [1, True]),
         ("float_first",   [1.0, 1]),
@@ -351,7 +415,7 @@ class TestRuleStatsIdentityShape:
         ("none_first",    [None, 1]),
         ("none_second",   [1, None]),
     ])
-    def test_invalid_identity_shape_raises_type_error(
+    def test_wrong_type_raises_type_error(
         self, label: str, bad_key,
     ) -> None:
         snap = _baseline_snapshot()
@@ -635,3 +699,343 @@ class TestStructuralInvariantsUnchanged:
 
     def test_snapshot_top_level_keys_unchanged(self) -> None:
         assert len(Engine().to_snapshot()) == 18
+
+
+# ===========================================================================
+# §52.1.3 — exact-int serialized collection entry keys (G-P02-05)
+# ===========================================================================
+
+
+_SCALAR_INT_COLLECTIONS = [
+    "entities", "observations", "claims", "evidences", "relations",
+    "gaps", "claim_gap_refs", "gap_resolutions", "contradictions",
+    "resolved_contradictions", "claim_lifecycle_events",
+]
+
+
+class TestCollectionEntryKeyType:
+    """§52.1.3 — every scalar int-keyed serialized collection entry key must
+    be an exact built-in int. bool/float/str/None/int-subclass/IntEnum are
+    rejected with TypeError before any incidental comparison or counter
+    failure, and no coercion occurs."""
+
+    @pytest.mark.parametrize("collection", _SCALAR_INT_COLLECTIONS)
+    def test_bool_key_rejected_for_every_collection(
+        self, collection: str,
+    ) -> None:
+        snap = _baseline_snapshot()
+        snap[collection].append(_collection_item(True, []))
+        exc = _assert_raises_and_input_unchanged(snap, TypeError)
+        assert collection in str(exc)
+
+    @pytest.mark.parametrize(("label", "bad_key"), [
+        ("bool_true",    True),
+        ("bool_false",   False),
+        ("float",        3.0),
+        ("string",       "3"),
+        ("none",         None),
+        ("int_subclass", _DerivedInt(3)),
+        ("int_enum",     _StatusLikeIntEnum.CONFIRMED_LIKE),
+    ])
+    def test_full_invalid_key_catalogue_on_claims(
+        self, label: str, bad_key,
+    ) -> None:
+        snap = _baseline_snapshot()
+        snap["claims"].append(_collection_item(bad_key, _make_claim_value(3)))
+        exc = _assert_raises_and_input_unchanged(snap, TypeError)
+        # The collection-entry key gate produced the failure (not a counter
+        # comparison or dataclass error).
+        assert "claims" in str(exc)
+
+
+# ===========================================================================
+# §52 — surrounding key == value['id'] for Claim / Evidence / Gap (G-P02-06)
+# ===========================================================================
+
+
+class TestKeyValueIdIntegrity:
+    """§52 — for claims/evidences/gaps the serialized key must equal
+    value['id']; a mismatch in either direction is a ValueError and returns
+    no Engine. Not extended to entities/observations/relations/rule_*."""
+
+    @staticmethod
+    def _mismatch(collection: str, new_id: int) -> dict:
+        snap = _baseline_snapshot()
+        snap[collection][0]["value"]["id"] = new_id
+        return snap
+
+    @pytest.mark.parametrize("collection", ["claims", "evidences", "gaps"])
+    def test_key_lower_than_value_id_rejected(self, collection: str) -> None:
+        # first entry key is 1; push value id far above it.
+        snap = self._mismatch(collection, 999)
+        _assert_raises_and_input_unchanged(snap, ValueError)
+
+    @pytest.mark.parametrize("collection", ["claims", "evidences", "gaps"])
+    def test_key_higher_than_value_id_rejected(self, collection: str) -> None:
+        # first entry key is 1; drop value id below it.
+        snap = self._mismatch(collection, 0)
+        _assert_raises_and_input_unchanged(snap, ValueError)
+
+
+# ===========================================================================
+# §52.7.1 — rule_definitions serialized identity key shape (G-P02-07)
+# ===========================================================================
+
+
+class TestRuleDefinitionsIdentityShape:
+    """§52.7.1 — rule_definitions serialized identity key is a 2-element list
+    of exact ints (structural only; no RuleStats match requirement). Wrong
+    length -> ValueError; wrong container/component type -> TypeError."""
+
+    @pytest.mark.parametrize(("label", "bad_key"), [
+        ("one_element",   [5]),
+        ("three_element", [5, 1, 1]),
+    ])
+    def test_wrong_length_raises_value_error(self, label: str, bad_key) -> None:
+        snap = _baseline_snapshot()
+        snap["rule_definitions"].append(_collection_item(bad_key, {}))
+        _assert_raises_and_input_unchanged(snap, ValueError)
+
+    @pytest.mark.parametrize(("label", "bad_key"), [
+        ("container_str",  "5:1"),
+        ("container_none", None),
+        ("bool_first",     [True, 1]),
+        ("float_second",   [5, 1.0]),
+        ("str_first",      ["5", 1]),
+        ("none_second",    [5, None]),
+    ])
+    def test_wrong_type_raises_type_error(self, label: str, bad_key) -> None:
+        snap = _baseline_snapshot()
+        snap["rule_definitions"].append(_collection_item(bad_key, {}))
+        _assert_raises_and_input_unchanged(snap, TypeError)
+
+
+# ===========================================================================
+# §52.7 — nested raw-KeyError converted to ValueError (G-P02-08)
+# ===========================================================================
+
+
+class TestNestedFieldKeyErrorConverted:
+    """§52.7 — a missing required nested payload field surfaces as ValueError,
+    never a raw KeyError, with the input snapshot unchanged."""
+
+    def _assert_value_error_not_keyerror(self, snap: dict) -> None:
+        before = copy.deepcopy(snap)
+        with pytest.raises(ValueError) as excinfo:
+            Engine.from_snapshot(snap)
+        assert not isinstance(excinfo.value, KeyError)
+        assert snap == before
+
+    def test_claim_missing_status(self) -> None:
+        snap = _baseline_snapshot()
+        del snap["claims"][0]["value"]["status"]
+        self._assert_value_error_not_keyerror(snap)
+
+    def test_claim_missing_base_confidence(self) -> None:
+        snap = _baseline_snapshot()
+        del snap["claims"][0]["value"]["base_confidence"]
+        self._assert_value_error_not_keyerror(snap)
+
+    def test_claim_base_confidence_missing_value(self) -> None:
+        snap = _baseline_snapshot()
+        snap["claims"][0]["value"]["base_confidence"] = {}
+        self._assert_value_error_not_keyerror(snap)
+
+    def test_evidence_missing_strength(self) -> None:
+        snap = _baseline_snapshot()
+        del snap["evidences"][0]["value"]["strength"]
+        self._assert_value_error_not_keyerror(snap)
+
+    def test_evidence_strength_missing_value(self) -> None:
+        snap = _baseline_snapshot()
+        snap["evidences"][0]["value"]["strength"] = {}
+        self._assert_value_error_not_keyerror(snap)
+
+    def test_gap_missing_severity(self) -> None:
+        snap = _baseline_snapshot()
+        del snap["gaps"][0]["value"]["severity"]
+        self._assert_value_error_not_keyerror(snap)
+
+    def test_gap_severity_missing_value(self) -> None:
+        snap = _baseline_snapshot()
+        snap["gaps"][0]["value"]["severity"] = {}
+        self._assert_value_error_not_keyerror(snap)
+
+    def test_rule_definition_missing_prior_confidence(self) -> None:
+        snap = _baseline_snapshot()
+        snap["rule_definitions"].append(_collection_item([5, 1], {
+            "rule_id": 5, "rule_version": 1, "claim_type": 1, "reason_code": 0,
+        }))
+        self._assert_value_error_not_keyerror(snap)
+
+    def test_rule_definition_prior_confidence_missing_value(self) -> None:
+        snap = _baseline_snapshot()
+        snap["rule_definitions"].append(_collection_item([5, 1], {
+            "rule_id": 5, "rule_version": 1, "claim_type": 1, "reason_code": 0,
+            "prior_confidence": {},
+        }))
+        self._assert_value_error_not_keyerror(snap)
+
+    def test_rule_stats_observed_precision_missing_value(self) -> None:
+        snap = _baseline_snapshot()
+        snap["rule_stats"].append(_collection_item([9, 9], {
+            **_RULE_STATS_VALUE_TEMPLATE, "observed_precision": {},
+        }))
+        self._assert_value_error_not_keyerror(snap)
+
+    def test_rule_stats_false_positive_rate_missing_value(self) -> None:
+        snap = _baseline_snapshot()
+        snap["rule_stats"].append(_collection_item([9, 9], {
+            **_RULE_STATS_VALUE_TEMPLATE, "false_positive_rate": {},
+        }))
+        self._assert_value_error_not_keyerror(snap)
+
+
+# ===========================================================================
+# §52.7.2 — duplicate serialized logical keys (G-P03-DUP)
+# ===========================================================================
+
+
+_IDENTITY_DUP_KEYS = {
+    "rule_definitions": [9, 9],
+    "rule_stats": [9, 9],
+    "gap_dedup_index": [9, 9, 9, 9],
+}
+
+
+class TestDuplicateSerializedKeys:
+    """§52.7.2 — duplicate logical keys within one serialized collection are
+    rejected with ValueError (no first/last-wins, no silent discard, no
+    Engine returned). next_id is excluded (already a materialized dict)."""
+
+    @pytest.mark.parametrize("collection", _SCALAR_INT_COLLECTIONS)
+    def test_duplicate_scalar_key_rejected(self, collection: str) -> None:
+        snap = _baseline_snapshot()
+        snap[collection].append(_collection_item(7, []))
+        snap[collection].append(_collection_item(7, []))
+        _assert_raises_and_input_unchanged(snap, ValueError)
+
+    @pytest.mark.parametrize("collection", list(_IDENTITY_DUP_KEYS))
+    def test_duplicate_identity_key_rejected(self, collection: str) -> None:
+        snap = _baseline_snapshot()
+        key = _IDENTITY_DUP_KEYS[collection]
+        snap[collection].append(_collection_item(list(key), {}))
+        snap[collection].append(_collection_item(list(key), {}))
+        _assert_raises_and_input_unchanged(snap, ValueError)
+
+    def test_conflicting_duplicate_scalar_dataclass_values_rejected(self) -> None:
+        snap = _baseline_snapshot()
+        snap["claims"].append(_collection_item(7, _make_claim_value(7)))
+        snap["claims"].append(_collection_item(7, _make_claim_value(7)))
+        _assert_raises_and_input_unchanged(snap, ValueError)
+
+    def test_conflicting_duplicate_bucket_values_rejected(self) -> None:
+        snap = _baseline_snapshot()
+        # baseline already has a contradictions entry for claim 1.
+        snap["contradictions"].append(_collection_item(1, [2]))
+        _assert_raises_and_input_unchanged(snap, ValueError)
+
+    def test_conflicting_duplicate_two_int_identity_rejected(self) -> None:
+        snap = _baseline_snapshot()
+        snap["rule_stats"].append(_collection_item(
+            [9, 9], dict(_RULE_STATS_VALUE_TEMPLATE)))
+        snap["rule_stats"].append(_collection_item(
+            [9, 9], {**_RULE_STATS_VALUE_TEMPLATE, "firing_count": 5}))
+        _assert_raises_and_input_unchanged(snap, ValueError)
+
+    def test_conflicting_duplicate_four_int_identity_rejected(self) -> None:
+        snap = _baseline_snapshot()
+        # baseline gap_dedup_index already carries key [1, 1, 1, 42].
+        snap["gap_dedup_index"].append(_collection_item([1, 1, 1, 42], 2))
+        _assert_raises_and_input_unchanged(snap, ValueError)
+
+
+# ===========================================================================
+# §52.7 — every canonical list surface rejects non-list with TypeError (§7)
+# ===========================================================================
+
+
+_ALL_LIST_SURFACES = [
+    "entities", "observations", "claims", "evidences", "relations",
+    "gaps", "rule_definitions", "rule_stats", "gap_dedup_index",
+    "claim_gap_refs", "gap_resolutions", "contradictions",
+    "resolved_contradictions", "claim_lifecycle_events",
+    "hint_evidence_types",
+]
+
+
+class TestAllListCollectionsNonListRejected:
+    """§52.7 — every canonical list-encoded surface deliberately rejects a
+    non-list with TypeError (not via an incidental downstream operation)."""
+
+    @pytest.mark.parametrize("collection", _ALL_LIST_SURFACES)
+    def test_non_list_collection_raises_type_error(
+        self, collection: str,
+    ) -> None:
+        snap = _baseline_snapshot()
+        snap[collection] = {"oops": "not a list"}
+        _assert_raises_and_input_unchanged(snap, TypeError)
+
+
+# ===========================================================================
+# §52.1.2 — additional top-level metadata admit-and-drop (positive)
+# ===========================================================================
+
+
+class TestExtraTopLevelMetadata:
+    """§52.1.2 — additional top-level keys are admitted as caller-adjacent
+    metadata, not interpreted as Engine state, and not propagated; canonical
+    output stays at 18 keys and the input snapshot is unchanged."""
+
+    @pytest.mark.parametrize(("label", "extra"), [
+        ("scalar", "x"),
+        ("dict",   {"nested": 1}),
+        ("list",   [1, 2, 3]),
+    ])
+    def test_extra_metadata_admitted_and_dropped(
+        self, label: str, extra,
+    ) -> None:
+        snap = _baseline_snapshot()
+        snap["__extra__"] = extra
+        before = copy.deepcopy(snap)
+        restored = Engine.from_snapshot(snap)
+        assert snap == before
+        out = restored.to_snapshot()
+        assert "__extra__" not in out
+        assert len(out) == 18
+
+
+# ===========================================================================
+# §51.2/§52 exact-int — int subclass / IntEnum rejected (positive coverage)
+# ===========================================================================
+
+
+class TestExactIntSubclassEnumRejected:
+    """§51.2/§52 exact-int — int subclasses and IntEnum members are rejected
+    (never coerced) on next_id values and identity-key components."""
+
+    @pytest.mark.parametrize("value", [
+        _DerivedInt(9), _StatusLikeIntEnum.CONFIRMED_LIKE,
+    ])
+    def test_next_id_value_rejected(self, value) -> None:
+        snap = _baseline_snapshot()
+        snap["next_id"]["claim"] = value
+        _assert_raises_and_input_unchanged(snap, TypeError)
+
+    @pytest.mark.parametrize("comp", [
+        _DerivedInt(9), _StatusLikeIntEnum.CONFIRMED_LIKE,
+    ])
+    def test_rule_stats_identity_component_rejected(self, comp) -> None:
+        snap = _baseline_snapshot()
+        snap["rule_stats"].append(_collection_item(
+            [comp, 9], dict(_RULE_STATS_VALUE_TEMPLATE)))
+        _assert_raises_and_input_unchanged(snap, TypeError)
+
+    @pytest.mark.parametrize("comp", [
+        _DerivedInt(9), _StatusLikeIntEnum.CONFIRMED_LIKE,
+    ])
+    def test_gap_dedup_identity_component_rejected(self, comp) -> None:
+        snap = _baseline_snapshot()
+        snap["gap_dedup_index"].append(_collection_item(
+            [comp, 1, 1, 42], 1))
+        _assert_raises_and_input_unchanged(snap, TypeError)

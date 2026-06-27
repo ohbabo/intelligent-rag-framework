@@ -166,7 +166,8 @@ Layer 3   ReviewedMutationRequest
             consumer-side mutation review decision
 Layer 4   Explicit Engine public API invocation
             the actual mutation event; a Python caller
-            invokes one existing Engine public method
+            invokes one existing state-mutating Engine public
+            method
 ```
 
 Layer 1 → Layer 2: §5 admission (§5 of contract)
@@ -180,7 +181,8 @@ Engine state changes only at Layer 4.
 
 ## §6 Core Boundary Statement
 
-The contract's §3 lists eight load-bearing locks:
+The contract's §3 lists thirteen load-bearing boundary statements
+(eleven inequalities, one implication, one equality):
 
 ```
 RoleAssignment validator pass != candidate materialization
@@ -190,11 +192,23 @@ EngineInputCandidate          != accepted mutation
 candidate validation          != review approval
 ReviewedMutationRequest       != automatic execution
 proposal operator acceptance  != mutation review approval
-actual Engine mutation        =  caller explicitly invokes
-                                  one existing Engine public API
+public                        != state-mutating
+read-only public method       != mutation candidate target
+review disposition            != ReviewedMutationRequest
+placeholder-bearing planned
+  step                        != review-eligible exact candidate
+approved exact candidate
+  review                      -> may materialize a
+                                  ReviewedMutationRequest
+actual Engine mutation        =  caller explicitly invokes one
+                                  existing state-mutating Engine
+                                  public method
 ```
 
-Each subsequent contract section refines one of these.
+Each subsequent contract section refines one of these. (The
+initial 233차 revision listed eight; the 235차/236차 audit
+expanded and corrected them to the thirteen final locks above —
+see the C1-C6 correction narrative below.)
 
 ---
 
@@ -976,7 +990,8 @@ state-mutating method that performs Gap resolution.
   schedules` → `does not implement, execute, or schedule`.
 - Contract §3: `These eight equivalences` (originally seven
   inequalities plus one equality, mis-counted) →
-  `These twelve load-bearing boundary statements` after the
+  `These thirteen load-bearing boundary statements` (eleven
+  inequalities, one implication, one equality) after the
   C1 / C2 / new-lock additions.
 - Contract §12 title:
   `Explicit Engine public API invocation` →
@@ -1045,7 +1060,7 @@ snapshot delta                       0
 
 `pytest -q` on 235차: `1423 passed`.
 
-### Commit history after 235차
+### Commit history (original PR71-M02, four commits)
 
 ```
 233차  cf129e2  docs(architecture): define reviewed Engine
@@ -1053,23 +1068,29 @@ snapshot delta                       0
 234차  47b7aa3  docs(dev): record PR71-M02
 235차  cb2006b  docs(architecture): correct reviewed mutation
                   handoff boundaries
-236차  (this commit)  docs(architecture): finalize reviewed
-                       mutation handoff audit
+236차  194117e  docs(architecture): finalize reviewed mutation
+                  handoff audit
 ```
 
-The 236차 commit performs the final audit cleanup before
-merge: replaces the 235차 placeholder, normalizes the
-§14b / §14c lowercase-suffix subsection headers to the
-repository-standard dot-numbering convention (§14.2 / §14.3),
-and updates all cross-references accordingly. No semantic
-change to the contract.
+235차 applied the six semantic corrections (C1-C6). 236차
+(`194117e`) subsequently performed the final audit cleanup:
+resolved the 235차 SHA placeholder, normalized the §14b / §14c
+lowercase-suffix subsection headers to the repository-standard
+dot-numbering convention (§14.2 / §14.3), and updated all
+cross-references — with no semantic runtime change to the
+contract.
 
-### State after 235차
+### Intermediate state after 235차 (before 236차 cleanup, before GitHub merge)
+
+The block below records the repository state AT 235차 — before the
+236차 final-audit cleanup and before the squash merge. It is an
+explicitly historical intermediate snapshot, NOT the final merged
+state (recorded separately below):
 
 ```
 P-series  CLOSED
 PR70-M01  CLOSED
-PR71-M02  CORRECTED — DRAFT, NOT MERGED
+PR71-M02  CORRECTED — DRAFT, NOT MERGED   (intermediate, at 235차)
 PR72-M03  NOT STARTED
 PR73-M04  CONDITIONAL / NOT STARTED
 PR74-M05  NOT STARTED
@@ -1079,8 +1100,26 @@ PR77-M08  NOT STARTED
 PR78-M09  NOT STARTED
 ```
 
-PR72-M03 has not been started. No new files, branches, or
-commits beyond 235차 are created by this correction.
+At that 235차 intermediate point, PR72-M03 had not been started.
+236차 (`194117e`) was then created for the final-audit cleanup,
+and the four commits (233-236) were squash-merged into GitHub
+PR #72.
+
+### Original PR71-M02 final merged state
+
+```
+original branch head:   194117e69cb46f59c5a0a90595ad861d0c4735c7
+GitHub PR:              #72
+merge mode:             squash
+squash merge:           f40b811d93b166a20f395218ffa54042000131be
+historical tests:       1423 passed
+historical Engine:      40 public / 18 private
+historical __all__:     48
+historical snapshot:    schema_version 2 / 18 top-level keys
+```
+
+This original-merge state is distinct from the current post-audit
+local correction (recorded in the post-audit section below).
 
 M02의 reviewed mutation handoff를 실제 state-mutating Engine
 public method로 한정하고, approved review만
@@ -1090,3 +1129,59 @@ RuleStats의 별도 책임을 혼동하지 않도록 잠갔다. 또한
 generated ID에 의존하는 candidate는 실제 ID가 생성된 뒤
 순차적으로 materialize·review되도록 정정했고, runtime behavior와
 Engine judgment semantics는 변경하지 않았다.
+
+---
+
+## Post-Audit Correction (independent audit, 2026-06-26)
+
+PR71-M02 received an independent post-merge audit on the current
+`main` baseline. M02's substantive contract (four-layer authority,
+state-mutating target rule, explicit-call boundary, A2 preservation,
+lifecycle/rule-stats separation) was found sound. Four
+documentation-level defects were corrected in two commits
+(architecture, then this record); no runtime, test, public-API, or
+schema change. The historical original-merge record above is
+preserved; this section is the post-audit local correction and is
+distinct from GitHub PR #72.
+
+- **G-M02-01** — §3 headline arithmetic. The §3 headline counted the
+  locks as 12 while its own parenthetical (11 inequalities + 1
+  implication + 1 equality) and the actual list give 13. Corrected
+  the contract headline and this record's final-shape descriptions to
+  **thirteen**; the boundary list itself is unchanged.
+- **G-M02-02** — early final-summary alignment. This record's §5
+  Layer-4 line (which omitted "state-mutating") and §6 header (which
+  still counted §3 as 8 locks) retained pre-C1 / pre-expansion
+  wording as if final. Aligned both to the final rule
+  (one existing **state-mutating** Engine public method; thirteen
+  load-bearing statements). The historical eight-lock fact is
+  retained only inside the explicitly historical C1-C6 correction
+  narrative.
+- **G-M02-03** — commit chronology. 236차's actual SHA is
+  `194117e69cb46f59c5a0a90595ad861d0c4735c7` (recorded in the
+  `f40b811…` squash body). The 236차 self-referential placeholder is
+  replaced with the real SHA; the "State after 235차" block is
+  relabeled an explicitly historical **intermediate** snapshot; the
+  contradictory "no commits beyond 235차 are created" sentence is
+  replaced with the accurate 235→236→squash sequence; and a separate
+  "final merged state" block is added. The pre-merge "DRAFT, NOT
+  MERGED" status is preserved only under the intermediate heading.
+- **G-M02-04** — temporality clarification. The contract gained one
+  short §22.1 scope lock stating that §1-§22 "future/deferred/NOT
+  STARTED" language is M02's own historical scope, that §23-§25 are
+  static cross-PR annotations (not a dynamic current-capability
+  inventory), and that later completion of OC-D/M07, OC-F/M08,
+  OC-G/M09 does not alter M02's authority. No detailed §26/§27/§28
+  addenda were added and the §23 post-M04 count (41) was preserved.
+
+Measured current `main` values at this post-audit correction
+(distinct from the historical M02 values recorded above):
+
+```
+full suite:               1999 passed
+Engine public / private:  42 / 20
+ragcore.__all__:          50
+schema_version:           2
+snapshot top-level keys:  18
+runtime / public-API / schema / M03-M09-artifact delta:  0
+```
