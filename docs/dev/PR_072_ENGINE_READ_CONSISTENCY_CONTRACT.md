@@ -191,7 +191,7 @@ mismatch.
 `schema_version=2` and 18 top-level keys; `from_snapshot`
 restores Engine state (with PR65 §51 + PR67 §52 admission
 and integrity checks). The serialization is a persistence
-boundary, not a state-instance identity.
+boundary, not an Engine state identity.
 
 ---
 
@@ -200,6 +200,10 @@ boundary, not a state-instance identity.
 The contract document
 `docs/architecture/ENGINE_READ_CONSISTENCY_CONTRACT.md`
 contains 19 top-level sections (§0..§18) and 19 subsections.
+
+§3 (Core boundary statement) contains thirteen load-bearing
+boundary statements, all thirteen expressed as inequalities
+(zero implications, zero equalities).
 
 ### §5.1 Identity separation (§4 of contract)
 
@@ -830,8 +834,16 @@ The contract now:
   identity-axis term; `snapshot schema validity != identity
   of the logical Engine state represented by the snapshot`
   replaces the ambiguous `snapshot instance identity` phrase.
-- `state instance identity` is removed everywhere from the
-  contract and dev record normative bodies.
+- The unhyphenated space form of that ambiguous term is removed
+  from the contract and dev record normative bodies.
+
+(Post-merge independent-audit note: a hyphenated form of the
+same ambiguous term survived 239차 in three normative positions
+— the contract epigraph, contract §2.5, and this dev record's
+§4.5. The post-merge M03 correction aligns all three to the
+defined term `Engine state identity`; see the post-audit section
+below. The plain-language phrase `same Engine state instance`
+(§14) is not a fourth identity concept and is left unchanged.)
 
 **C5 — `independent` wording replaced with `distinct +
 prerequisite`.**
@@ -944,5 +956,148 @@ snapshot delta                       0
 
 `pytest -q` on 239차: `1423 passed`.
 
-PR72-M03 remains DRAFT, NOT MERGED. PR73-M04 is NOT
-auto-started by this correction.
+### Intermediate state after 239차 (before 240차 cleanup, before GitHub merge)
+
+The block below records the repository state AT 239차 — before the
+240차 final-audit cleanup and before the squash merge. It is an
+explicitly historical intermediate snapshot, NOT the final merged
+state (recorded separately below):
+
+```
+PR72-M03   CORRECTED — OPEN, DRAFT, NOT MERGED   (intermediate, at 239차)
+```
+
+At that 239차 intermediate point, PR73-M04 was not auto-started by
+the post-review correction. 240차 (`d4c4ef0`) was then created for
+the final-audit cleanup, and the four commits (237–240) were
+squash-merged into GitHub PR #73.
+
+---
+
+## 240차 final-audit cleanup (d4c4ef0)
+
+240차 (`d4c4ef045b7791cabaecdcbcf02bf7cf5cee5fb7`, branch
+`docs/engine-read-consistency-contract`) performed the final-audit
+cleanup before merge. It corrected two normative residues and one
+reporting-measurement issue that the 239차 post-review correction
+had missed:
+
+```
+1. §7 title and prologue: the "independent axes" residue
+   -> "two distinct axes with a dependency constraint"
+      (the use-time axis presupposes the binding axis, per
+       §4.4 / §7.3).
+
+2. dev §5.4: the "independent axes" residue
+   -> "two distinct axes with a prerequisite relation".
+
+3. §4.2 cross-reference: broadened from "(§9)" to
+   "§8 (CAPTURE_BOUND) / §9 (CURRENTLY_MATCHED / STALE) /
+    §15 (future mutation-revision mechanism)".
+
+4. line-count measurement reconciliation (see below).
+```
+
+Measurement (exact, by Git comparison of the squash against the
+historical base `f40b811`):
+
+```
+architecture additions    1035
+dev record additions       948
+total additions           1983
+
+1035 + 948 = 1983
+```
+
+The cumulative additions are exactly 1983 (1035 + 948), with zero
+deletions — both files were added in full against the base. The
+239차 reporting had cited mistaken larger totals; 240차 replaced
+them with these exact 1035 / 948 / 1983 figures, which the squash
+record also states.
+
+---
+
+## Original PR72-M03 final merged state
+
+```
+original branch:            docs/engine-read-consistency-contract
+original branch head:       d4c4ef045b7791cabaecdcbcf02bf7cf5cee5fb7
+GitHub PR:                  #73
+merge mode:                 squash
+squash merge:               7ce41b3fa8ed2d9febb357733ce55a2ffa1e08c9
+merge date:                 2026-06-18
+historical tests:           1423 passed
+historical Engine:          40 public / 18 private
+historical ragcore.__all__: 48
+historical snapshot:        schema_version 2 / 18 top-level keys
+historical PR51 packet:     7 keys
+historical files:           architecture 1035 / dev record 948 / total 1983
+```
+
+This original-merge state is distinct from the later local
+post-audit correction recorded below. The original GitHub squash
+message retains the historical "Twelve load-bearing locks (§3)"
+miscount; that is an immutable historical Git-message defect and
+is NOT the current normative authority — the current contract §3
+is corrected to thirteen.
+
+---
+
+## Post-Audit Correction (independent audit, 2026-06-27)
+
+PR72-M03 received an independent post-merge audit on the current
+`main` baseline. M03's substantive fact-and-basis authority (the
+§3 boundary set, §4 identity concepts, §7 two-axis vocabulary, the
+§8 / §9 / §10 requirements, the §13 PR51 / PR53 relationship, the
+§14 snapshot boundary, and the §19 / §20 / §21 static addenda) was
+found sound. The defects were documentation-level and corrected in
+two commits (architecture, then this record); no runtime, test,
+public-API, snapshot, or packet change. The historical
+original-merge record above is preserved; this section is the
+post-audit local correction and is distinct from GitHub PR #73.
+
+post-audit base:
+
+```
+main 25787ff701a11d25bbfbc3719ec12179d40e8eec
+```
+
+- **M03-D1** — §3 headline count. The §3 fenced block contains
+  thirteen statements, all inequalities, but the headline read
+  "Twelve". Corrected to "Thirteen load-bearing boundary
+  statements (thirteen inequalities)". M03's §3 shape is 13
+  inequalities / 0 implications / 0 equalities (distinct from
+  M02's 11 / 1 / 1).
+- **M03-D2** — identity-terminology residues. The defined term is
+  `Engine state identity`; a hyphenated form of the earlier
+  ambiguous term survived 239차 in three normative positions
+  (contract epigraph, contract §2.5, dev record §4.5). All three
+  are aligned to `Engine state identity`. The plain-language
+  `same Engine state instance` (§14) is left unchanged.
+- **M03-D3** — chronology reconciliation. The dev record had
+  stopped at the 239차 "DRAFT, NOT MERGED" intermediate state. The
+  239차 block is relabeled an explicitly historical intermediate
+  snapshot; the 240차 final-audit cleanup, the original branch
+  head, the squash merge `7ce41b3`, and the CLOSED final state are
+  now recorded above.
+- **M03-R1** — measurement correction. An earlier audit-report
+  statement gave an incorrect larger cumulative-diff figure
+  together with a spurious line-counting explanation; both are
+  rejected as an audit-report error and are NOT propagated. The
+  exact Git comparison of the squash against the base shows
+  architecture +1035 / dev +948 / total +1983 insertions, with
+  zero deletions.
+
+Measured current `main` values at this post-audit checkpoint
+(distinct from the historical M03 values recorded above; a static
+checkpoint reading, not a dynamic repository inventory):
+
+```
+tests:                       1999 passed
+Engine public / private:     42 / 20
+ragcore.__all__:             50
+snapshot schema_version:     2
+snapshot top-level keys:     18
+PR51 packet keys:            7
+runtime / public-API / snapshot / packet / M02 / M04–M09 delta:  0
+```
