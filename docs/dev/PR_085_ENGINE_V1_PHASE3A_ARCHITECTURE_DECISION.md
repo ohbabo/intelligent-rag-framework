@@ -72,8 +72,12 @@ c3d0a95 docs(dev): record Phase 3A decision-gate history (this file, initial)
         (GPT review round 1: v2 over-spec removed; mutator/owner matrix; C2/C5 split; wording)
 a369b5b docs(review): add persistent evidence appendix, scope C1 in the no-expansion rule, fix chronology
         (GPT review round 2: BLOCKER 1 evidence file; BLOCKER 2 C1 boundary; BLOCKER 3 chronology/qualifier)
-<this>  docs(review): correct evidence-table store-access classification
+bc0f9b7 docs(review): correct evidence-table store-access classification
         (GPT review round 3: read false-positives removed; lifecycle/update_rule_stats A->W; _install next_id ID->W; direct port lists)
+bd66e5c docs(review): fix two evidence-table cells (add_gap dedup insert, register_rule stats) + alias-read note
+        (GPT review round 4: add_gap _gap_dedup_index W->A via membership-guard; register_rule _rule_stats A/W; alias-read scope option B)
+<this>  docs(review): final audit synchronization (register_rule cell A/W; dev-record round 4/5 sync)
+        (GPT review round 5: table cell A/W matches the note; chronology + corrections synced)
 ```
 No commit was amended, rebased, or squashed.
 
@@ -167,6 +171,32 @@ No commit was amended, rebased, or squashed.
   dev-record `<this>` with the real round-2 SHA `a369b5b…`; corrected the one
   remaining `14+12` figure in the PR body's adversarial record to the
   direct/transitive form.
+
+## GPT independent review corrections (round 4 — fourth review)
+- **`add_gap` → `_gap_dedup_index`: `W` → `A`.** The subscript-assign runs only in
+  the dedup miss branch after `if key in self._gap_dedup_index: … return`, so it
+  is an insert. Added membership-guard detection to the analyzer: a subscript-
+  assign guarded by `if <k> [not] in self._store:` with a returning/raising branch
+  is `A`. (`register_rule`'s `_rule_definitions` is guarded the same way and stays
+  `A`; the lifecycle / `update_rule_stats` replaces have no such guard and stay `W`.)
+- **`register_rule` → `_rule_stats`: documented `A/W`** (insert for a fresh rule;
+  replace if an orphan restored `_rule_stats` key exists per the restore contract).
+- **Alias-read scope (option B).** Added a note that the `reads` column shows
+  direct syntactic `self._store` access only; content reads via a local alias
+  (`bucket = self._contradictions.setdefault(…); evidence_id in bucket`) are not
+  separately listed — affects only the reads column, not ops / ownership / port /
+  decision.
+
+## GPT independent review corrections (round 5 — fifth review, final audit sync)
+- **`register_rule` → `_rule_stats` table cell now reads `A/W`** (not `A` with a
+  note). The authoritative sparse table records the real operation set the method
+  can perform; the classification note no longer says "the table shows A". The
+  contract-derived `W` is annotated via a documented override (it cannot be
+  inferred from `register_rule`'s AST, whose guard is on `_rule_definitions`).
+- **Dev-record synchronization.** The chronology now carries the real SHAs for
+  round 3 (`bc0f9b7`) and round 4 (`bd66e5c`); the only `<this>` is this round-5
+  bookkeeping commit. This corrections history is now complete through round 5,
+  matching the PR body — the permanent audit record is no longer a step behind.
 
 ## Authoritative selected architecture
 **Mixin composition for the state-accessing Engine method clusters,** with C1

@@ -63,7 +63,7 @@ excluded from *operational* mutation-ownership and port totals.
 | `claim_lifecycle_history` | pub  | C6 | claim_lifecycle_events | — | _assert_claim_exists | C1:_assert_claim_exists | read-only |
 | `get_rule` | pub  | C7 | rule_definitions | — | _assert_rule_pair_exists | C1:_assert_rule_pair_exists | read-only |
 | `get_rule_stats` | pub  | C7 | rule_stats | — | _assert_rule_stats_pair_exists | C1:_assert_rule_stats_pair_exists | read-only |
-| `register_rule` | pub  | C7 | rule_definitions | rule_definitions:A rule_stats:A | _advance_state_revision | C1:_advance_state_revision | mutating |
+| `register_rule` | pub  | C7 | rule_definitions | rule_definitions:A rule_stats:A/W | _advance_state_revision | C1:_advance_state_revision | mutating |
 | `update_rule_stats` | pub  | C7 | rule_stats | rule_stats:W | _advance_state_revision _assert_rule_stats_pair_exists | C1:_advance_state_revision C1:_assert_rule_stats_pair_exists | mutating |
 | `_validate_hint_evidence_type_values` | priv | C8 | — | — | — | — | read-only |
 | `clear_hint_evidence_types` | pub  | C8 | hint_evidence_types | hint_evidence_types:D | _advance_state_revision | C1:_advance_state_revision | mutating |
@@ -81,15 +81,17 @@ excluded from *operational* mutation-ownership and port totals.
 | `evidence_freshness` | pub  | C9 | — | — | _assert_evidence_exists | C1:_assert_evidence_exists | read-only |
 
 ## Classification notes (precision boundaries)
-- **`register_rule` → `_rule_stats`: `A` in the table, but `A/W` in general.**
+- **`register_rule` → `_rule_stats` is recorded as `A/W` in the table.**
   `register_rule` guards only `_rule_definitions` (`if key in self._rule_definitions: raise`)
-  and then assigns `self._rule_stats[key] = RuleStats(...)` unconditionally. For a
-  fresh rule that is an INSERT (`A`). The snapshot-restore contract permits an
-  **orphan `_rule_stats` key with no matching `_rule_definitions`**; calling
-  `register_rule` on such a key REPLACES the existing stats (`W`). So the precise
-  operation is `A/W` (insert when absent; replace when an orphan stat pre-exists);
-  the table shows the common `A` path. This does not affect ownership (still C7) or
-  the port width.
+  and then assigns `self._rule_stats[key] = RuleStats(...)` unconditionally: an
+  INSERT (`A`) for a fresh rule, but — because the snapshot-restore contract permits
+  an **orphan `_rule_stats` key with no matching `_rule_definitions`** — a REPLACE
+  (`W`) when such an orphan key pre-exists. The table cell therefore records both
+  possible operations (`A/W`) — the real operation set the method can perform,
+  not only the insert case.
+  This contract-derived `W` cannot be inferred from `register_rule`'s AST alone
+  (the guard is on `_rule_definitions`, not `_rule_stats`); it is annotated here
+  explicitly. It does not change ownership (still C7) or the port width.
 - **`reads` column = direct syntactic `self._store` access only** (subscript-Load
   `self._s[k]`, reading method `.get/.keys/.values/.items`, membership `k in self._s`,
   iteration/len/arg). Content reads performed through a **local alias** bound to a
