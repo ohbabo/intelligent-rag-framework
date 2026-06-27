@@ -1033,3 +1033,30 @@ class TestExactIntSubclassEnumRejected:
         snap["gap_dedup_index"].append(_collection_item(
             [comp, 1, 1, 42], 1))
         _assert_raises_and_input_unchanged(snap, TypeError)
+
+
+# ===========================================================================
+# Phase 1 — decode boundary keeps the §52.7 exception split narrow
+# (a MISSING claim status is ValueError; a WRONG-TYPE field stays TypeError,
+#  not broadly converted by validate_and_decode_snapshot)
+# ===========================================================================
+
+
+class TestExceptionTaxonomyNarrow:
+    def test_missing_claim_status_is_value_error(self) -> None:
+        snap = _baseline_snapshot()
+        del snap["claims"][0]["value"]["status"]
+        exc = _assert_raises_and_input_unchanged(snap, ValueError)
+        assert not isinstance(exc, KeyError)
+
+    def test_wrong_type_base_confidence_is_type_error(self) -> None:
+        snap = _baseline_snapshot()
+        # base_confidence must be {"value": <float>}; a bare float is wrong-type.
+        snap["claims"][0]["value"]["base_confidence"] = 0.5
+        _assert_raises_and_input_unchanged(snap, TypeError)
+
+    def test_wrong_type_evidence_strength_is_type_error(self) -> None:
+        snap = _baseline_snapshot()
+        # strength must be {"value": <float>}; a string is wrong-type.
+        snap["evidences"][0]["value"]["strength"] = "bad"
+        _assert_raises_and_input_unchanged(snap, TypeError)

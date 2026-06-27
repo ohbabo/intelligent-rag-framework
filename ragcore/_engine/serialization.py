@@ -1,10 +1,14 @@
-"""ragcore._engine.serialization — pure snapshot encode / decode / migration.
+"""ragcore._engine.serialization — snapshot encode / decode / migration / validation.
 
-Phase 1 of the Engine v1 refactoring plan: the snapshot serialization helpers
-(already module-level in engine.py) are relocated here so Engine is a thinner
-orchestrator. PURE functions only — imports ragcore.types + stdlib and MUST
-NOT import ragcore.engine (no import cycle). Validators and claim-status
-admission stay in engine.py (entangled with the Phase-2 confidence constants).
+Phase 1 of the Engine v1 refactoring plan. This module owns the low-level
+serialization helpers, snapshot migration, restore-integrity validation, and
+reconstruction into a DecodedEngineState (the decode/install boundary).
+
+It imports ragcore.types + stdlib only and never imports ragcore.engine (no
+import cycle). Claim-status admission remains in Engine because it belongs to
+the confidence status domain (it depends on _VALID_CLAIM_STATUSES, derived from
+the confidence _STATUS_TO_MODIFIER); the integrity validators here are
+confidence-free.
 """
 
 from __future__ import annotations
@@ -741,6 +745,17 @@ def validate_and_decode_snapshot(snapshot: dict[str, Any]) -> DecodedEngineState
     snapshot = _migrate_snapshot_to_current(snapshot)
     _validate_snapshot_restore_integrity(snapshot)
     try:
+        # A claim "status" field is REQUIRED. A MISSING status is a ValueError
+        # (preserving the pre-refactor behavior where claim-status admission
+        # ran on the raw snapshot). A wrong-TYPE field stays a TypeError per
+        # the §52.7 surface — the integrity validator above already checked
+        # container types, so we do NOT broadly convert reconstruct TypeErrors.
+        for _item in snapshot["claims"]:
+            if "status" not in _item["value"]:
+                raise ValueError(
+                    "snapshot restore failed: missing required nested field "
+                    "'status'"
+                )
         return DecodedEngineState(
             next_id=dict(snapshot.get("next_id", {})),
             lifecycle_seq=snapshot.get("lifecycle_seq", 0),
@@ -768,14 +783,4 @@ def validate_and_decode_snapshot(snapshot: dict[str, Any]) -> DecodedEngineState
         raise ValueError(
             "snapshot restore failed: missing required nested field "
             f"{missing!r}"
-        ) from exc
-    except TypeError as exc:
-        # A missing required dataclass field surfaces here as a constructor
-        # TypeError (e.g. Claim(**d) without "status"). Genuine wrong-type
-        # structural errors are already caught by the integrity validator
-        # above, so a reconstruct-stage TypeError is a missing/malformed field
-        # and must surface as the §52.7 ValueError contract class.
-        raise ValueError(
-            f"snapshot restore failed: malformed or missing required field "
-            f"({exc})"
         ) from exc

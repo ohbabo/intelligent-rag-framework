@@ -1274,26 +1274,16 @@ class TestInputImmutability:
 
 class TestStructuralInvariants:
 
-    def _ast_counts(self):
-        import ragcore as r
-        src = open("ragcore/engine.py").read()
-        tree = ast.parse(src)
-        public, private = 0, 0
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef) and node.name == "Engine":
-                for item in node.body:
-                    if isinstance(
-                        item, (ast.FunctionDef, ast.AsyncFunctionDef),
-                    ):
-                        if item.name.startswith("_"):
-                            private += 1
-                        else:
-                            public += 1
-        return public, private
-
     def test_engine_public_method_count(self):
-        public, _ = self._ast_counts()
-        assert public == 42
+        # RUNTIME count (not an engine.py class-body AST count): the public
+        # surface is the contract regardless of where methods are defined, so
+        # this survives a Phase-3 mixin/delegation relocation. Exact names +
+        # full signatures are locked in test_engine_phase0_taxonomy.py.
+        public = [
+            name for name in dir(Engine)
+            if not name.startswith("_") and callable(getattr(Engine, name))
+        ]
+        assert len(public) == 42
 
     def test_engine_named_private_seams_present(self):
         # Phase 0/1 (Engine v1 refactoring): the private method TOTAL is NOT a
