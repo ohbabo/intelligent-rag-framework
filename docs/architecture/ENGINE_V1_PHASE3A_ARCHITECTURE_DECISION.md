@@ -247,4 +247,195 @@ those is designed or implemented here** (out of Phase 3A scope).
 ---
 
 ## Decision
-*(recorded in the second commit — see below)*
+**Selected: Candidate A — mixin composition** for the ten stateful method
+clusters, with the existing pure stateless kernels (`confidence.py`,
+`serialization.py`) retained as module functions.
+
+**Selection reason — grounded in the measured discriminating gates and costs,
+not in an a-priori preference.** Among the gate-passing candidates, mixins
+produce the **least delta from this engine's measured shared-state topology and
+existing introspection surface**:
+1. The topology is pervasively shared-`self`: every mutator calls the single
+   revision authority (`_advance_state_revision`, 20 callers) + single ID
+   authority (`_allocate_id`) + guards, and writes a per-kind `self._<store>`.
+   Mixins reach all of this through the same `self` with **zero back-reference
+   and zero generic store**. Delegation needs a back-reference that exposes the
+   whole store set to every delegate; module functions need a `state` port
+   **measured at 14 stores + 12 private methods** (≈ the entire private surface).
+2. Mixins pass **G4/G9/G11 cleanly**: `getsource(Engine._compute_effective_confidence_core)`
+   still returns the real body (the M07 lock), zero façade boilerplate, zero test
+   change. Delegation/module-fn pass these only **conditionally** — by keeping
+   that seam on `Engine` (an exception to their own pattern) — and add a
+   traceback frame.
+3. The introspection properties mixins change (`__qualname__`, `__module__`,
+   `__dict__` membership, declaring class, `__mro__`/`__bases__`, help-grouping)
+   are asserted by **no** current test (§4 lock inventory: 0 hits).
+
+This is **not** a claim that mixins are generally superior. It is that, for *this*
+shared-state topology and *this* introspection surface, mixins change the least
+while preserving the one seam-introspection property a test actually pins.
+
+## Rejected alternatives
+### Rejected — Candidate B (delegation)
+- Conditional G4/G11: delegating the confidence cluster makes
+  `getsource(Engine._compute_effective_confidence_core)` return the wrapper
+  (measured `real body = False`) → M07's body assertions fail. Avoidable only by
+  keeping the seam on `Engine`, i.e. an exception to delegation for the very
+  cluster the pattern would target.
+- G7 spirit: each `Ops(self)` delegate holds a back-reference and reaches
+  `engine._<store>`, `engine._advance_state_revision`, the guards, and sibling
+  queries — exposing the **whole** private surface to every delegate (the
+  opposite of the encapsulation delegation is meant to buy).
+- Cost: ~42 public façade wrappers + the private seams that must stay on Engine;
+  +1 traceback frame (measured depth 3 vs 2) — a cost, not a hard blocker.
+- Decisive: it changes more of the *test-pinned* surface (seam `getsource`) than
+  mixins, for *more* boilerplate, to solve a coupling problem the measured DAG +
+  shared-`self` topology does not have.
+
+### Rejected — Candidate C (module functions)
+- Same conditional G4/G11 seam-`getsource` break + traceback frame as B.
+- G7 quantified: the `state` port is **measured at 14 stores + 12 private
+  methods** — essentially the entire private surface threaded as a parameter.
+  Either the port is `self` (then the functions are relocated methods that still
+  need Engine wrappers — B's boilerplate) or a `Protocol` duplicating the whole
+  private surface.
+- Decisive: highest structural exposure of the private surface of the three, for
+  no gate it passes better than mixins.
+
+## Consequences
+Because the selected architecture composes mixins that share `self`:
+
+- **No-expansion rule (a 3B design constraint that FOLLOWS from selecting mixins
+  — it was not a premise of the selection):** any cluster that reads or writes a
+  `self._<store>`, or calls a shared-`self` seam (`_advance_state_revision`,
+  `_allocate_id`, `_assert_*_exists`, `_record_claim_lifecycle_transition`), is
+  implemented as a **mixin**. Only **fully stateless pure computation** may be a
+  module function. That exception is closed today at exactly **two** modules —
+  `confidence.py` and `serialization.py` — and may not expand to any stateful
+  cluster.
+- **Accepted introspection deltas (explicitly approved, not hidden):**
+  `method.__qualname__` becomes `"<Mixin>.<name>"`; `method.__module__` becomes
+  the mixin module; the declaring class becomes the mixin; methods are inherited
+  (not in `Engine.__dict__`); `Engine.__mro__`/`__bases__` grow; `help()`/pydoc
+  group methods by mixin. Preserved: `from ragcore.engine import Engine`,
+  `Engine.__module__ == "ragcore.engine"`, 42 public names/signatures, runtime
+  behavior, `dir(Engine)` count, `setattr(Engine, name, …)`,
+  `getsource(Engine._seam)` real body.
+- **C1 (core/identity/id/guards) stays on the assembling `Engine` class** as the
+  shared base; mixins call `self._advance_state_revision()` etc., resolved via
+  the MRO. No store ownership transfer is required — every store stays a
+  `self._<kind>` attribute of `Engine`; mixins only *contribute methods*.
+- **`_claims` co-ownership (C2 + C5)** needs no special handling: both mixins
+  write `self._claims`; the store never leaves `Engine`.
+
+## Phase 3B decomposition sequence
+Each 3B PR moves **one** cluster's method bodies into a mixin module under
+`ragcore/_engine/`, has `Engine` inherit it, and leaves all stores + C1 on
+`Engine`. Ordered by **ascending coupling** (lowest write-coupling first — NOT
+largest line count):
+
+```
+3B-1  C8 hint-evidence     cluster: register/unregister/clear_hint_evidence_types + _validate_hint_evidence_type_values
+                           store: _hint_evidence_types (1, single-owner)  xcall: C1 only
+                           rationale: leaf, write=1, smallest rollback, proves the mixin seam
+3B-2  C3 relations         add_relation, get_relation | store _relations(1) | xcall C1 only
+3B-3  C7 rules             register_rule, get_rule, get_rule_stats, update_rule_stats | _rule_definitions,_rule_stats | xcall C1
+3B-4  C4 gaps              add_gap,get_gap,gaps_for_claim,gap_resolution,resolve_gaps_for_evidence | 4 stores single-owner | xcall C1
+3B-5  C9 confidence adapt. read-only; compute_*+_compute_effective_confidence_core+6 _*_modifier_for_claim+evidence_freshness
+                           NOTE: M07 pins getsource(Engine._compute_effective_confidence_core)=real body — the mixin PRESERVES it
+3B-6  C6 lifecycle history _record_claim_lifecycle_transition, claim_lifecycle_history (recorder; precede C5)
+3B-7  C2+C5 together       CRUD + lifecycle/contradiction — co-own _claims; the only cross-cluster write coupling → one PR
+3B-8  C10 snapshot façade  to_snapshot, from_snapshot, _state_view, _install (delegate to serialization kernel)
+(C1 core/identity/id/guards: stays on the Engine base — optional final CoreMixin extraction only if it adds clarity)
+```
+Each step must keep green: full pytest; public 42 exact signatures; `__all__` 50;
+snapshot 2/18/key-order/canonical bytes; PR51 7 keys; fresh lineage; policy id;
+no import cycle; intended files only.
+
+## Phase 3B entry conditions
+```
+[x] Phase 3A ADR selects ONE architecture (mixins) explicitly
+[x] both alternatives rejected with decisive, measured reasons
+[x] self-call graph complete (DAG, 0 SCCs)
+[x] store read/write matrix complete (cross-cluster write coupling = _claims only)
+[x] introspection-delta experiment complete (4 prototypes, measured)
+[x] import-graph / cycle proof complete (no candidate adds a runtime cycle)
+[x] v2 seam evaluated (state projection + public API; decomposition-independent)
+[x] 3B cluster sequence defined (ascending coupling, lowest first)
+[x] test-migration list: NONE required by 3A; 3B keeps runtime/getsource locks (no reversion)
+[x] accepted introspection deltas explicitly listed and approved
+[ ] GPT independent review APPROVE  (pending)
+[ ] Phase 3A squash merge           (pending)
+[ ] post-merge main full suite green (pending)
+```
+**Phase 3B remains prohibited until all Phase 3A entry conditions are
+independently reviewed, approved, merged, and post-merge verified.**
+
+## Adversarial review record (performed inline)
+A multi-agent review panel was started but stopped at the user's request (it
+generated repeated approval prompts); the adversarial review below was performed
+inline instead, producing the same record.
+
+**Strongest objection per candidate, and disposition:**
+- *Delegation should win — it preserves `__qualname__`/`__dict__`/declaring
+  class.* → True but **not the test-pinned properties**: it breaks
+  `getsource(seam)=real body` (M07) and adds a traceback frame. Net it changes
+  *more* of what tests actually assert. Rejected.
+- *Module functions are the most testable/pure.* → The pure parts are **already**
+  module functions (confidence/serialization). For the stateful clusters the
+  measured port is 14 stores + 12 private methods ≈ the whole private surface.
+  Rejected on measured exposure.
+- *Mixins are a code smell / MRO is fragile.* → The self-call graph is a **DAG
+  with 0 SCCs**; no `super()` cooperation or diamond is required (mixins are
+  disjoint method sets over a shared `self`). MRO risk is structurally absent
+  here.
+
+**Evidence checked:** baseline counts, SCC count (Tarjan), per-store mutators,
+cross-cluster coupling, port width, and the four-prototype introspection deltas
+were each computed from the source, not asserted.
+
+**Measurement error found:** one — the cluster-assignment script left
+`evidences_for_claim` unassigned (a read-only claim→evidence query; belongs with
+C2/C9 reads). It does not change any coupling conclusion (read-only, single
+store). Recorded, not hidden.
+
+**Premature-mixin-bias verdict:** one risk found and corrected — an earlier draft
+embedded the no-expansion rule inside the decision, which could read as a
+premise. Corrected so the rule appears strictly under *Consequences* as a result
+of the selection; the candidate comparison and gate application are stated before
+any selection.
+
+**Seven verification points (requested):**
+1. prototypes included a representative public method **and** a named private
+   seam — yes (`add_entity`/`get_entity` + `_core`/`_advance_state_revision`).
+2. mixin's `__dict__`/`__qualname__`/declaring-class/mro changes are shown, not
+   hidden — yes (measured table + Accepted deltas).
+3. delegation's +1 traceback frame classified as a **cost**, not a blocker — yes;
+   the blocker-candidate (seam `getsource`) is separated out as G4/G11.
+4. module-fn state-port width proven from the store matrix — yes (14 + 12).
+5. the 10 clusters' real independence stated honestly — yes (DAG, but shared C1 +
+   C6 + `_claims` co-ownership; not ten islands).
+6. first 3B cluster is the lowest write-coupling, not the largest — yes (C8/C3,
+   write=1).
+7. the pure-kernel exception is closed at exactly two modules — yes
+   (confidence.py, serialization.py), with a hard no-expansion rule.
+
+**Final verdict:** mixin selection stands after adversarial review; the one
+measurement slip and the one bias risk were corrected above; no gate decision was
+overturned.
+
+## Rollback / stop conditions (for 3B)
+STOP-AND-REPORT (do not improvise) if any 3B step would: change a public
+signature; change `Engine.__module__`; replace `ragcore/engine.py` with a
+package; require a generic store; require a runtime modifier registry; change
+state-revision semantics; break the `serialization.py`/`confidence.py` pure
+boundary; introduce a runtime import cycle; force an M07/seam test to be re-pinned
+to a location; or make the first 3B cluster non-isolable as its own PR.
+
+## Forbidden conclusions
+This ADR does **not**: implement any cluster; create a 3B branch; design a v2
+physics algorithm, a new public API, a generic store, a modifier registry, a new
+snapshot schema, or a new state kind; or treat "the runtime API is the same" as a
+reason to ignore an introspection delta (each delta is classified explicitly
+above).
+
