@@ -248,3 +248,25 @@ class TestPublicSignatureFreeze:
             if not name.startswith("_") and callable(getattr(Engine, name))
         }
         assert actual == _EXPECTED_PUBLIC_SIGNATURES
+
+
+class TestNamedPrivateSeams:
+    """Phase 1: the decode/install boundary seams are pinned by NAME +
+    SIGNATURE. The private method TOTAL is intentionally NOT locked (the
+    refactor adds private seams); only explicitly named seams are pinned."""
+
+    def test_install_seam(self) -> None:
+        import inspect
+        assert hasattr(Engine, "_install")
+        assert (
+            str(inspect.signature(Engine._install))
+            == "(self, decoded: 'DecodedEngineState') -> 'None'"
+        )
+
+    def test_state_view_seam(self) -> None:
+        import inspect
+        assert hasattr(Engine, "_state_view")
+        assert (
+            str(inspect.signature(Engine._state_view))
+            == "(self) -> 'DecodedEngineState'"
+        )

@@ -1295,9 +1295,17 @@ class TestStructuralInvariants:
         public, _ = self._ast_counts()
         assert public == 42
 
-    def test_engine_private_method_count(self):
-        _, private = self._ast_counts()
-        assert private == 20
+    def test_engine_named_private_seams_present(self):
+        # Phase 0/1 (Engine v1 refactoring): the private method TOTAL is NOT a
+        # locked contract — the refactor adds private seams (e.g. _install /
+        # _state_view). Only the named private seams are pinned.
+        for _seam in (
+            "_status_modifier_for_claim", "_freshness_modifier_for_claim",
+            "_gap_modifier_for_claim", "_count_modifier_for_claim",
+            "_rule_stats_modifier_for_claim", "_evidence_type_modifier_for_claim",
+            "_install", "_state_view",
+        ):
+            assert hasattr(Engine, _seam), f"missing private seam: {_seam}"
 
     def test_ragcore_all_count(self):
         assert len(ragcore.__all__) == 50
