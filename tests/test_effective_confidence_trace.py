@@ -661,29 +661,28 @@ class TestPreservedBoundaries:
 
 class TestStructuralCounts:
 
-    def _ast_counts(self):
-        src = open("ragcore/engine.py").read()
-        tree = ast.parse(src)
-        public, private = 0, 0
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef) and node.name == "Engine":
-                for item in node.body:
-                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        if item.name.startswith("_"):
-                            private += 1
-                        else:
-                            public += 1
-        return public, private
-
     def test_engine_public_method_count(self):
-        public, _ = self._ast_counts()
-        # 41 baseline (post-M04) + 1 (compute_effective_confidence_with_trace)
-        assert public == 42
+        # RUNTIME count (not an engine.py class-body AST count): the public
+        # surface is the contract regardless of where methods are defined, so
+        # this survives a Phase-3 mixin/delegation relocation. Exact names +
+        # full signatures are locked in test_engine_phase0_taxonomy.py.
+        public = [
+            name for name in dir(Engine)
+            if not name.startswith("_") and callable(getattr(Engine, name))
+        ]
+        assert len(public) == 42
 
-    def test_engine_private_method_count(self):
-        _, private = self._ast_counts()
-        # 19 baseline (post-M04) + 1 (_compute_effective_confidence_core)
-        assert private == 20
+    def test_engine_named_private_seams_present(self):
+        # Phase 0/1 (Engine v1 refactoring): the private method TOTAL is NOT a
+        # locked contract — the refactor adds private seams (e.g. _install /
+        # _state_view). Only the named private seams are pinned.
+        for _seam in (
+            "_status_modifier_for_claim", "_freshness_modifier_for_claim",
+            "_gap_modifier_for_claim", "_count_modifier_for_claim",
+            "_rule_stats_modifier_for_claim", "_evidence_type_modifier_for_claim",
+            "_install", "_state_view",
+        ):
+            assert hasattr(Engine, _seam), f"missing private seam: {_seam}"
 
     def test_ragcore_all_count(self):
         # 49 baseline (post-M04) + 1 (EffectiveConfidenceTrace)
