@@ -11,9 +11,9 @@ serialization, or public API.
 
 ## Baseline
 ```
-baseline main   628fc683…  (Phase 3B-6 merged, #92)
+baseline main   628fc68afa0d123e0131293eaa8902c3e3134618  (Phase 3B-6 merged, #92)
 baseline tests  2133 passed (local; no GitHub Actions on this repo)
-guard           HEAD == 628fc68 verified; tracked working tree clean before start
+guard           HEAD == 628fc68a verified; tracked working tree clean before start
 ```
 
 ## Exact methods moved (9)
