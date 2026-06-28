@@ -112,24 +112,52 @@ Operator         = execution authority
 ## Project Status
 
 ```text
-Version:                 0.1.0
+Version:                 0.1.0   (ragcore; matches pyproject.toml — intentionally not bumped)
 Package import name:     ragcore
-Method surface:          frozen (PR36-PKG §48)
-Algorithm / mathematics: allowed to evolve (PR36-PKG §48.3)
-Integration readiness:   audited in §49 (D-mid completion in progress)
+Engine v1 refactoring:   COMPLETE — Phase 0–4 CLOSED
+Verified local suite:    2204 passed  (local only; no CI / GitHub Actions configured)
+Engine public methods:   42
+ragcore.__all__:         50
+Snapshot:                schema_version 2 / 18 top-level keys
+PR51 context packet:     7 keys
+Final architecture:      thin C1 core + 9 private mixins + 2 pure kernels
+Authoritative boundary:  docs/architecture/ENGINE_V1_FINAL_BOUNDARY.md
+Engine v2:               NOT STARTED  (separate GPT + user design directive required)
+Cerberus integration:    NOT STARTED  (later roadmap item)
 ```
 
 핵심 원칙:
 
 ```text
-Freeze method surface, not judgment mathematics.
-Algorithm can evolve. Integration boundary must be complete.
-Read surface can thaw without thawing judgment semantics.
+Freeze the defined external contract, not the judgment mathematics.
+The internal structure may be refactored only while preserving the contract and
+  judgment meaning (Phase 0–4 did exactly this — 0 contract/semantic change).
+The v1 judgment policy (ragcore.effective-confidence.v1) is fixed; changing it
+  requires an explicit, versioned migration — not a silent edit.
 ```
 
-이 프로젝트는 production 보안 도구가 아니다. 외부 consumer (켈베로스 포함) 가 method surface 에 의존해도 되도록 잠겨 있으며, 내부 알고리즘 / modifier 수치 / threshold 정책은 향후 실사용 피드백에 따라 진화할 수 있다.
+이 프로젝트는 production 보안 도구가 아니다. 외부 consumer (켈베로스 포함) 가 method surface 에 의존해도 되도록 잠겨 있다. 현재 v1 의 modifier 수치 / threshold / composition 정책은 `ragcore.effective-confidence.v1` 으로 고정돼 있으며, 이를 바꾸는 것은 별도 directive 와 versioned boundary 에서 결정한다 (조용한 수정 금지). 내부 구조 리펙토링은 계약·판단 의미를 보존할 때만 허용된다.
 
-자세한 잠금 규칙은 `docs/contracts/05_DATA_CONTRACT_MVP.md` 의 §48 (method surface freeze) 과 §49 (integration readiness boundary) 참고.
+자세한 잠금 규칙은 `docs/contracts/05_DATA_CONTRACT_MVP.md` 의 §48 (method surface freeze) 과 §49 (integration readiness boundary) 참고. 현재 구조의 권위 문서는 `docs/architecture/ENGINE_V1_FINAL_BOUNDARY.md`.
+
+## Current Architecture (Engine v1)
+
+Engine v1 리펙토링(Phase 0–4)이 완료되어, `Engine` 은 얇은 C1 core 에 9개 private mixin 을 합성하고 2개 pure kernel 을 module function 으로 분리한 구조다.
+
+```text
+ragcore.engine.Engine
+  ├─ C1 thin core (Engine 본문 잔류)
+  │    __init__ / id 발급 / revision / state_identity / 존재성 guard
+  ├─ 9 private mixins (ragcore/_engine/*)
+  │    HintEvidence · Relations · Rules · Gaps · ConfidenceAdapters ·
+  │    LifecycleHistory · Crud · Lifecycle · Snapshot
+  └─ 2 pure kernels (stdlib + ragcore.types 만 import)
+       serialization · confidence
+```
+
+전체 ownership 표 / import graph / frozen contract / accepted introspection delta 는
+`docs/architecture/ENGINE_V1_FINAL_BOUNDARY.md` 가 authoritative 다 (README 에 52-method
+ownership 전체 표나 내부 PR chronology 를 중복하지 않는다).
 
 ## Design Principles
 
@@ -291,15 +319,25 @@ Framework 는 dict 만 만든다. 그 dict 를 어디에 저장할지는 consume
 - package import surface (side-effect free)
 ```
 
-### Allowed to evolve (Engine 업데이트 영역)
+### Future judgment-policy changes use a separate policy id (v1 is frozen)
+
+effective confidence 정책은 미래에 진화할 수 있는 영역이지만, 현재 v1 은
+`ragcore.effective-confidence.v1` 으로 **완전히 고정**돼 있다. `confidence.py` 의
+fixed-v1 계약은 **modifier 추가/제거/중복, modifier order 변경, policy-id 변경,
+numeric 변경을 금지**한다 (단일 7-factor composition, fixed order). 따라서 기존 v1 에
+modifier 를 "additive 하게" 더할 수 없다.
 
 ```text
-- modifier strength / composition / threshold policy
-- contradiction / freshness / gap / RuleStats / evidence_type 해석
-- effective confidence calibration
-- false positive / false negative 대응 (consumer 실사용 피드백 반영)
-- 새 modifier 추가 (additive)
+- ragcore.effective-confidence.v1 은 현재 modifier set / order / constants /
+  composition 을 그대로 유지한다 (수정 금지)
+- 미래 modifier / 수학 / threshold / calibration 변경(연구·실사용 피드백 포함)은
+  기존 v1 을 고치는 게 아니라 **별도 policy id + versioned boundary** 로 도입한다
+- contradiction / freshness / gap / RuleStats / evidence_type 해석의 재정의도
+  같은 규칙 — 새 versioned policy 로만
 ```
+
+미래 수학모델이나 v2 policy 는 별도 directive 와 versioned boundary 에서 결정한다
+(Engine v2 는 아직 NOT STARTED).
 
 ### Breaking change 규칙 (§48.5)
 
@@ -353,6 +391,15 @@ MVP의 성공 조건은 세 가지다.
 
 ## Documentation Map
 
+### Start here (read in order)
+
+```text
+1. docs/README.md                                 current navigation / baseline map
+2. docs/01_CORE_PHILOSOPHY.md                     evidence-centered design philosophy
+3. docs/contracts/05_DATA_CONTRACT_MVP.md         consumer-facing contract (central)
+4. docs/architecture/ENGINE_V1_FINAL_BOUNDARY.md  current Engine v1 structural authority
+```
+
 ### Project foundation
 
 ```text
@@ -385,10 +432,22 @@ docs/09_GIT_WORKFLOW.md              contributor workflow
 
 이 6개 § 섹션이 외부 consumer (켈베로스 / AI 에이전트 / report generator 등) 가 framework 를 사용하기 위해 읽어야 할 핵심 entry point.
 
-### Per-PR implementation records (`docs/dev/`)
+### Architecture (`docs/architecture/`)
 
 ```text
-PR_001 ~ PR_037                       각 PR cycle 별 implementation 기록
+ENGINE_V1_FINAL_BOUNDARY.md           current Engine v1 structural authority
+ENGINE_V1_REFACTORING_PLAN.md         completed refactoring plan (+ historical proposal)
+ENGINE_V1_PHASE3A_ARCHITECTURE_DECISION.md  accepted mixin decision (+ historical evidence)
+ENGINE_INTERNAL_MAP.md                SUPERSEDED — historical single-class audit
+```
+
+### Per-PR implementation / audit records (`docs/dev/`)
+
+```text
+docs/dev/                             역사·감사 기록 영역 — PR cycle 별 implementation /
+                                       review / post-merge 기록 (계속 증가; 특정 번호
+                                       범위로 고정하지 않음). 현재 baseline 의 첫 진입점이
+                                       아니라 당시 판단·검수 보존용.
 ```
 
 ### Other
@@ -397,3 +456,15 @@ PR_001 ~ PR_037                       각 PR cycle 별 implementation 기록
 docs/agent/08_CLAUDE_IMPLEMENTATION_BRIEF.md  implementer 가이드 (consumer 용 아님)
 docs/archive/ORIGINAL_NOTE.md                  historical note
 ```
+
+## Current Roadmap
+
+```text
+Engine v1 refactoring   COMPLETE   (Phase 0–4 CLOSED)
+Engine v2               NOT STARTED — philosophy / math / projection / state-identity /
+                                     materialization 은 별도 GPT + user directive 필요
+Cerberus integration    NOT STARTED — later roadmap item
+```
+
+자동으로 시작되는 다음 구현 PR 은 없다. 어떤 트랙도 명시적 directive 를 기다린다
+(이 문서의 갱신이 v2 자동 착수를 의미하지 않는다).

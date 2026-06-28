@@ -1,28 +1,51 @@
 # Intelligent RAG Framework Documentation Map
 
-Status: documentation map (PR46-B)
-Baseline: main `1d11077` (PR45-E merged)
+Status: reader entry point / current navigation map
 Type: reader entry point, no framework behavior change
 
 ## 0. Current baseline
 
 ```text
-main:    1d11077
-tests:   1145 passing
-state:   Domain-neutral Reference Flow complete (PR45-E)
-next:    NONE 자동 진입 없음 — framework waits
+engine v1 closure baseline:  d14c0892ce16f5dd25795bcf947fd1bbaad9cf6f  (Phase 4 merge)
+note:    this is the Engine-v1-closure baseline, not necessarily the live HEAD —
+         later docs/release commits (incl. the PR that adds this line) advance main;
+         the live main / this PR's merge SHA are intentionally not self-pinned here.
+verified: 2026-06-28 (local; no CI / GitHub Actions configured)
+tests:   2204 passing (local, at the v1 closure baseline)
+state:   Engine v1 refactoring COMPLETE — Phase 0–4 CLOSED
 
-ragcore.__all__:            48 symbols
-Engine public methods:      40
-ragcore source change since PR36-PKG:   0 lines
-ragcore source cerberus mentions:        0
+ragcore.__all__:            50 symbols
+Engine public methods:      42
+snapshot:                   schema_version 2 / 18 top-level keys
+PR51 context packet:        7 keys
+Engine structure:           thin C1 core + 9 private mixins + 2 pure kernels
+authoritative boundary:     docs/architecture/ENGINE_V1_FINAL_BOUNDARY.md
 external package imports in ragcore:     0
-contract §51:                            not added
-runtime enforcement:                     0
-adapter implementation:                  0
+Engine v2:                  NOT STARTED  (separate GPT + user directive)
+Cerberus integration:       NOT STARTED  (later roadmap)
 ```
 
 `ragcore` is a generic judgment engine. The framework-side adapter boundary documentation stack is closed at ten layers. No consumer adapter is implemented in this repository.
+
+> Historical note: this map was first authored at PR46-B (baseline `1d11077`, 1145
+> tests, 40 public / 48 `__all__`). Those PR45-E/PR46-era numbers are superseded by
+> the current baseline above; the per-PR review history is preserved in `docs/dev/`.
+
+## 0a. Document taxonomy
+
+```text
+A. Current authoritative   README.md · docs/README.md ·
+                           docs/contracts/05_DATA_CONTRACT_MVP.md ·
+                           docs/architecture/ENGINE_V1_FINAL_BOUNDARY.md ·
+                           ENGINE_V1_REFACTORING_PLAN.md (completed) ·
+                           ENGINE_V1_PHASE3A_ARCHITECTURE_DECISION.md (accepted)
+B. Consumer guides         docs/guides/** — the 10-layer adapter/integration stack
+                           (consumer integration docs, NOT the current impl-state map)
+C. Historical / audit      docs/dev/** · docs/archive/** · superseded architecture docs
+                           (e.g. ENGINE_INTERNAL_MAP.md) · PR-body reconstruction records
+D. Future / not started    Engine v2 (physics / projection / identity / materialization) ·
+                           Cerberus integration · production consumer adapter
+```
 
 ## 1. What this framework is / is not
 
@@ -30,7 +53,7 @@ adapter implementation:                  0
 ragcore IS:
   - a generic judgment engine
   - the owner of Engine state, lifecycle, confidence, snapshot
-  - a frozen public surface of 40 methods / 48 __all__ symbols
+  - a frozen public surface of 42 methods / 50 __all__ symbols
   - RAG-agnostic (any vector / graph / SQL / file / API / manual
     retrieval is consumer-side; ragcore does not require any)
 
@@ -91,8 +114,10 @@ A.5  Retrieval Output → Evidence Guide                             (PR42)
 
 A.6  Engine Method Call Playbook                                   (PR43-C)
      docs/guides/ENGINE_METHOD_CALL_PLAYBOOK.md
-       40 public methods, 8 layers, two-path model, 15-step safe
-       default call order.
+       public method surface, 8 layers, two-path model, 15-step safe
+       default call order. (Guide authored at the 40-method surface; the
+       current public surface is 42 — see §0. The added methods are
+       additive; the documented call order is unchanged.)
 
 A.7  Engine Integration Anti-patterns                              (PR44-D)
      docs/guides/ENGINE_INTEGRATION_ANTI_PATTERNS.md
@@ -128,11 +153,14 @@ B.3  Contract surface
 B.4  Compatibility audit
      docs/architecture/EXTERNAL_ADAPTER_COMPATIBILITY_MATRIX.md     (PR39)
 
-B.5  Engine source surface
-     ragcore/engine.py
+B.5  Engine source surface (thin C1 core + 9 mixins — not one file)
+     ragcore/engine.py            thin C1 core + the 9-mixin composition
+     ragcore/_engine/*.py         the 9 private mixins + the 2 pure kernels
+                                  (serialization, confidence)
      ragcore/types.py
      ragcore/__init__.py
      ragcore/rule_output.py
+     docs/architecture/ENGINE_V1_FINAL_BOUNDARY.md   (read this first for structure)
 
 B.6  Executable invariants
      tests/test_external_adapter_simulation.py                      (PR41,  18 tests)
@@ -180,10 +208,11 @@ C.3  The four lock sentences (do not paraphrase, do not weaken)
      docs/guides/DOMAIN_NEUTRAL_REFERENCE_FLOW.md §2
      docs/guides/ENGINE_METHOD_CALL_PLAYBOOK.md §2
 
-C.4  Frozen public surface
-     ragcore/__init__.py  (48 __all__ symbols)
-     ragcore/engine.py    (40 public methods)
-     docs/dev/PR_036_ENGINE_METHOD_SURFACE_FREEZE_MVP.md
+C.4  Frozen public surface + final structure
+     ragcore/__init__.py  (50 __all__ symbols)
+     ragcore/engine.py    (42 public methods; thin C1 core + 9 mixins)
+     docs/architecture/ENGINE_V1_FINAL_BOUNDARY.md  (authoritative structure)
+     docs/dev/PR_036_ENGINE_METHOD_SURFACE_FREEZE_MVP.md  (historical freeze record)
 
 C.5  Executable invariants
      tests/test_external_adapter_simulation.py
@@ -236,8 +265,9 @@ This triad is complete. New documentation about how to integrate against `ragcor
 Implemented (inside this repository):
 
 ```text
-- ragcore.Engine and its 40 public methods
-- 48 __all__ symbols
+- ragcore.Engine and its 42 public methods (thin C1 core + 9 private mixins)
+- 50 __all__ symbols
+- 2 pure kernels (serialization, confidence) + Engine v1 refactoring (Phase 0–4)
 - 7 modifier composition (PR12 ~ PR21, PR23, PR24, PR26)
 - Lifecycle helpers (PR6 ~ PR10, PR15)
 - Snapshot v2 with migration framework (PR17, PR18, PR21-L)
@@ -256,7 +286,7 @@ NOT implemented (intentionally):
 - Cerberus adapter
 - runtime enforcement for anti-patterns
 - contract §51 expansion
-- additional public Engine API beyond the 40
+- additional public Engine API beyond the 42
 - new scoring / modifier calibration
 - README / package release polish beyond current state
 ```
@@ -284,57 +314,37 @@ The following must NOT start automatically. Each requires an explicit user decis
 
 Most of these are anti-patterns named in `docs/guides/ENGINE_INTEGRATION_ANTI_PATTERNS.md`. Cite the AP-* ID rather than re-arguing the boundary.
 
-## 10. Current next-step options
+## 10. Current roadmap / next-step options
 
-The framework has no automatic next PR. Open options at this point:
+Engine v1 refactoring is COMPLETE (Phase 0–4 CLOSED). There is no automatic next
+implementation PR. Every track below requires an explicit user / GPT directive:
 
 ```text
-Option 1 — Stop and freeze
-  Optional: add a freeze record at a path such as
-  docs/dev/PR_046_FRAMEWORK_BASELINE_FREEZE.md  (file not present;
-  would be created by an explicit Track A decision). No code
-  change. Pure record.
-
-Option 2 — Continue documentation polish
-  Already chosen for PR46-B (this file).
-  Possible micro-additions (NOT auto-scheduled, files not present):
-    - PR46-B2: README integration index (top-level README.md edit)
-    - CHANGELOG.md  or  docs/RELEASE_NOTES.md
-
-Option 3 — Additional executable guards
-  Possible, but easy to make brittle. Not recommended unless a
-  specific drift risk is identified. Examples:
-    - tests/test_documentation_stack_integrity.py
-    - tests/test_anti_pattern_guide_integrity.py
-
-Option 4 — Consumer adapter implementation
-  Happens in a SEPARATE repo / SEPARATE decision.
-  Not a framework PR by default.
-  See PR44-D §5.6 (domain vocab intrusion guard) and §5.7
-  (__all__ promotion guard) before starting.
-
-Option 5 — Engine evolution from real feedback
-  Only after real consumer usage exposes a missing public method,
-  a snapshot field gap, or a systematic confidence miscalibration.
-  Do not evolve from theory alone. Each change requires migration
-  plan + backward compatibility discussion.
+1. Engine v2 — physics / math model / projection / state-identity /
+   materialization boundary. NOT STARTED. Designed by GPT + user; ragcore
+   contributors implement only after that directive exists.
+2. Cerberus + Engine integration. NOT STARTED. Separate repo / decision.
+3. Consumer feedback-driven compatibility evolution — only after real usage
+   exposes a missing public method, a snapshot gap, or a confidence
+   miscalibration. Requires a migration plan, not a theory-driven edit.
+4. Additional documentation / release work.
 ```
 
-The recommended default is to wait. No automatic next PR.
+The recommended default is to wait for an explicit directive. Updating this map does
+not start v2 or any integration.
 
 ---
 
 ## Closing meaning
 
 ```text
-PR46-B makes the completed documentation stack discoverable.
+Engine v1 refactoring is complete; this map is the current navigation entry point.
 
 It does not add framework behavior.
 It does not add tests.
 It does not implement an adapter.
-It does not add contract §51.
-It does not change the Engine public surface.
+It does not change the Engine public surface (still 42 / 50 / snapshot 2·18 / packet 7).
 
-The framework reads as a stack now.
-The framework waits.
+The current structure is authoritative in docs/architecture/ENGINE_V1_FINAL_BOUNDARY.md.
+The framework waits for an explicit next directive.
 ```
