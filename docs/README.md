@@ -6,9 +6,12 @@ Type: reader entry point, no framework behavior change
 ## 0. Current baseline
 
 ```text
-main:    d14c0892ce16f5dd25795bcf947fd1bbaad9cf6f
+engine v1 closure baseline:  d14c0892ce16f5dd25795bcf947fd1bbaad9cf6f  (Phase 4 merge)
+note:    this is the Engine-v1-closure baseline, not necessarily the live HEAD —
+         later docs/release commits (incl. the PR that adds this line) advance main;
+         the live main / this PR's merge SHA are intentionally not self-pinned here.
 verified: 2026-06-28 (local; no CI / GitHub Actions configured)
-tests:   2204 passing (local)
+tests:   2204 passing (local, at the v1 closure baseline)
 state:   Engine v1 refactoring COMPLETE — Phase 0–4 CLOSED
 
 ragcore.__all__:            50 symbols

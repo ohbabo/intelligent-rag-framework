@@ -191,11 +191,33 @@ Updated PR list (22): #74 #75 #76 #77 #78 #79 #81 #82 #83 #84 #85 #86 #87 #88 #8
 card to all). #80: absent (N/A).
 
 ## 9. STOP conditions checked (none triggered)
-base SHA / baseline 2204 match; every README claim verified against code/metadata;
-no current-authoritative docs conflict; no historical text required deletion; all 22
-bodies backed up (before-hashes above); #80 confirmed absent; no PR already had the
-card (idempotent); no runtime/test/pyproject change; version 0.1.0 kept;
-v2 + Cerberus integration recorded as NOT STARTED.
+base SHA / baseline 2204 match; README claims checked against code/metadata (two
+precision misses were caught in GPT review and corrected — see "GPT review
+corrections" below; the rest verified); no current-authoritative docs conflict; no
+historical text required deletion; all 22 bodies backed up (before-hashes above);
+#80 confirmed absent; no PR already had the card (idempotent); no runtime/test/
+pyproject change; version 0.1.0 kept; v2 + Cerberus integration recorded as NOT
+STARTED.
+
+## GPT review corrections (MERGE-TIME, docs-only)
+GPT independent review of head `ef57c72`: **REQUEST CHANGES — 5B approved; 2 5A
+doc blockers**. Both fixed in a follow-up correction commit; 5B PR-body cards
+untouched. No runtime/test change.
+- **B1 — docs/README current main SHA goes stale on merge.** §0 listed
+  `main: d14c089…`, but that is PR #97's *base* (the Phase 4 merge); squash-merging
+  #97 produces a new main commit, so the line would misname current main the moment
+  it merges. Reframed to "engine v1 closure baseline: d14c089 (Phase 4 merge)" with
+  an explicit note that the live main / this PR's merge SHA are NOT self-pinned. The
+  historical `d14c089` base in this dev record and the PR body is left as-is.
+- **B2 — README implied additive modifier edits to the frozen v1 policy.** The
+  "Allowed to evolve" list kept "새 modifier 추가 (additive) … 명시적 업데이트로만".
+  The `confidence.py` fixed-v1 contract explicitly FORBIDS adding/removing/
+  duplicating modifiers, changing modifier order, the policy id, or any numeric
+  (single 7-factor composition, fixed order); future changes must use a SEPARATE
+  policy id. Rewrote the section to separate "future policy = new policy id +
+  versioned boundary" from "current `ragcore.effective-confidence.v1` = modifier
+  set/order/constants/composition unchanged (no edit)". Heading changed to "Future
+  judgment-policy changes use a separate policy id (v1 is frozen)".
 
 ## 10. Full suite
 `python -m pytest -q` → **2204 passed** (docs-only; runtime/public/snapshot/packet
@@ -212,11 +234,13 @@ Cerberus integration    NOT STARTED — later roadmap
 ```
 861118b  docs: reconcile repository entry points (README.md + docs/README.md)        [5A]
 e5ff8c3  docs(audit): record Phase 5 document + PR-body inventory (before-hashes)     [5B plan]
-<this>   docs(audit): record applied PR-body reconciliations (after-hashes + verify)  [5B result]
+ef57c72  docs(audit): record applied PR-body reconciliations (after-hashes + verify)  [5B result]
+<this>   docs: apply Phase 5 review corrections (B1/B2)                                [5A correction]
 ```
-The 22 PR-body cards were applied between e5ff8c3 and this commit (GitHub body-only
-edits, not git commits). This record does not self-pin the SHA of the commit that
-adds it. No commit amended / rebased /
+The 22 PR-body cards were applied between e5ff8c3 and ef57c72 (GitHub body-only
+edits, not git commits). The B1/B2 corrections touch only README.md / docs/README.md
+/ this record (no 5B PR-body change). This record does not self-pin the SHA of the
+commit that adds it. No commit amended / rebased /
 force-pushed; PR bodies edited body-only (no title/state/base/merge mutation).
 
 ## Lifecycle

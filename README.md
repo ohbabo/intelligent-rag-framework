@@ -319,18 +319,21 @@ Framework 는 dict 만 만든다. 그 dict 를 어디에 저장할지는 consume
 - package import surface (side-effect free)
 ```
 
-### May change only through an explicit, versioned judgment-policy update
+### Future judgment-policy changes use a separate policy id (v1 is frozen)
 
-다음은 진화할 수 있는 영역이지만, 현재 v1 에서는 `ragcore.effective-confidence.v1`
-정책으로 **고정**돼 있다. 아래를 바꾸려면 조용한 수정이 아니라 새 § 섹션(§50+) 또는
-별도 directive 로 documented + versioned 판단정책 업데이트가 필요하다.
+effective confidence 정책은 미래에 진화할 수 있는 영역이지만, 현재 v1 은
+`ragcore.effective-confidence.v1` 으로 **완전히 고정**돼 있다. `confidence.py` 의
+fixed-v1 계약은 **modifier 추가/제거/중복, modifier order 변경, policy-id 변경,
+numeric 변경을 금지**한다 (단일 7-factor composition, fixed order). 따라서 기존 v1 에
+modifier 를 "additive 하게" 더할 수 없다.
 
 ```text
-- modifier strength / composition / threshold policy   (현재 v1 고정)
-- contradiction / freshness / gap / RuleStats / evidence_type 해석
-- effective confidence calibration
-- false positive / false negative 대응 (consumer 실사용 피드백 반영)
-- 새 modifier 추가 (additive)  — v1 계약을 깨지 않는 방식으로, 명시적 업데이트로만
+- ragcore.effective-confidence.v1 은 현재 modifier set / order / constants /
+  composition 을 그대로 유지한다 (수정 금지)
+- 미래 modifier / 수학 / threshold / calibration 변경(연구·실사용 피드백 포함)은
+  기존 v1 을 고치는 게 아니라 **별도 policy id + versioned boundary** 로 도입한다
+- contradiction / freshness / gap / RuleStats / evidence_type 해석의 재정의도
+  같은 규칙 — 새 versioned policy 로만
 ```
 
 미래 수학모델이나 v2 policy 는 별도 directive 와 versioned boundary 에서 결정한다
