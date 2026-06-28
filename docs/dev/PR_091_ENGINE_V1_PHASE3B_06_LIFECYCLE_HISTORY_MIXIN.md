@@ -121,10 +121,10 @@ full suite: 2123 -> 2133 passed (+10 new; no existing test weakened or deleted)
 
 ## Files changed / line delta
 ```
-production/test (stable): 3 files, +229/-46
-  ragcore/_engine/lifecycle_history.py                   +68  (new)
+production/test (stable): 3 files, +255/-46
+  ragcore/_engine/lifecycle_history.py                   +70  (new)
   ragcore/engine.py                                      +3/-46
-  tests/test_engine_phase3b_lifecycle_history_mixin.py   +158 (new)
+  tests/test_engine_phase3b_lifecycle_history_mixin.py   +182 (new)
 + docs/dev/PR_091_…                                      (this dev record; its own size
                                                           is self-referential — see the PR #92 diff)
 Authoritative full-PR total (incl. this dev record): the GitHub PR #92 diff.
@@ -137,13 +137,15 @@ Phase 3A docs.
 ## Commit chronology
 Stable implementation/test chronology:
 ```
-a5d251e refactor(engine): extract C6 lifecycle history mixin
-5cb7d40 test(engine): lock C6 ownership and the C5->C6 self-call seam
+a5d251e  production extraction (engine.py + lifecycle_history.py)
+5cb7d40  initial extraction tests
 ```
-The dev-record commit and any subsequent docs-only audit-sync commits are
-docs-only; their authoritative SHAs and order are the GitHub PR #92 commit
-history. This versioned record intentionally does not self-pin the SHA of commits
-that modify the record itself. No commit amended, rebased, or squashed.
+The post-review **M1/M2 correction** modifies the C6 test, the
+`lifecycle_history` module docstring, and this dev record (so it is NOT a
+docs-only commit). Its authoritative SHA and order are recorded in the GitHub
+PR #92 commit history. Any later audit-sync commits are docs-only. This versioned
+record intentionally does not self-pin the SHA of commits that modify the record
+itself. No commit amended, rebased, or squashed.
 
 ## STOP-AND-REPORT review
 None triggered: base SHA 1fedf50; AST 2/2 identical; exactly 2 C6 methods; no
