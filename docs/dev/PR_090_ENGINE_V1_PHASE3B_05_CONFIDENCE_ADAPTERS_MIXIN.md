@@ -133,22 +133,27 @@ compute_effective_confidence_with_trace(self, claim_id: int) -> EffectiveConfide
 
 ## Tests
 ```
-new: tests/test_engine_phase3b_confidence_adapters_mixin.py (14 runtime locks)
-migrated: tests/test_effective_confidence_trace.py (3 M07 spy sites -> defining-class; +24/-8)
+new: tests/test_engine_phase3b_confidence_adapters_mixin.py (15 runtime locks,
+     incl. test_c9_methods_owned_by_mixin_without_engine_promotion)
+migrated (C9 spy sites -> defining-class):
+  tests/test_effective_confidence_trace.py                  3 M07 spy sites (+24/-8)
+  tests/test_complete_domain_neutral_reference_operation.py 1 M08 C9 spy site (+12/-6)
 targeted: M07 trace (89), confidence kernel, count-averaging, evidence-type strict,
           gap tiering, rule-stats continuous/observed-precision, surface freeze,
-          state identity, snapshot, packet, 3B-1..3B-4 mixin tests
-full suite: 2108 -> 2122 passed (+14 new; no existing test weakened or deleted)
+          state identity, snapshot, packet, 3B-1..3B-4 mixin tests; M08 (199)
+full suite: 2108 -> 2123 passed (+15 new; no existing test weakened or deleted)
 ```
 
 ## Files changed / line delta
 ```
-production/test: 4 files, +492/-281
-  ragcore/_engine/confidence_adapters.py                +280 (new)
-  ragcore/engine.py                                     +2/-273
-  tests/test_effective_confidence_trace.py              +24/-8  (M07 isolation migration)
-  tests/test_engine_phase3b_confidence_adapters_mixin.py +186 (new)
-+ docs/dev/PR_090_…                                     (this file)
+production/test: 5 files, +517/-287
+  ragcore/_engine/confidence_adapters.py                    +280 (new)
+  ragcore/engine.py                                         +2/-273
+  tests/test_effective_confidence_trace.py                  +24/-8  (M07 isolation migration)
+  tests/test_complete_domain_neutral_reference_operation.py +12/-6  (M1: 4th C9 spy site -> defining-class)
+  tests/test_engine_phase3b_confidence_adapters_mixin.py    +199 (new)
++ docs/dev/PR_090_…                                         +205 (this file)
+cumulative: 6 files, +722/-287
 NOT changed: ragcore/_engine/{confidence,serialization,hint_evidence,relations,
 rules,gaps}.py, ragcore/_engine/__init__.py, ragcore/types.py, ragcore/__init__.py,
 snapshot schema, examples/**, config/deps, C5/C6 clusters, Phase 3A docs.
@@ -158,7 +163,9 @@ snapshot schema, examples/**, config/deps, C5/C6 clusters, Phase 3A docs.
 ```
 b8919a3 refactor(engine): extract C9 confidence adapters mixin
 a9dd5d3 test(engine): lock inherited C9 contracts and isolate defining-class patches
-<this>  docs(dev): record Phase 3B-5 confidence adapters extraction
+dfe4964 docs(dev): record Phase 3B-5 confidence adapters extraction
+1b1120e test(engine): lock C9 ownership/no-promotion + migrate a 4th C9 patch site
+<this>  docs(dev): sync Phase 3B-5 dev-record audit numbers + chronology (M3)
 ```
 No commit amended, rebased, or squashed.
 
@@ -169,8 +176,9 @@ C5 change; `confidence.py` unchanged; numeric/policy/order/policy-id unchanged;
 snapshot schema/keys/bytes unchanged; the four prior mixins unchanged;
 `confidence_adapters.py` imports neither `ragcore.engine` nor another mixin; no
 import cycle; the M07 getsource seam preserved; no existing test weakened; no C9
-direct Engine patch left in the repository (the three M07 sites migrated); no
-source-location lock added.
+direct-Engine patch remains — all four C9 patch sites were migrated to
+defining-class (3 in test_effective_confidence_trace.py + 1 in
+test_complete_domain_neutral_reference_operation.py); no source-location lock added.
 
 ## GPT review corrections (MERGE-TIME, no new full review round)
 GPT independent review: **CHANGES REQUESTED — BLOCKER 0 / MERGE-TIME CORRECTION 2
