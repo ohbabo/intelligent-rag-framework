@@ -43,6 +43,7 @@ from ragcore._engine.relations import RelationsMixin
 from ragcore._engine.rules import RulesMixin
 from ragcore._engine.gaps import GapsMixin
 from ragcore._engine.confidence_adapters import ConfidenceAdaptersMixin
+from ragcore._engine.lifecycle_history import LifecycleHistoryMixin
 
 # Phase 1 decode/install boundary — the explicit state-projection surface
 # Engine uses for persistence (see ragcore._engine.serialization).
@@ -136,7 +137,7 @@ _REFUTATION_STRENGTH_THRESHOLD = 0.8
 # affect the public surface or judgment semantics.
 # ============================================================================
 
-class Engine(HintEvidenceMixin, RelationsMixin, RulesMixin, GapsMixin, ConfidenceAdaptersMixin):
+class Engine(HintEvidenceMixin, RelationsMixin, RulesMixin, GapsMixin, ConfidenceAdaptersMixin, LifecycleHistoryMixin):
     # ============================================================================
     # Region B  —  __init__ + private guards
     # See: docs/architecture/ENGINE_INTERNAL_MAP.md  §2 Region B
@@ -727,53 +728,9 @@ class Engine(HintEvidenceMixin, RelationsMixin, RulesMixin, GapsMixin, Confidenc
         return False
 
     # ============================================================================
-    # Region F  —  Lifecycle history + freshness queries
+    # Region F  —  Freshness queries
     # See: docs/architecture/ENGINE_INTERNAL_MAP.md  §2 Region F
     # ============================================================================
-
-    # ---- Lifecycle history (PR10-B §23) -----------------------------------
-
-    def _record_claim_lifecycle_transition(
-        self,
-        claim_id: int,
-        from_status: int,
-        to_status: int,
-        transition: str,
-    ) -> None:
-        """Append a lifecycle event. Called by 5 transition APIs on actual transition.
-
-        Public 노출 안 됨 — caller 가 직접 history 를 mutate 할 수 없음 (§23.9
-        audit 무결성). 5 lifecycle API 의 ``True`` 반환 직전에만 호출되므로
-        no-op (False) 은 절대 기록되지 않음 (§23.5 Sub-decision J).
-        """
-        self._lifecycle_seq += 1
-        event = ClaimLifecycleEvent(
-            seq=self._lifecycle_seq,
-            claim_id=claim_id,
-            from_status=from_status,
-            to_status=to_status,
-            transition=transition,
-        )
-        self._claim_lifecycle_events.setdefault(claim_id, []).append(event)
-
-    def claim_lifecycle_history(
-        self, claim_id: int,
-    ) -> tuple[ClaimLifecycleEvent, ...]:
-        """Return lifecycle events for the claim in insertion order.
-
-        Returns:
-            ClaimLifecycleEvent 들의 tuple, 발생 순서 (= seq 오름차순).
-            Status 변경이 한 번도 없었으면 빈 tuple.
-
-        Raises:
-            KeyError: unknown claim_id.
-
-        Note:
-            seq 는 engine-local monotonic. 서로 다른 claim 의 history 를 합쳐서
-            정렬해도 의미가 있다 (cross-claim 순서 표현).
-        """
-        self._assert_claim_exists(claim_id)
-        return tuple(self._claim_lifecycle_events.get(claim_id, ()))
 
     def active_contradictions_by_freshness(
         self, claim_id: int,
