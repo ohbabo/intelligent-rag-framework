@@ -176,6 +176,28 @@ single-revision multi-resolve all preserved; the three prior mixins unchanged;
 `gaps.py` imports neither `ragcore.engine` nor another mixin; no import cycle; no
 snapshot change; no existing test weakened; no source-location lock added.
 
+## GPT review corrections (merge-time, no new review round)
+GPT independent review: **APPROVE — BLOCKER 0 / MERGE-TIME CORRECTION 1 /
+NON-BLOCKING NIT 0**. The one merge-time correction (test isolation + a doc
+wording overstatement), within the approved scope, fixed without a new review
+round:
+- **Test isolation.** The new test spied `gaps_for_claim` via
+  `monkeypatch.setattr(Engine, …)`; monkeypatch's teardown restore is itself the
+  `setattr(Engine, name, original)` pattern, so it would **promote the inherited
+  `GapsMixin.gaps_for_claim` into `Engine.__dict__`** (the same promotion the test
+  warns about). Fixed by patching each spied method on its **defining class** and
+  taking the original from that class's own `__dict__`
+  (`gaps_for_claim` on `GapsMixin`, `_advance_state_revision` on `Engine`), so the
+  restore stays in that `__dict__` and `Engine.__dict__` is left unpolluted.
+  Verified: after the spy, `gaps_for_claim` is not in `Engine.__dict__` and
+  `GapsMixin.gaps_for_claim` is the original.
+- **Wording.** The new runtime test directly spies only the revision seam
+  (`_advance_state_revision`) and the intra-C4 self-call (`gaps_for_claim`); the
+  remaining C1 guards/allocator are verified by the dev-record local probes
+  above. The PR body's "five C1 seams … locked in the new test" was overstated and
+  is corrected to: "the five C1 seams are verified by local probes; the new
+  runtime test locks the revision seam and the intra-C4 self-call."
+
 ## Lifecycle
 OPEN — Draft. Recommendation on completion: **READY FOR GPT INDEPENDENT REVIEW**
 (not self-merged). **Phase 3B-5 (C9 confidence adapters) remains prohibited** until

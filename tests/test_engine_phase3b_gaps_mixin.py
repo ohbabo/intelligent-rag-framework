@@ -92,8 +92,11 @@ class TestGapsPublicSignatures:
 
 
 class TestGapsRevisionGatesAndSeams:
-    """C4-specific revision gates + that the C1 seams + the intra-C4
-    self-call (resolve -> gaps_for_claim) stay patchable on Engine."""
+    """C4-specific revision gates, and that the revision seam
+    (_advance_state_revision) plus the intra-C4 self-call (resolve_gaps_for_evidence
+    -> gaps_for_claim) stay patchable. (The remaining C1 guards/allocator are
+    verified by the dev-record local probes, not re-spied here.) Each method is
+    patched on its defining class so the test leaves Engine.__dict__ unpolluted."""
 
     def test_add_gap_miss_then_same_hit_revision_gate(self):
         e = Engine(); c = _claim(e)
@@ -110,8 +113,14 @@ class TestGapsRevisionGatesAndSeams:
         match = e.add_evidence(claim_id=c, raw_ref_id=0, evidence_type=99, strength=0.8)
         nomatch = e.add_evidence(claim_id=c, raw_ref_id=0, evidence_type=42, strength=0.5)
         calls = {"gaps_for_claim": 0, "_advance_state_revision": 0}
-        for name in calls:
-            original = getattr(Engine, name)
+        # Patch each method on the class that DEFINES it, taking the original from
+        # that class's own __dict__, so monkeypatch's restore stays in that
+        # __dict__ and never promotes an inherited method onto Engine. gaps_for_claim
+        # is GapsMixin's; _advance_state_revision is Engine's (C1 base). This keeps
+        # Engine.__dict__ unpolluted for subsequent tests.
+        owners = {"gaps_for_claim": GapsMixin, "_advance_state_revision": Engine}
+        for name, owner in owners.items():
+            original = owner.__dict__[name]
 
             def make(orig, key):
                 def spy(self, *args, **kwargs):
@@ -119,7 +128,7 @@ class TestGapsRevisionGatesAndSeams:
                     return orig(self, *args, **kwargs)
                 return spy
 
-            monkeypatch.setattr(Engine, name, make(original, name))
+            monkeypatch.setattr(owner, name, make(original, name))
         # matching evidence: resolves -> uses inherited gaps_for_claim, advances once
         res = e.resolve_gaps_for_evidence(match)
         assert res and calls["gaps_for_claim"] == 1 and calls["_advance_state_revision"] == 1
