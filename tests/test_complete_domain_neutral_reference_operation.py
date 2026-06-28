@@ -1735,12 +1735,23 @@ _CYCLE_DEFINITIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
 )
 
 
+def _defining_class(cls, name):
+    """The class in cls.__mro__ that defines `name`. Spies are installed on this
+    class (and restored from its own __dict__) so that patching an *inherited*
+    method (after the Phase-3 mixin extraction) does not promote it into
+    Engine.__dict__ on restore."""
+    for base in cls.__mro__:
+        if name in base.__dict__:
+            return base
+    raise AttributeError(name)
+
+
 def _install_engine_method_spies(
     method_names: tuple[str, ...],
     gate: typing.Callable[[], bool] | None = None,
 ) -> tuple[dict[str, int], dict[str, list[Any]], typing.Callable[[], None]]:
     """Install runtime call-count + argument-capture spies on the named
-    Engine methods at the class level. Returns
+    Engine methods on each method's defining class. Returns
     (call_counts, captured, restore_fn). restore_fn MUST be called in a
     finally block to undo the class-level patching.
 
@@ -1750,11 +1761,12 @@ def _install_engine_method_spies(
     entity calls) from the main-operation counts."""
     call_counts: dict[str, int] = {n: 0 for n in method_names}
     captured: dict[str, list[Any]] = {n: [] for n in method_names}
-    originals: dict[str, Any] = {}
+    originals: dict[str, tuple[type, Any]] = {}
 
     for name in method_names:
-        orig = getattr(Engine, name)
-        originals[name] = orig
+        owner = _defining_class(Engine, name)
+        orig = owner.__dict__[name]
+        originals[name] = (owner, orig)
 
         def make_spy(orig=orig, name=name):
             def spy(self, *args, **kwargs):
@@ -1771,11 +1783,11 @@ def _install_engine_method_spies(
             spy.__wrapped__ = orig
             return spy
 
-        setattr(Engine, name, make_spy())
+        setattr(owner, name, make_spy())
 
     def restore() -> None:
-        for name, orig in originals.items():
-            setattr(Engine, name, orig)
+        for name, (owner, orig) in originals.items():
+            setattr(owner, name, orig)
 
     return call_counts, captured, restore
 
@@ -1982,11 +1994,12 @@ def _run_with_final_phase_spies(
     final_returns: dict[str, list[Any]] = {n: [] for n in method_names}
 
     def wrapped_final_state(*args, **kwargs):
-        originals: dict[str, Any] = {}
+        originals: dict[str, tuple[type, Any]] = {}
         for name in method_names:
-            originals[name] = getattr(Engine, name)
+            owner = _defining_class(Engine, name)
+            originals[name] = (owner, owner.__dict__[name])
 
-            def make_spy(name=name, orig=originals[name]):
+            def make_spy(name=name, orig=originals[name][1]):
                 def spy(self, *a, **kw):
                     final_counts[name] += 1
                     try:
@@ -2005,12 +2018,12 @@ def _run_with_final_phase_spies(
                 spy.__wrapped__ = orig
                 return spy
 
-            setattr(Engine, name, make_spy())
+            setattr(owner, name, make_spy())
         try:
             return original_final_state(*args, **kwargs)
         finally:
-            for name, orig in originals.items():
-                setattr(Engine, name, orig)
+            for name, (owner, orig) in originals.items():
+                setattr(owner, name, orig)
 
     setattr(module, "_final_state", wrapped_final_state)
     try:
@@ -2071,7 +2084,8 @@ def _run_with_get_claim_proxy_in_final_state() -> tuple[Any, list[Any]]:
     module = _load_example_module()
     original_final_state = _require_final_state_callable(module)
     trackers: list[tuple[int, _AttrAccessTracker]] = []
-    original_get_claim = Engine.get_claim
+    owner_get_claim = _defining_class(Engine, "get_claim")
+    original_get_claim = owner_get_claim.__dict__["get_claim"]
 
     def proxy_get_claim(self, claim_id):
         result = original_get_claim(self, claim_id)
@@ -2080,11 +2094,11 @@ def _run_with_get_claim_proxy_in_final_state() -> tuple[Any, list[Any]]:
         return tracker
 
     def wrapped_final_state(*args, **kwargs):
-        Engine.get_claim = proxy_get_claim
+        setattr(owner_get_claim, "get_claim", proxy_get_claim)
         try:
             return original_final_state(*args, **kwargs)
         finally:
-            Engine.get_claim = original_get_claim
+            setattr(owner_get_claim, "get_claim", original_get_claim)
 
     setattr(module, "_final_state", wrapped_final_state)
     try:
