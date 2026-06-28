@@ -15,7 +15,6 @@ dev-record item).
 from __future__ import annotations
 
 import ast
-import os
 
 import ragcore
 import ragcore.engine as engine_module
@@ -227,13 +226,12 @@ class TestImportGraph:
         assert "ragcore._engine.confidence" not in mods
         assert "ragcore._engine.serialization" not in mods
 
-    def test_pure_kernels_import_only_stdlib_and_types(self):
-        for mod in (serialization, confidence):
-            for imported in _imported_modules(mod):
-                assert imported.startswith(("ragcore.types", "__future__")) \
-                    or "." not in imported, f"{mod.__name__} imports {imported}"
-                assert imported != "ragcore.engine"
-                assert not imported.startswith("ragcore._engine.")
+    def test_pure_kernels_import_exact_sets(self):
+        # Exact import sets — a startswith/"." heuristic would let `import numpy`
+        # or `import requests` slip through. Lock the precise final boundary.
+        assert _imported_modules(serialization) == {
+            "__future__", "dataclasses", "typing", "ragcore.types"}
+        assert _imported_modules(confidence) == {"__future__", "ragcore.types"}
 
     def test_snapshot_imports_kernels_not_engine(self):
         import ragcore._engine.snapshot as snap
@@ -250,13 +248,15 @@ class TestImportGraph:
         assert "ragcore.engine" not in mods
 
     def test_no_engine_inversion_or_reexport_hub(self):
-        # no ragcore._engine.* module imports ragcore.engine.
-        for _, mixin in _MIXINS:
-            assert "ragcore.engine" not in _imported_modules(
-                __import__(mixin.__module__, fromlist=["x"]))
-        for mod in (serialization, confidence):
-            assert "ragcore.engine" not in _imported_modules(mod)
-        # ragcore._engine.__init__ is not a re-export hub for the privates.
+        # no ragcore._engine.* module imports ragcore.engine (mixins + kernels +
+        # the snapshot façade + the package __init__ itself).
         import ragcore._engine as pkg
+        import ragcore._engine.snapshot as snap
+        to_check = [__import__(m.__module__, fromlist=["x"]) for _, m in _MIXINS]
+        to_check += [serialization, confidence, snap, pkg]
+        for mod in to_check:
+            assert "ragcore.engine" not in _imported_modules(mod), \
+                f"{mod.__name__} imports ragcore.engine (inversion)"
+        # ragcore._engine.__init__ is not a re-export hub for the privates.
         for name in _PHASE1_SERIALIZATION_SHIM_NAMES:
             assert not hasattr(pkg, name), f"_engine/__init__ re-exports {name}"

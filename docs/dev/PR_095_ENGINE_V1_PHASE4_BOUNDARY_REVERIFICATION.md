@@ -164,8 +164,46 @@ c8249a4  shim + stale-import removal (engine.py) + Phase 4 boundary test
 99b20c1  closure documentation (FINAL_BOUNDARY new; PLAN/ADR status; INTERNAL_MAP banner)
 ```
 This versioned record intentionally does not self-pin the SHA of the commit that
-adds the record itself. Any later review-correction commits are recorded in the
-GitHub PR #96 commit history. No commit amended, rebased, or squashed.
+adds the record itself. The post-review correction (B1/B2/B3 below) modifies the
+Phase-4 boundary test and the FINAL_BOUNDARY doc (and this record); its SHA and
+order are recorded in the GitHub PR #96 commit history. No commit amended, rebased,
+or squashed.
+
+## GPT review corrections (MERGE-TIME, no new production behavior)
+GPT independent review: **REQUEST CHANGES — BLOCKER 0 (production) / 3 doc+test
+corrections**. The production diff (engine.py 0/-50) and the 10-site consumer
+migration were confirmed correct; the three corrections are docs/test precision and
+do not change the engine.py change or any runtime behavior. All applied:
+
+- **B1 — canonical-JSON oracle recorded backwards.** The FINAL_BOUNDARY doc listed
+  the snapshot canonical representation as `json.dumps(sort_keys=True)` under the
+  *defined external contract*. That is wrong: the Phase-0 lock
+  (`test_engine_phase0_taxonomy.py`) deliberately FORBIDS `sort_keys=True` (it would
+  hide an emission-order regression) and the real form is
+  `json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")).encode("utf-8")`.
+  Corrected the encoding, and reclassified it as a **value + emission-order drift
+  oracle (characterization, NOT a user-facing serialization API contract)** in a new
+  §7a; the frozen contract now states "deterministic emission order" only.
+- **B2 — Phase 4 over-reached into v2 design.** The doc had pre-decided v2
+  ("only the internal algorithm may evolve in v2"; "v2 MUST add new state through
+  `Engine.__init__` ownership, not mixin state"). Per the Phase 3A ADR, v2's API
+  shape / state ownership / projection / identity / materialization are decided in a
+  separate v2 directive. Removed the `Engine.__init__`-ownership mandate and the
+  "internal algorithm only" framing; §10 now states the single negative boundary
+  (v2 must not silently break the v1 contract) and explicitly defers the rest. The
+  intro blockquote was softened to match.
+- **B3 — pure-kernel import lock too weak.** The test allowed any dotless import
+  (`import numpy` / `import requests` would have passed). Replaced with **exact
+  import-set** locks (`serialization == {__future__, dataclasses, typing,
+  ragcore.types}`, `confidence == {__future__, ragcore.types}`), removed the unused
+  `os` import, and extended the inversion check to include
+  `ragcore._engine.snapshot` and `ragcore._engine` (the package `__init__`). A
+  negative control confirms the exact set rejects a foreign import.
+
+Re-verification after the correction: Phase-4 boundary test 19 locks pass; full
+suite 2204 passed; serialization.py + confidence.py still byte-identical;
+production/test stable subtotal unchanged (+280/-62 — the boundary test's net line
+count is unchanged).
 
 ## STOP-AND-REPORT review
 None triggered: base SHA 1e89a42; tree clean; baseline 2185; no class-A public

@@ -12,8 +12,9 @@ scope:    the closed v1 boundary. v2 (physics) is NOT designed here.
 > This document is the single authoritative description of the Engine v1
 > structural boundary after the refactoring. It supersedes
 > `ENGINE_INTERNAL_MAP.md` (a historical 1145-test-era audit) for current
-> topology. The *defined external contract* below is frozen; only the internal
-> algorithm may evolve in v2.
+> topology. The *defined external contract* below is frozen. v2 must not silently
+> break it; v2's own design (API shape, state ownership, projection, identity,
+> materialization) is decided in a separate directive, not here (§10).
 
 ## 1. Shape — thin orchestration core + nine mixins
 
@@ -117,9 +118,9 @@ byte-identical since Phase 1 / Phase 2 respectively (Phase 4 left them untouched
 ## 6. Final import graph (no cycles, no re-export hub)
 
 ```
-ragcore.engine            -> stdlib (__future__, uuid) + ragcore.types + the 9 mixin modules
-ragcore._engine.serialization -> stdlib + ragcore.types
-ragcore._engine.confidence    -> stdlib + ragcore.types
+ragcore.engine            -> {__future__, uuid, ragcore.types} + the 9 mixin modules
+ragcore._engine.serialization -> {__future__, dataclasses, typing, ragcore.types}   (exact)
+ragcore._engine.confidence    -> {__future__, ragcore.types}                         (exact)
 ragcore._engine.snapshot      -> ragcore._engine.confidence + ragcore._engine.serialization
 ragcore._engine.<other mixin> -> stdlib + ragcore.types (+ confidence for the C9 adapter)
 ```
@@ -134,8 +135,7 @@ Engine public methods           42
 ragcore.__all__                 50
 snapshot schema_version         2
 snapshot top-level keys         18
-snapshot key order              deterministic
-canonical JSON representation   deterministic (json.dumps(sort_keys=True))
+snapshot key order              deterministic emission order
 PR51 context packet             7 keys (examples/inspector — not an Engine method)
 confidence policy id            ragcore.effective-confidence.v1
 from_snapshot                   inherited classmethod; cls() restores subclasses
@@ -145,6 +145,19 @@ state identity                  fresh lineage on restore; revision counts comple
 
 `from ragcore import Engine`, `from ragcore.engine import Engine`, and
 `ragcore.engine.Engine` are the same class; `Engine.__module__ == "ragcore.engine"`.
+
+### 7a. Canonical-bytes drift oracle (characterization, NOT a contract)
+The Phase-0 characterization suite pins an empty-engine canonical-JSON byte image
+as a **value + emission-order drift oracle** — it is **not** a user-facing
+serialization API contract. Its exact form is order-sensitive **on purpose**:
+```python
+json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+```
+`sort_keys=True` is deliberately **NOT** used — sorting keys would hide a real
+emission-order regression (the oracle's whole point is to catch one). The frozen
+contract above commits to the schema, the 18-key set, and the deterministic
+emission order; the canonical-bytes image is the test mechanism that detects drift
+in that order/value, not an additional public encoding promise.
 
 ## 8. Accepted (non-contract) introspection deltas
 
@@ -170,12 +183,19 @@ were removed. None was public (in `ragcore.__all__`) or a defined Engine method.
 
 ## 10. Extension rules for v2 (negative boundary only)
 
+The ONLY constraint this document places on v2:
+
 ```
-v2 MAY extend this clean boundary (new clusters, new mixins, new kernels).
-v2 MUST NOT silently change the v1 defined external contract (§7).
-v2 MUST keep the pure kernels pure (stdlib + ragcore.types) and acyclic.
-v2 MUST add new state through Engine.__init__ ownership, not mixin state.
+v2 must not silently break the v1 defined external contract (§7).
 ```
+
+Everything else about v2 — its additive / separate API shape, where new state is
+owned, the projection model, the identity model, and the materialization boundary —
+is **decided in a separate v2 design directive, NOT fixed here**. In particular this
+document does **not** mandate that v2 keep all logic in the existing mixins, nor that
+v2 add new state only through `Engine.__init__` ownership; those are v2 design
+decisions. (This matches the Phase 3A ADR, which scoped v2's projection / identity /
+materialization decisions to a separate v2 phase.)
 
 The v2 physics engine's philosophy, mathematical model, state projection, identity
 model, and materialization boundary are **NOT decided here** — they await a separate
