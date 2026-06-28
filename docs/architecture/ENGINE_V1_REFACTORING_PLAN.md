@@ -1,11 +1,31 @@
 # Engine v1 Refactoring Plan
 
 ```
-status:   PROPOSAL — revised after two independent review rounds (not yet normative)
+status:   COMPLETE — all phases implemented and merged (see "Final outcome" below)
 type:     docs-only architecture plan
 base:     main aaa8024 (post-#81 squash; "Post-merge audit reconciliation")
 scope:    ragcore/engine.py internal structure only
 ```
+
+## Final outcome (reconciled at Phase 4 closure)
+
+The plan below is preserved verbatim as the original proposal (its early line
+counts / measurements are historical, not the final state). Actual results:
+
+```
+Phase 0   COMPLETE  (#83)            test taxonomy off implementation-location locks
+Phase 1   COMPLETE  (#84)            ragcore/_engine/serialization.py kernel + decode/install boundary
+Phase 2   COMPLETE  (#85)            ragcore/_engine/confidence.py kernel
+Phase 3A  ACCEPTED + IMPLEMENTED (#86)   mixin-composition decision gate
+Phase 3B  COMPLETE  (#87…#95, nine PRs)  C2–C10 extracted into nine mixins; C1 retained
+Phase 4   COMPLETE  (this PR)        removed Phase-1 compatibility shim + stale imports; boundary re-verified
+```
+
+Final structure and the frozen external contract are described authoritatively in
+`docs/architecture/ENGINE_V1_FINAL_BOUNDARY.md`. Engine = thin C1 core + nine
+mixins (C8/C3/C7/C4/C9/C6/C2/C5/C10); the two pure kernels stay module functions.
+Tests grew 2070 (Phase 2) → 2204. The defined external contract (public 42 /
+`__all__` 50 / snapshot 2·18 / packet 7) is unchanged throughout.
 
 > **Goal: finalize the internal structure of the v1 Engine so that v2
 > (physics-engine extension) can build on a clean, modular core —
