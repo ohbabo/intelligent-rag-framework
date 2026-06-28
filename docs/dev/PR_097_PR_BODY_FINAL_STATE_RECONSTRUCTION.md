@@ -128,22 +128,26 @@ content census: each PR's own final test count present, no current-2204 except #
 #80                                               absent (N/A)
 ```
 
-### Before → after (lines) + body SHA-256 (12)
+### Before → after (lines) + body **SHA-256 prefix (first 12 hex)** — final, post B1–B6
+The hash columns throughout this record are **12-hex prefixes of the SHA-256** of the raw GitHub
+body (not full 64-hex digests). After-values below are the FINAL bodies (after the B1–B6
+re-review corrections were applied):
 ```
-#74  136 -> 76   99eaa11badfa -> 2640d77b81d0      #86  278 -> 59   04febf928ec8 -> cf35ef05a1e4
-#75  199 -> 64   54d3c7a9875b -> 73ab71a79272      #87  142 -> 64   d494ee198df3 -> fe06c2edf79f
-#76  211 -> 63   6290722558b7 -> e63e1bd81dd3      #88  144 -> 56   5d81ee7bd6da -> 9856dfbfd86d
-#77  233 -> 74   acf0be495dba -> 83b2a9c1ae14      #89  174 -> 56   2ddec6673039 -> abd2103b9861
-#78  304 -> 63   be977fddf009 -> 6203494d47fb      #90  193 -> 56   6e2beb83379f -> 568b4d45641a
-#79  237 -> 58   fe5e11df52ad -> c14584c027fe      #91  189 -> 57   06d18d197233 -> 8b1a8b6ab209
-#81  132 -> 68   ee9f754c3ab7 -> f29681e0ed71      #92  165 -> 57   49eda66be79a -> 858a7e3a4101
-#82  105 -> 55   ffd80ef53f5d -> 633ac028ceba      #93   84 -> 56   1514a172170f -> 0a7041e404cd
-#83  104 -> 54   75bb8ec307a6 -> cce1ee5fa598      #94   84 -> 56   82d32437c425 -> f09a21d7f704
-#84  127 -> 60   8307247d3ab5 -> 932cc86aeef6      #95   79 -> 56   35530b5fc5f6 -> 7630ac17d74f
-#85  179 -> 60   8ccd0822f821 -> 2f34f0f0c27d      #96   83 -> 71   2f7f42501469 -> eff527f39d62
+#74  136 -> 76   99eaa11badfa -> 2640d77b81d0      #85  179 -> 59   8ccd0822f821 -> 9fd1f335ac50
+#75  199 -> 64   54d3c7a9875b -> 73ab71a79272      #86  278 -> 57   04febf928ec8 -> a1ea0a3f3715
+#76  211 -> 61   6290722558b7 -> 6dfbfc73ec09      #87  142 -> 64   d494ee198df3 -> fe06c2edf79f
+#77  233 -> 74   acf0be495dba -> 83b2a9c1ae14      #88  144 -> 56   5d81ee7bd6da -> ac6e7559ca21
+#78  304 -> 61   be977fddf009 -> 9a3abb349482      #89  174 -> 56   2ddec6673039 -> 535bfe7f887d
+#79  237 -> 56   fe5e11df52ad -> 9cf59110d068      #90  193 -> 56   6e2beb83379f -> 82e1a74b201c
+#81  132 -> 66   ee9f754c3ab7 -> 160dd6042280      #91  189 -> 57   06d18d197233 -> a95dd0a209a8
+#82  105 -> 55   ffd80ef53f5d -> 633ac028ceba      #92  165 -> 57   49eda66be79a -> 14ef3869cc50
+#83  104 -> 53   75bb8ec307a6 -> 63ceee94117e      #93   84 -> 56   1514a172170f -> 75ad474e9b41
+#84  127 -> 58   8307247d3ab5 -> 13366b96120a      #94   84 -> 56   82d32437c425 -> 4c3980e58d37
+#85 (see top-right)                                #95   79 -> 57   35530b5fc5f6 -> 2d2e0cd19053
+                                                   #96   83 -> 69   2f7f42501469 -> 072bce97527d
 ```
-(The Batch-2 before-hashes here are the fresh re-backup taken immediately before Batch 2, so the
-#88–#95 before-hashes differ from §8's earlier snapshot by the Phase-5B card already present.)
+(Before-values are the fresh re-backup taken immediately before Batch 2 — the Phase-5B
+post-card bodies.)
 
 ### Removed duplicate sections (inventory)
 Across the 22: the Phase-5B `## Phase 5 — Canonical final status` card (22), `## Post-merge audit
@@ -156,10 +160,35 @@ Each PR's final test count (#74 1517 … #96 2204), at-PR surface counts, real r
 defect→correction pairs, pre-squash commit SHAs, cluster owner + method count, and the P03
 production-fix vs docs-correction distinction (#81) are all retained.
 
+## 15. Re-review corrections (B1–B6, follow-up commit; no amend)
+GPT independent review of head `46ccd56`: **REQUEST CHANGES — 6 items**, all applied as
+GitHub-body edits (B1–B4) + this audit-record follow-up (B5/B6). No new format; no runtime/test
+change.
+- **B1 — #76 PR-local surface wrong.** #76 (M06, docs-only) showed `Engine public 42 / __all__
+  50`, which is the post-#77 surface. Corrected to the at-PR baseline `41 / 19 / 49 / snapshot
+  2·18 / packet 7`.
+- **B2 — #78 review table generic.** Replaced `contract-audit wording / assertion typo` with the
+  real post-Draft defects: **R-GATE** (role/review/Stage 5.5/Stage 6 were test-locks, not actual
+  control-flow gates), **R-FINAL** (`final_state` not derived from a real Engine public read),
+  **R-STATUS** (positive status vocabulary missing) — all enforced by the authority-gated
+  implementation `be9940e` (+ `ca61b4e` read-derivation/phase-isolation locks).
+- **B3 — chronology SHA-role.** Every `<details>` now carries a real pre-squash SHA→role
+  sequence (#76 `1cf934f` not the wrong `1ff…`; #84's `<c1>` placeholder replaced with
+  `3818878`; the M-series/audit/Phase-3B/closure PRs that had only a commit count now list
+  their SHAs). Verified: all 22 chronologies contain at least one backtick SHA.
+- **B4 — #95 Phase-4 handoff.** #95's `Current project context` now states the **entire Phase 3B
+  series is CLOSED** and the next step **Phase 4 (#96) removed the temporary compatibility shim +
+  ran the final-boundary verification**.
+- **B5 — PR #98 body placeholder.** The `<this branch head>` / `+A …` placeholders are replaced
+  with the exact head + delta of the follow-up commit (see the PR description).
+- **B6 — hash labeling.** All hash columns are explicitly relabeled **SHA-256 prefix (first 12
+  hex)**, not full digests; the §13 after-values are recomputed on the final post-B1–B4 bodies.
+
 ## 14. Full suite
 `python -m pytest -q` → **2204 passed** (the only git change is this audit record; runtime delta 0).
 
 ## Lifecycle
-OPEN — Draft. Status: **READY FOR GPT FINAL INDEPENDENT REVIEW** (Batch 1 + Batch 2 complete;
-22/22). Not self-merged; PR #98 stays Draft until APPROVE. Engine v2 NOT STARTED; Cerberus
-integration NOT STARTED. This record does not self-pin the SHA of the commit that adds it.
+OPEN — Draft. Status: **READY FOR GPT FINAL INDEPENDENT REVIEW** (Batch 1 + Batch 2 complete +
+B1–B6 corrections; 22/22). Not self-merged; PR #98 stays Draft until APPROVE. Engine v2 NOT
+STARTED; Cerberus integration NOT STARTED. This record does not self-pin the SHA of the commit
+that adds it.
