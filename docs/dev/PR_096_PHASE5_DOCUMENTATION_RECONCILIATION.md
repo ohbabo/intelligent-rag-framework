@@ -147,6 +147,49 @@ before-hashes above are the live remote bodies. The applied confirmation + each
 PR's after-SHA-256 (and the byte-prefix verification) are recorded in the
 follow-up commit (chronology intentionally not collapsed).
 
+### 8a. Application result (follow-up commit)
+All 22 cards applied (body-only edit; no title/state/base/merge mutation).
+**Append-only proof:** for every PR the new remote body `.startswith(old body)` is
+True and the card heading appears exactly once (independently re-verified: 22/22;
+each body ends with the disclaimer line). The card was appended to all 22; #74 (the
+only PR without a prior closure section) carries its status in the card's
+`current reading`.
+
+Hash note: the §8 matrix before-hashes were computed over the `gh pr view --json
+body --jq .body > file` **backup files**, which carry a trailing newline from the
+shell redirect; the pairs below are SHA-256 of the **raw JSON body string** (the
+exact value the new body extends), so they are self-consistent before→after and
+differ from the §8 column by that one trailing byte. The authoritative append-only
+guarantee is the byte-prefix check, not hash equality.
+```
+PR   before(raw body, 12)  ->  after(raw body, 12)   prefix card×1
+#74  8198a692915a          ->  99eaa11badfa          OK    1
+#75  ab594e60be19          ->  54d3c7a9875b          OK    1
+#76  6ecaceabc3ca          ->  63542e3c020e          OK    1
+#77  8c2258e1d93c          ->  acf0be495dba          OK    1
+#78  722a0cbc75ae          ->  58002e990316          OK    1
+#79  85f3e2c714e0          ->  6d891c7800eb          OK    1
+#81  1b98f324a25d          ->  0dc8a691454e          OK    1
+#82  13857621be6d          ->  968e1bcc4a2b          OK    1
+#83  ef62294578c7          ->  16a2a89a300e          OK    1
+#84  748c5728b12d          ->  8d00c4f8df82          OK    1
+#85  4ed112e16529          ->  58e854853cee          OK    1
+#86  6e9e4db00cfa          ->  4547c6dcc18f          OK    1
+#87  bf3168cbba86          ->  d494ee198df3          OK    1
+#88  a412583e4be2          ->  5014cbfb78b1          OK    1
+#89  4961cb4cd456          ->  0bfb608471e0          OK    1
+#90  ee012115747d          ->  129b7bd9e2eb          OK    1
+#91  a4f714b9405c          ->  41ab3373ee2f          OK    1
+#92  03e4eb0124ad          ->  ce01d5daa5b2          OK    1
+#93  15cff756a8dc          ->  7a4dca65499a          OK    1
+#94  5d41dbbb42ca          ->  826e3ddd39ee          OK    1
+#95  649d26f5d2f9          ->  63417cd5fea8          OK    1
+#96  e0eeadd16f60          ->  2f7f42501469          OK    1
+```
+Updated PR list (22): #74 #75 #76 #77 #78 #79 #81 #82 #83 #84 #85 #86 #87 #88 #89
+#90 #91 #92 #93 #94 #95 #96. NO-OP list: none (the user-chosen approach applies the
+card to all). #80: absent (N/A).
+
 ## 9. STOP conditions checked (none triggered)
 base SHA / baseline 2204 match; every README claim verified against code/metadata;
 no current-authoritative docs conflict; no historical text required deletion; all 22
@@ -167,11 +210,13 @@ Cerberus integration    NOT STARTED — later roadmap
 
 ## Commit chronology
 ```
-861118b  docs: reconcile repository entry points (README.md + docs/README.md)   [5A]
-<this>   docs(audit): record Phase 5 document + PR-body inventory (before-hashes)  [5B plan]
+861118b  docs: reconcile repository entry points (README.md + docs/README.md)        [5A]
+e5ff8c3  docs(audit): record Phase 5 document + PR-body inventory (before-hashes)     [5B plan]
+<this>   docs(audit): record applied PR-body reconciliations (after-hashes + verify)  [5B result]
 ```
-The follow-up commit records the applied PR-body cards + after-hashes. This record
-does not self-pin the SHA of the commit that adds it. No commit amended / rebased /
+The 22 PR-body cards were applied between e5ff8c3 and this commit (GitHub body-only
+edits, not git commits). This record does not self-pin the SHA of the commit that
+adds it. No commit amended / rebased /
 force-pushed; PR bodies edited body-only (no title/state/base/merge mutation).
 
 ## Lifecycle
