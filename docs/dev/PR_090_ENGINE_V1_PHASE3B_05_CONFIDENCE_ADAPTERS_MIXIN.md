@@ -18,8 +18,11 @@ guard           HEAD == 69a8838 verified; tracked working tree clean before star
 ```
 
 ## Why C9 fifth
-Read-only adapter cluster (zero mutators), scheduled after the CRUD/store-owning
-clusters and before C6/C2/C5. It is the cluster whose seam (the M07
+Read-only adapter cluster (zero mutators). Per the ADR 3B order
+(C8 → C3 → C7 → C4 → **C9** → C6 → C2 → C5 → C10) it is scheduled after the
+lower-coupling C8/C3/C7/C4 clusters and before C6/C2/C5 (C2 is itself a CRUD
+cluster and comes after C9, so "after the CRUD clusters" would be inaccurate). It
+is the cluster whose seam (the M07
 `getsource(Engine._compute_effective_confidence_core)` real-body lock) most needs
 care, and whose existing tests directly patch the moved methods on `Engine`.
 
@@ -168,6 +171,32 @@ snapshot schema/keys/bytes unchanged; the four prior mixins unchanged;
 import cycle; the M07 getsource seam preserved; no existing test weakened; no C9
 direct Engine patch left in the repository (the three M07 sites migrated); no
 source-location lock added.
+
+## GPT review corrections (MERGE-TIME, no new full review round)
+GPT independent review: **CHANGES REQUESTED — BLOCKER 0 / MERGE-TIME CORRECTION 2
+/ NON-BLOCKING NIT 0**. Production extraction unchanged; both corrections applied:
+- **M1 — lock the ownership / no-promotion result.** The original
+  `test_c9_methods_resolve_to_mixin` only checked `__module__` / `__qualname__`,
+  which do not change if the same function object is rebound onto `Engine`. Added
+  `test_c9_methods_owned_by_mixin_without_engine_promotion` asserting, for all ten
+  C9 methods: `name not in Engine.__dict__`,
+  `_defining_class(Engine, name) is ConfidenceAdaptersMixin`, and
+  `getattr(Engine, name) is ConfidenceAdaptersMixin.__dict__[name]`. **This
+  surfaced a fourth C9 patch site the review had not enumerated:**
+  `tests/test_complete_domain_neutral_reference_operation.py::_install_spies`
+  patched `Engine.compute_effective_confidence_with_trace` at the class level and
+  restored it on `Engine`, promoting the inherited method into `Engine.__dict__`,
+  which made the new ownership test fail in the full suite. Migrated that site to
+  patch the method on its **runtime-resolved defining class** (no hardcoded mixin
+  name) so the spy + restore stay in that class's `__dict__`. With all four C9
+  patch sites (3 in test_effective_confidence_trace.py + this one) on the defining
+  class, the ownership test now passes in the full suite (2123), and it serves as
+  the global post-patch no-promotion regression lock (it runs after the M07 and
+  M08 patch tests, so it also verifies they leave no C9 method promoted).
+- **M2 — wording.** "scheduled after the CRUD/store-owning clusters" was
+  inaccurate (C2 is a CRUD cluster and comes *after* C9). Corrected to "after the
+  lower-coupling C8/C3/C7/C4 clusters and before C6/C2/C5", with the explicit ADR
+  order.
 
 ## Lifecycle
 OPEN — Draft. Recommendation on completion: **READY FOR GPT INDEPENDENT REVIEW**

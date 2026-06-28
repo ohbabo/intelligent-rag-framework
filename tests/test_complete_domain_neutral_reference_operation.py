@@ -217,10 +217,16 @@ def _install_spies(module):
             module_patches.append((module, attr_name, orig))
             setattr(module, attr_name, spy)
 
-    # 2) Patch Engine.compute_effective_confidence_with_trace at the
-    #    class level so engine.compute_effective_confidence_with_trace(
-    #    claim_id) goes through the spy.
-    orig_trace = Engine.compute_effective_confidence_with_trace
+    # 2) Patch compute_effective_confidence_with_trace on its DEFINING class so
+    #    engine.compute_effective_confidence_with_trace(claim_id) goes through the
+    #    spy via the MRO. After the Phase 3B-5 extraction this method is inherited
+    #    from ConfidenceAdaptersMixin; patching/restoring it on Engine directly
+    #    would promote the inherited method into Engine.__dict__. We resolve the
+    #    owner at runtime (no hardcoded mixin) so the spy and its restore stay in
+    #    that class's __dict__ and Engine.__dict__ is left unpolluted.
+    _trace_name = "compute_effective_confidence_with_trace"
+    _trace_owner = next(b for b in Engine.__mro__ if _trace_name in b.__dict__)
+    orig_trace = _trace_owner.__dict__[_trace_name]
 
     def trace_spy(self, claim_id):
         call_counts["compute_effective_confidence_with_trace"] += 1
@@ -228,12 +234,12 @@ def _install_spies(module):
         return orig_trace(self, claim_id)
 
     trace_spy.__name__ = "compute_effective_confidence_with_trace"
-    Engine.compute_effective_confidence_with_trace = trace_spy
+    setattr(_trace_owner, _trace_name, trace_spy)
 
     def restore() -> None:
         for mod, attr, orig in module_patches:
             setattr(mod, attr, orig)
-        Engine.compute_effective_confidence_with_trace = orig_trace
+        setattr(_trace_owner, _trace_name, orig_trace)
 
     return call_counts, captured, restore
 

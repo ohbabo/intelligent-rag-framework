@@ -82,6 +82,19 @@ class TestConfidenceAdaptersComposition:
             assert fn.__module__ == "ragcore._engine.confidence_adapters"
             assert fn.__qualname__ == f"ConfidenceAdaptersMixin.{name}"
 
+    def test_c9_methods_owned_by_mixin_without_engine_promotion(self):
+        # The stronger ownership lock: the ten methods are inherited from
+        # ConfidenceAdaptersMixin and are NOT present in Engine.__dict__. Unlike
+        # __module__/__qualname__ (which do not change if the same function is
+        # rebound onto Engine), this catches a re-introduced wrapper/alias AND a
+        # prior test that promoted an inherited method into Engine.__dict__ via
+        # setattr/restore. This PR migrated every C9 spy site to defining-class
+        # patching, so absence-from-Engine.__dict__ is a guaranteed result here.
+        for name in _C9:
+            assert name not in Engine.__dict__
+            assert _defining_class(Engine, name) is ConfidenceAdaptersMixin
+            assert getattr(Engine, name) is ConfidenceAdaptersMixin.__dict__[name]
+
 
 class TestConfidenceAdaptersSignatures:
     _EXPECTED = {
