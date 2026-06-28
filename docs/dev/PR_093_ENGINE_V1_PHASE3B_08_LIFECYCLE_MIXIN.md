@@ -225,8 +225,8 @@ Phase 3A docs.
 ## Commit chronology
 Stable implementation/test chronology:
 ```
-<refactor>  production extraction (engine.py + lifecycle.py, threshold relocation)
-<test>      extraction tests (16 ownership / seam / order locks)
+20122df  production extraction (engine.py + lifecycle.py, threshold relocation)
+8578ae6  extraction tests (16 ownership / seam / order locks)
 ```
 This versioned record intentionally does not self-pin the SHA of the commit that
 adds the record itself. Any later review-correction commits are recorded in the
