@@ -368,3 +368,37 @@ façade + private `_engine/` package, fixed v1 confidence policy,
 per-kind stores, and committed-mutation revision. The defined external
 contract stays provably intact; non-contract introspection deltas are
 measured and accepted explicitly, not assumed away.
+
+---
+
+## Phase 3A decision addendum (append-only, 2026-06-27)
+
+Phase 3A resolved the decomposition shape. This addendum points to the decision;
+it does not rewrite the plan above.
+
+- **Selected architecture: mixin composition for the state-accessing Engine
+  method clusters,** with C1 core infrastructure retained on `Engine` and the
+  existing fully-stateless `confidence.py` / `serialization.py` kernels retained
+  as module functions. Rationale: least delta from the *measured* shared-`self`
+  topology (DAG, single revision/ID authority, per-kind stores) and the existing
+  introspection surface, while preserving `getsource(Engine._compute_effective_confidence_core)`
+  (the M07 lock). Full record + measured evidence:
+  `docs/architecture/ENGINE_V1_PHASE3A_ARCHITECTURE_DECISION.md`.
+- **Approved (non-contract) introspection deltas:** method `__qualname__` /
+  `__module__` / declaring class become the mixin's; methods are inherited (not
+  in `Engine.__dict__`); `__mro__`/`__bases__` grow; help-grouping changes.
+  Preserved: import path, `Engine.__module__`, 42 public names/signatures,
+  runtime behavior, `dir(Engine)` count, `setattr(Engine,…)`, seam `getsource`.
+- **No-expansion rule (a consequence of selecting mixins):** any cluster touching
+  a `self._<store>` or a shared-`self` seam is a mixin; only fully-stateless pure
+  computation may be a module function (closed today at `confidence.py` +
+  `serialization.py`).
+- **3B sequence (ascending coupling, lowest first):** C8 hint → C3 relations →
+  C7 rules → C4 gaps → C9 confidence adapters → C6 lifecycle history → **C2 CRUD →
+  C5 lifecycle/contradiction (separate steps)** → C10 snapshot façade; C1
+  core/identity/id/guards stays on the Engine base. C2 and C5 co-write `_claims`
+  (kept on Engine) but have no direct cross-call, so they are separate 3B PRs
+  with regression verification — recombined only on measured non-isolability.
+- **3B entry gate:** Phase 3B is prohibited until the Phase 3A entry conditions
+  (ADR §"Phase 3B entry conditions") are independently reviewed, approved,
+  merged, and post-merge verified.
