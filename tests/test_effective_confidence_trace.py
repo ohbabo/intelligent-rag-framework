@@ -84,6 +84,19 @@ _EXPECTED_FIELD_ORDER = (
 )
 
 
+def _defining_class(cls, name):
+    """The class in cls.__mro__ that actually defines ``name``. Spies are patched
+    on this class (and restored from its own ``__dict__``) so that patching an
+    *inherited* method does not promote it into a subclass ``__dict__`` on
+    restore. After the Phase-3 mixin extraction the six modifier helpers and the
+    calculation core live on ConfidenceAdaptersMixin, not Engine, so spying them
+    on Engine directly would leave them in ``Engine.__dict__``."""
+    for base in cls.__mro__:
+        if name in base.__dict__:
+            return base
+    raise AttributeError(name)
+
+
 def _build_basic(engine, *, base_confidence: float = 0.8, status=CLAIM_STATUS_CANDIDATE):
     ent = engine.add_entity(entity_type=1)
     cid = engine.add_claim(
@@ -783,18 +796,19 @@ class TestModifierHelperCallCount:
         counts = {name: 0 for name in self._HELPERS}
         originals = {}
         for name in self._HELPERS:
-            originals[name] = getattr(Engine, name)
+            owner = _defining_class(Engine, name)
+            originals[name] = (owner, owner.__dict__[name])
             def make_wrapper(orig, key):
                 def wrapper(self, *a, **kw):
                     counts[key] += 1
                     return orig(self, *a, **kw)
                 return wrapper
-            setattr(Engine, name, make_wrapper(originals[name], name))
+            setattr(owner, name, make_wrapper(originals[name][1], name))
         return counts, originals
 
     def _restore_helpers(self, originals):
-        for name, orig in originals.items():
-            setattr(Engine, name, orig)
+        for name, (owner, orig) in originals.items():
+            setattr(owner, name, orig)
 
     def test_core_calls_each_helper_exactly_once(self):
         e = Engine()
@@ -873,7 +887,8 @@ class TestSingleMultiplicationSite:
 
         calls = {name: 0 for name in self._HELPER_NAMES}
         for name in self._HELPER_NAMES:
-            original = getattr(Engine, name)
+            owner = _defining_class(Engine, name)
+            original = owner.__dict__[name]
 
             def make_counter(orig, key):
                 def counting(self, claim_id):
@@ -882,7 +897,7 @@ class TestSingleMultiplicationSite:
 
                 return counting
 
-            monkeypatch.setattr(Engine, name, make_counter(original, name))
+            monkeypatch.setattr(owner, name, make_counter(original, name))
 
         compose_calls = {"n": 0}
         original_compose = confidence_module.compose_effective_confidence
@@ -909,14 +924,15 @@ class TestSingleMultiplicationSite:
         _, cid = _build_basic(e)
 
         core_calls = {"n": 0}
-        original_core = Engine._compute_effective_confidence_core
+        owner = _defining_class(Engine, "_compute_effective_confidence_core")
+        original_core = owner.__dict__["_compute_effective_confidence_core"]
 
         def counting_core(self, claim_id):
             core_calls["n"] += 1
             return original_core(self, claim_id)
 
         monkeypatch.setattr(
-            Engine, "_compute_effective_confidence_core", counting_core
+            owner, "_compute_effective_confidence_core", counting_core
         )
 
         e.compute_effective_confidence(cid)
