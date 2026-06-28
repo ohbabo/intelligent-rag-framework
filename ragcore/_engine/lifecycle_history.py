@@ -5,8 +5,10 @@ Engine v1 refactoring; ADR docs/architecture/ENGINE_V1_PHASE3A_ARCHITECTURE_DECI
 The two method bodies are moved verbatim (AST-identical), INCLUDING the
 pre-existing "5 lifecycle API" docstring wording (see the dev record: the
 measured self-call fan-in into _record_claim_lifecycle_transition is 6 after the
-freshness-based refutation path was added; this extraction preserves the original
-function object and docstring verbatim and does NOT reinterpret the contract).
+freshness-based refutation path was added; this extraction preserves the method
+bodies, signatures, method-body AST, and docstring text verbatim — the
+function-object identity and declaring location intentionally change (__module__ /
+__qualname__ / declaring class) — and does NOT reinterpret the contract).
 The two stores (self._lifecycle_seq, self._claim_lifecycle_events) stay on Engine
 and the C1 guard (self._assert_claim_exists) stays on the Engine base. The six C5
 lifecycle transitions keep calling self._record_claim_lifecycle_transition via the

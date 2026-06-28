@@ -41,10 +41,13 @@ or seq increment in C5):
 `_record_claim_lifecycle_transition`'s docstring says "Called by 5 transition APIs"
 / "5 lifecycle API". The measured runtime/self-call fan-in is **6** after the
 freshness-based refutation path (`refute_disputed_by_freshness_if_ready`) was
-added. This extraction **preserves the original function object and docstring
-verbatim** (so the move is AST-identical and `__doc__` is unchanged); it does NOT
-reinterpret the contract or update the count. The wording is a pre-existing
-historical residue, recorded here, not introduced by this PR.
+added. This extraction **preserves the method bodies, signatures, method-body AST,
+and docstring text verbatim** (so `__doc__` is unchanged and the move is
+AST-identical); the **function-object identity and declaring location
+intentionally change** (`__module__` / `__qualname__` / declaring class — a new
+`def` executes in the mixin module, producing a new function object). It does NOT
+reinterpret the contract or update the count. The "5 lifecycle API" wording is a
+pre-existing historical residue, recorded here, not introduced by this PR.
 
 ## Before → after ownership / accumulated MRO
 `class Engine(HintEvidenceMixin, RelationsMixin, RulesMixin, GapsMixin, ConfidenceAdaptersMixin):`
@@ -83,8 +86,8 @@ and in the MRO.
 
 ## Exact signatures (unchanged)
 ```
-_record_claim_lifecycle_transition(self, claim_id, from_status, to_status, transition) -> None
-claim_lifecycle_history(self, claim_id) -> tuple[ClaimLifecycleEvent, ...]
+_record_claim_lifecycle_transition(self, claim_id: int, from_status: int, to_status: int, transition: str) -> None
+claim_lifecycle_history(self, claim_id: int) -> tuple[ClaimLifecycleEvent, ...]
 ```
 
 ## Ownership / no-promotion + patch-site scan
@@ -108,12 +111,12 @@ calls/assertions.
 
 ## Tests
 ```
-new: tests/test_engine_phase3b_lifecycle_history_mixin.py (11 runtime locks)
+new: tests/test_engine_phase3b_lifecycle_history_mixin.py (10 runtime locks)
 targeted: test_engine_lifecycle_history, test_engine_claim_lifecycle/refutation,
           disputed lifecycle/resolution/refutation, evidence_freshness,
           gap_severity_tiering, state identity, snapshot round-trip/migration/
           integrity, surface freeze, packet, 3B-1..3B-5 mixin tests
-full suite: 2123 -> 2134 passed (+11 new; no existing test weakened or deleted)
+full suite: 2123 -> 2133 passed (+10 new; no existing test weakened or deleted)
 ```
 
 ## Files changed / line delta
@@ -150,6 +153,31 @@ transition label/order/seq semantics unchanged; no snapshot/serialization change
 public 42 / __all__ 50 / snapshot 2·18 / packet 7 unchanged; the five prior mixins
 unchanged; no import cycle; no C6 direct-Engine patch site exists; no existing test
 weakened; no source-location lock added.
+
+## GPT review corrections (MERGE-TIME, no new full review round)
+GPT independent review: **CHANGES REQUESTED — BLOCKER 0 / MERGE-TIME CORRECTION 2
+/ NON-BLOCKING NIT 0**. Production extraction unchanged; both applied:
+- **M1 — complete the structure/isolation tests to the level claimed.** (a) The
+  MRO test only checked membership; it now locks the exact prefix
+  `Engine.__mro__[1:7] == (HintEvidenceMixin, RelationsMixin, RulesMixin, GapsMixin,
+  ConfidenceAdaptersMixin, LifecycleHistoryMixin)` (a prefix slice — append-
+  compatible with later mixins, not a full-tuple / base-count lock). The two
+  membership tests collapsed into this one, so the new-test count is 10 (full
+  suite 2123 -> 2133). (b) The C5->C6 seam test now closes the patch with
+  `monkeypatch.context()` and asserts, after the context, that the original
+  function identity is restored on the defining class and the inherited method was
+  never promoted onto `Engine` (`name not in Engine.__dict__`,
+  `_defining_class(...) is LifecycleHistoryMixin`, `getattr(Engine, name) is
+  original`, `LifecycleHistoryMixin.__dict__[name] is original`).
+- **M2 — "original function object" wording corrected.** A new `def` in the mixin
+  module produces a NEW function object (and this PR explicitly accepts the
+  `__module__` / `__qualname__` / declaring-class deltas), so "preserves the
+  original function object" was wrong. Corrected to "preserves the method bodies,
+  signatures, method-body AST, and docstring text verbatim; the function-object
+  identity and declaring location intentionally change" in the mixin module
+  docstring, this dev record, and the PR body. The Exact-signatures lines now
+  include the parameter type annotations (the test signatures were already
+  authoritative).
 
 ## Lifecycle
 OPEN — Draft. Recommendation on completion: **READY FOR GPT INDEPENDENT REVIEW**

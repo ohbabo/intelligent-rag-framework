@@ -31,6 +31,19 @@ from ragcore.types import (
 
 _C6 = ("_record_claim_lifecycle_transition", "claim_lifecycle_history")
 
+# The prefix-order contract: the five prior mixins keep their declaration order
+# and LifecycleHistoryMixin is appended last. This is a prefix SLICE, not the
+# full MRO tuple or the base count — a future appended mixin lands at index 7 and
+# leaves this slice unchanged, so it does not block later Phase-3 additions.
+_EXPECTED_MIXIN_PREFIX = (
+    HintEvidenceMixin,
+    RelationsMixin,
+    RulesMixin,
+    GapsMixin,
+    ConfidenceAdaptersMixin,
+    LifecycleHistoryMixin,
+)
+
 
 def _defining_class(cls, name):
     for base in cls.__mro__:
@@ -46,13 +59,10 @@ def _candidate(e):
 
 
 class TestLifecycleHistoryComposition:
-    def test_mixin_in_mro(self):
-        assert LifecycleHistoryMixin in Engine.__mro__
-
-    def test_prior_mixins_still_present(self):
-        for m in (HintEvidenceMixin, RelationsMixin, RulesMixin, GapsMixin,
-                  ConfidenceAdaptersMixin):
-            assert m in Engine.__mro__
+    def test_mixin_mro_prefix_exact(self):
+        # Locks both "the five prior mixins keep their order" and
+        # "LifecycleHistoryMixin is appended last".
+        assert Engine.__mro__[1:7] == _EXPECTED_MIXIN_PREFIX
 
     def test_engine_module_path_preserved(self):
         assert Engine.__module__ == "ragcore.engine"
@@ -106,15 +116,29 @@ class TestLifecycleHistorySeamAndReadOnly:
         ev = e.add_evidence(claim_id=c, raw_ref_id=0, evidence_type=42, strength=0.9)
         e.register_contradiction(c, ev)
         calls = []
-        owner = _defining_class(Engine, "_record_claim_lifecycle_transition")
-        original = owner.__dict__["_record_claim_lifecycle_transition"]
+        name = "_record_claim_lifecycle_transition"
+        owner = _defining_class(Engine, name)
+        original = owner.__dict__[name]
 
         def spy(self, claim_id, from_status, to_status, transition):
             calls.append((claim_id, from_status, to_status, transition))
             return original(self, claim_id, from_status, to_status, transition)
 
-        monkeypatch.setattr(owner, "_record_claim_lifecycle_transition", spy)
-        assert e.refute_claim_if_ready(c) is True
+        # Close the patch context INSIDE the test so the restoration + the
+        # no-promotion result are asserted here (not deferred to fixture teardown).
+        with monkeypatch.context() as m:
+            m.setattr(owner, name, spy)
+            assert e.refute_claim_if_ready(c) is True
+            assert name not in Engine.__dict__
+            assert _defining_class(Engine, name) is LifecycleHistoryMixin
+
+        # after the patch closes: original identity restored on the defining
+        # class, and the inherited method was never promoted onto Engine.
+        assert name not in Engine.__dict__
+        assert _defining_class(Engine, name) is LifecycleHistoryMixin
+        assert getattr(Engine, name) is original
+        assert LifecycleHistoryMixin.__dict__[name] is original
+
         assert len(calls) == 1
         cid, frm, to, label = calls[0]
         assert cid == c
