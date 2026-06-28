@@ -163,13 +163,18 @@ snapshot schema, examples/**, config/deps, C5/C6 clusters, Phase 3A docs.
 ```
 
 ## Commit chronology
+Stable implementation/test chronology:
 ```
 b8919a3 refactor(engine): extract C9 confidence adapters mixin
 a9dd5d3 test(engine): lock inherited C9 contracts and isolate defining-class patches
 dfe4964 docs(dev): record Phase 3B-5 confidence adapters extraction
 1b1120e test(engine): lock C9 ownership/no-promotion + migrate a 4th C9 patch site
-<this>  docs(dev): sync Phase 3B-5 dev-record audit numbers + chronology (M3)
 ```
+Subsequent M3 audit synchronization and self-stability changes are docs-only.
+Their authoritative SHAs and order are the GitHub PR #91 commit history; this
+versioned record intentionally does not self-pin the SHA of commits that modify
+the record itself.
+
 No commit amended, rebased, or squashed.
 
 ## STOP-AND-REPORT review
