@@ -152,8 +152,11 @@ production/test: 5 files, +517/-287
   tests/test_effective_confidence_trace.py                  +24/-8  (M07 isolation migration)
   tests/test_complete_domain_neutral_reference_operation.py +12/-6  (M1: 4th C9 spy site -> defining-class)
   tests/test_engine_phase3b_confidence_adapters_mixin.py    +199 (new)
-+ docs/dev/PR_090_…                                         +205 (this file)
-cumulative: 6 files, +722/-287
++ docs/dev/PR_090_…                                         (this dev record; its own
+                                                            size is self-referential —
+                                                            see the PR #91 diff)
+cumulative production + test (stable): 5 files, +517/-287.
+Authoritative full-PR total (incl. this dev record): the GitHub PR #91 diff.
 NOT changed: ragcore/_engine/{confidence,serialization,hint_evidence,relations,
 rules,gaps}.py, ragcore/_engine/__init__.py, ragcore/types.py, ragcore/__init__.py,
 snapshot schema, examples/**, config/deps, C5/C6 clusters, Phase 3A docs.
