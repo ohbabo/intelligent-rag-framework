@@ -1,5 +1,14 @@
 # Engine Internal Map — Frozen Engine Refactor Audit
 
+> **⚠️ SUPERSEDED — historical document.**
+> This is the historical 1145-test-era audit of the single-class `Engine` (Region
+> A–K inside one `engine.py` body). It is **NOT authoritative for the current
+> Engine topology**: after the Phase 0–4 refactoring, `Engine` is a thin C1 core
+> composed of nine private mixins, and the "Region" layout below no longer matches
+> the source. For the current structure and the frozen external contract, see
+> **`docs/architecture/ENGINE_V1_FINAL_BOUNDARY.md`**. The content below is kept for
+> historical reference only.
+
 Status: audit document (PR47)
 Baseline: main `5bb360f` (PR46-B merged)
 Type: doc-only architecture audit, no source change, no refactor

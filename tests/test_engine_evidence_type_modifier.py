@@ -22,8 +22,11 @@ from dataclasses import replace
 import pytest
 
 import ragcore
-import ragcore.engine as engine_module
 import ragcore.types as types_module
+# Phase 4: snapshot schema-version constants + migration internals are owned by
+# ragcore._engine.serialization (the Phase-1 ragcore.engine re-export shim was
+# removed); look them up at their real owner.
+from ragcore._engine import serialization
 from ragcore import (
     CLAIM_STATUS_CANDIDATE,
     CLAIM_STATUS_CONFIRMED,
@@ -550,18 +553,18 @@ class TestEvidenceTypeSnapshotSchemaV2:
 
     # invariant 36 — _CURRENT_SNAPSHOT_SCHEMA_VERSION == 2 ★
     def test_current_snapshot_schema_version_constant_is_two(self) -> None:
-        val = getattr(engine_module, "_CURRENT_SNAPSHOT_SCHEMA_VERSION", None)
+        val = getattr(serialization, "_CURRENT_SNAPSHOT_SCHEMA_VERSION", None)
         assert val == 2
 
     # invariant 30 — _SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS contains 1 and 2 ★
     def test_supported_versions_contains_one_and_two(self) -> None:
-        val = getattr(engine_module, "_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS", None)
+        val = getattr(serialization, "_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS", None)
         assert val is not None
         assert 1 in val and 2 in val
 
     # invariant 38 — _migrate_snapshot_v1_to_v2 does not mutate input ★
     def test_migrate_v1_to_v2_does_not_mutate_input(self) -> None:
-        func = getattr(engine_module, "_migrate_snapshot_v1_to_v2", None)
+        func = getattr(serialization, "_migrate_snapshot_v1_to_v2", None)
         assert func is not None and callable(func)
         v1 = {"schema_version": 1, "some_field": "x"}
         v1_copy = dict(v1)

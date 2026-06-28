@@ -30,9 +30,12 @@ import copy
 import pytest
 
 import ragcore
-import ragcore.engine as engine_module
 import ragcore.types as types_module
 from ragcore import Engine
+# Phase 4: the snapshot migration internals are owned by
+# ragcore._engine.serialization (the Phase-1 ragcore.engine re-export shim was
+# removed); look them up at their real owner.
+from ragcore._engine import serialization
 
 
 class TestSnapshotMigrationConstants:
@@ -41,11 +44,11 @@ class TestSnapshotMigrationConstants:
     def test_current_snapshot_schema_version_is_two(self) -> None:
         """PR21-L §33 Sub-decision AH: bumped 1 → 2 to accommodate
         new ``hint_evidence_types`` engine state."""
-        val = getattr(engine_module, "_CURRENT_SNAPSHOT_SCHEMA_VERSION", None)
+        val = getattr(serialization, "_CURRENT_SNAPSHOT_SCHEMA_VERSION", None)
         assert val == 2
 
     def test_supported_snapshot_schema_versions_contains_one(self) -> None:
-        val = getattr(engine_module, "_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS", None)
+        val = getattr(serialization, "_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS", None)
         assert val is not None
         assert 1 in val
 
@@ -54,11 +57,11 @@ class TestSnapshotMigrationFunction:
     """§30.13 invariant 3 — _migrate_snapshot_to_current callable."""
 
     def test_migration_function_exists(self) -> None:
-        func = getattr(engine_module, "_migrate_snapshot_to_current", None)
+        func = getattr(serialization, "_migrate_snapshot_to_current", None)
         assert func is not None
 
     def test_migration_function_is_callable(self) -> None:
-        func = getattr(engine_module, "_migrate_snapshot_to_current", None)
+        func = getattr(serialization, "_migrate_snapshot_to_current", None)
         assert func is not None
         assert callable(func)
 
@@ -85,7 +88,7 @@ class TestSnapshotMigrationIdentity:
 
     def test_v1_snapshot_returns_unchanged(self) -> None:
         """v1 snapshot 을 _migrate_snapshot_to_current 에 넣으면 그대로 반환."""
-        func = getattr(engine_module, "_migrate_snapshot_to_current", None)
+        func = getattr(serialization, "_migrate_snapshot_to_current", None)
         assert func is not None
 
         # 최소 v1 snapshot
@@ -126,7 +129,7 @@ class TestSnapshotMigrationDeterminismAndPurity:
 
     def test_migration_is_deterministic(self) -> None:
         """같은 input dict 두 번 호출 → 같은 output."""
-        func = getattr(engine_module, "_migrate_snapshot_to_current", None)
+        func = getattr(serialization, "_migrate_snapshot_to_current", None)
         assert func is not None
 
         engine = Engine()
@@ -138,7 +141,7 @@ class TestSnapshotMigrationDeterminismAndPurity:
 
     def test_migration_does_not_mutate_input(self) -> None:
         """input dict 이 호출 후에도 deep-equal 으로 그대로."""
-        func = getattr(engine_module, "_migrate_snapshot_to_current", None)
+        func = getattr(serialization, "_migrate_snapshot_to_current", None)
         assert func is not None
 
         engine = Engine()

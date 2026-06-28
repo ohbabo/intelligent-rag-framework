@@ -6,8 +6,6 @@ Reference implementation. ID 발급은 kind 별 단조 증가 카운터.
 
 from __future__ import annotations
 
-from dataclasses import asdict
-from typing import Any
 from uuid import uuid4
 
 from ragcore.types import (
@@ -29,10 +27,6 @@ from ragcore.types import (
     RuleStats,
 )
 
-# Phase 2 — the fixed v1 effective-confidence kernel + status admission domain.
-# Engine's six _*_modifier_for_claim wrappers collect facts from its stores and
-# delegate the arithmetic here; this module reads no Engine state.
-from ragcore._engine import confidence
 from ragcore._engine.hint_evidence import HintEvidenceMixin
 from ragcore._engine.relations import RelationsMixin
 from ragcore._engine.rules import RulesMixin
@@ -42,50 +36,6 @@ from ragcore._engine.lifecycle_history import LifecycleHistoryMixin
 from ragcore._engine.crud import CrudMixin
 from ragcore._engine.lifecycle import LifecycleMixin
 from ragcore._engine.snapshot import SnapshotMixin
-
-# Phase 1 decode/install boundary — the explicit state-projection surface
-# Engine uses for persistence (see ragcore._engine.serialization).
-from ragcore._engine.serialization import (
-    DecodedEngineState,
-    encode_snapshot,
-    validate_and_decode_snapshot,
-)
-
-# TEMPORARY compatibility shim (Phase 1): the low-level snapshot serialization /
-# migration internals were relocated to ragcore._engine.serialization, but
-# several existing tests still read them as ragcore.engine attributes
-# (e.g. ragcore.engine._migrate_snapshot_to_current). They are re-exported here
-# so the relocation stays behavior-preserving. NOT public API (all private).
-# These tests should migrate to import from ragcore._engine.serialization, after
-# which this shim is removed.
-from ragcore._engine.serialization import (  # noqa: F401
-    _CURRENT_SNAPSHOT_SCHEMA_VERSION,
-    _SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS,
-    _claim_from_dict,
-    _entity_from_dict,
-    _evidence_from_dict,
-    _gap_from_dict,
-    _migrate_snapshot_to_current,
-    _migrate_snapshot_v1_to_v2,
-    _observation_from_dict,
-    _relation_from_dict,
-    _restore_dict_int,
-    _restore_dict_int_int,
-    _restore_dict_int_list_dataclass,
-    _restore_dict_int_set,
-    _restore_dict_tuple,
-    _restore_dict_tuple4_int,
-    _rule_def_from_dict,
-    _rule_stats_from_dict,
-    _serialize_dict_int_dataclass,
-    _serialize_dict_int_int,
-    _serialize_dict_int_list_dataclass,
-    _serialize_dict_int_set,
-    _serialize_dict_tuple4_int,
-    _serialize_dict_tuple_dataclass,
-    _sv_from_dict,
-    _sv_to_dict,
-)
 
 # ============================================================================
 # class Engine — judgment core (domain-light)

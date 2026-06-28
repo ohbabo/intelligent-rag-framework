@@ -1,10 +1,27 @@
 # Engine v1 — Phase 3A Architecture Decision Record
 
 ## Status
-**DRAFT — decision gate. Documentation only. No production code, test, or public
-API change.** Phase 3B implementation remains prohibited until all Phase 3A entry
-conditions (§ Phase 3B entry conditions) are independently reviewed, approved,
-merged, and post-merge verified.
+**ACCEPTED AND IMPLEMENTED.** Phase 3A (this decision gate) was approved and merged
+as PR #86 (squash `65ee71b`, docs-only). Its selected architecture — mixin
+composition — was implemented across Phase 3B PRs #87–#95 (nine behaviour-preserving
+extractions) and closed by the Phase 4 boundary reconciliation. The authoritative
+final structure is `docs/architecture/ENGINE_V1_FINAL_BOUNDARY.md`.
+
+Implementation outcome:
+- **Nine selected mixins** (C8/C3/C7/C4/C9/C6/C2/C5/C10), extracted in ascending-
+  coupling order; **C1 retained** directly on the `Engine` base (no `CoreMixin` —
+  its extraction was never approved).
+- The approved introspection deltas were observed exactly as predicted (per-method
+  `__module__`/`__qualname__`/declaring-class change with verbatim body/AST/
+  signature/docstring), plus the C10 `from_snapshot` `get_type_hints` `NameError`
+  recorded as a non-contract delta.
+- The defined external contract held throughout (public 42 / `__all__` 50 / snapshot
+  2·18 / packet 7; confidence policy `ragcore.effective-confidence.v1`).
+
+The measured evidence, neutral three-candidate comparison, and rejected
+alternatives below are preserved as the original decision basis (documentation
+only; the no-expansion rule remains a *consequence* of the selection, not a
+premise).
 
 This record is written in two commits by intent: the first records *measured
 evidence and a neutral three-candidate comparison* (no conclusion fixed); the
